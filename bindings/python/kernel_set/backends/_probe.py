@@ -1,5 +1,11 @@
 """Availability probing + GPU/dtype gating for the best-backend dispatcher.
 
+Tier-2 gates (see ``docs/ROUTING.md``): a provider is *selectable* only when its
+library imports AND the device meets its ``min_sm`` AND it supports the dtype.
+The GPU SM/caps table and dtype aliases are loaded from the shared
+``models/gpu_caps.json`` (the single source of truth, also used by the Tier-1
+planner ``models/select.py``), with an inlined fallback for wheel installs.
+
 Everything here is import-safe with no torch / CUDA / kernel-set shared library:
 the probes simply report ``unavailable`` (or fall back to the kernel-set C ABI)
 when those are missing. Heavy libraries are imported *lazily* — only when a
@@ -21,15 +27,23 @@ runtime decides whether the device/dtype is supported).
 from __future__ import annotations
 
 import importlib
+import json
+import os
 from typing import Dict, Iterable, Optional, Tuple
 
 # --------------------------------------------------------------------------- #
-# Named-GPU -> compute capability (SM) table. Mirrors models/select.py so the
-# `ksctl backends --gpu h100` path and the dispatcher agree. `sm` is
-# major*10+minor (H100 = sm90, L4/RTX4090 = sm89, A100 = sm80, T4 = sm75,
-# Blackwell DC = sm100).
+# Named-GPU -> compute capability (SM) table + dtype aliases.
+#
+# Canonical source of truth: ``models/gpu_caps.json`` (shared with
+# ``models/select.py`` so the `ksctl backends --gpu h100` path and the
+# dispatcher agree on the same SM/caps). When this binding is imported from the
+# source tree that JSON is loaded directly; when the package is installed as a
+# standalone wheel (no repo `models/` dir) we fall back to the inlined defaults
+# below, which are kept identical to the JSON. `sm` is major*10+minor (H100 =
+# sm90, L4/RTX4090 = sm89, A100 = sm80, T4 = sm75, Blackwell DC = sm100,
+# consumer Blackwell = sm120).
 # --------------------------------------------------------------------------- #
-GPU_SM: Dict[str, int] = {
+_GPU_SM_FALLBACK: Dict[str, int] = {
     "t4": 75,
     "a100": 80, "a100-80gb": 80, "a100-40gb": 80, "a800": 80,
     "a10": 86, "a10g": 86,
@@ -38,6 +52,44 @@ GPU_SM: Dict[str, int] = {
     "b200": 100, "b100": 100, "blackwell": 100, "gb200": 100,
     "rtx5090": 100, "5090": 100,
 }
+
+_DTYPE_ALIASES_FALLBACK = {
+    "float16": "fp16", "half": "fp16", "f16": "fp16",
+    "bfloat16": "bf16", "bf16": "bf16",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
+    "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
+    "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
+    "int8": "int8", "i8": "int8", "w8a8": "int8",
+    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
+    "gptq": "int4", "nf4": "int4",
+    "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4",
+}
+
+# Repo layout: bindings/python/kernel_set/backends/_probe.py -> models/gpu_caps.json
+_GPU_CAPS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "models", "gpu_caps.json")
+
+
+def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str]]:
+    """Build (GPU_SM, _DTYPE_ALIASES) from the canonical JSON if present, else
+    the inlined fallbacks. Never raises (a malformed/absent file -> fallback)."""
+    try:
+        with open(_GPU_CAPS_PATH) as f:
+            caps = json.load(f)
+        gpu_sm: Dict[str, int] = {}
+        for gid, g in caps["gpus"].items():
+            gpu_sm[gid] = g["sm"]
+            for alias in g.get("aliases", []):
+                gpu_sm[alias] = g["sm"]
+        aliases = {k: v for k, v in caps["probe_dtype_aliases"].items()
+                   if not k.startswith("_")}
+        return gpu_sm, aliases
+    except Exception:
+        return dict(_GPU_SM_FALLBACK), dict(_DTYPE_ALIASES_FALLBACK)
+
+
+GPU_SM, _DTYPE_ALIASES = _load_canonical()
 
 
 def gpu_to_sm(gpu: Optional[str]) -> Optional[int]:
@@ -96,21 +148,10 @@ def resolve_sm(gpu: Optional[str]) -> Optional[int]:
 
 # --------------------------------------------------------------------------- #
 # dtype normalization. Registry ``dtypes`` strings are free-form ("fp16, bf16,
-# fp8 (e4m3/e5m2)"), so we match on substrings of a normalized request.
+# fp8 (e4m3/e5m2)"), so we match on substrings of a normalized request. The
+# alias map (``_DTYPE_ALIASES``) is loaded above from models/gpu_caps.json
+# (``probe_dtype_aliases``), with the inlined fallback for wheel installs.
 # --------------------------------------------------------------------------- #
-_DTYPE_ALIASES = {
-    "float16": "fp16", "half": "fp16", "f16": "fp16",
-    "bfloat16": "bf16", "bf16": "bf16",
-    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
-    "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
-    "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
-    "int8": "int8", "i8": "int8", "w8a8": "int8",
-    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
-    "gptq": "int4", "nf4": "int4",
-    "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4",
-}
-
-
 def normalize_dtype(dtype) -> Optional[str]:
     """Normalize a dtype request (str or torch.dtype) to a short token
     (fp16/bf16/fp32/fp8/int8/int4/fp4) or ``None`` if unknown/absent."""

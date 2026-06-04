@@ -59,6 +59,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+# Shared shape tables + RoPE reference (single source of truth across the two
+# harnesses). Import-safe with no torch. See benchmarks/_bench_common.py.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _bench_common import (  # noqa: E402
+    ATTN_PREFILL_SHAPES as _ATTN_PREFILL_SHAPES,
+    ATTN_DECODE_SHAPES as _ATTN_DECODE_SHAPES,
+    ROPE_SHAPES as _ROPE_SHAPES,
+    CE_SHAPES as _CE_SHAPES,
+    ref_rope_neox as _ref_rope_neox,
+)
+
 # --------------------------------------------------------------------------- #
 # Optional imports. The harness needs kernel_set; torch is needed for the
 # tensor-convenience paths (which is how every benchmark below drives kernels)
@@ -943,23 +954,7 @@ for _lbl, _rows, _inter in _SWIGLU_SHAPES:
 
 # -------------------------------- ROPE ------------------------------------- #
 # [num_tokens, heads, head_dim]; Llama-3-8B: 32 q heads, 8 kv heads, head_dim 128.
-_ROPE_SHAPES = [
-    ("tokens=4096,qh=32,kvh=8,hd=128", 4096, 32, 8, 128),
-    ("tokens=1,qh=32,kvh=8,hd=128",    1,    32, 8, 128),   # decode
-]
-
-
-def _ref_rope_neox(x, cos, sin):
-    # x: [tokens, heads, hd]; cos/sin: [tokens, hd/2]
-    hd = x.shape[-1]
-    half = hd // 2
-    x1 = x[..., :half].float()
-    x2 = x[..., half:].float()
-    c = cos.float().unsqueeze(1)   # [tokens,1,hd/2]
-    s = sin.float().unsqueeze(1)
-    o1 = x1 * c - x2 * s
-    o2 = x2 * c + x1 * s
-    return torch.cat([o1, o2], dim=-1).to(x.dtype)
+# _ROPE_SHAPES + _ref_rope_neox imported from _bench_common (shared with bench_sota).
 
 
 def _bench_rope(ctx: Ctx, tokens: int, qh: int, kvh: int, hd: int) -> Result:
@@ -1000,16 +995,7 @@ for _lbl, _tk, _qh, _kvh, _hd in _ROPE_SHAPES:
 
 # ------------------------------ ATTENTION ---------------------------------- #
 # Prefill: dense flash attention. Decode: paged attention.
-_ATTN_PREFILL_SHAPES = [
-    # (batch, seqlen, qheads, kvheads, head_dim)
-    ("b=1,seq=2048,qh=32,kvh=8,hd=128", 1, 2048, 32, 8, 128),
-    ("b=4,seq=1024,qh=32,kvh=8,hd=128", 4, 1024, 32, 8, 128),
-]
-_ATTN_DECODE_SHAPES = [
-    # (num_seqs, ctx_len, qheads, kvheads, head_dim, block_size)
-    ("seqs=64,ctx=2048,qh=32,kvh=8,hd=128", 64, 2048, 32, 8, 128, 16),
-    ("seqs=256,ctx=1024,qh=32,kvh=8,hd=128", 256, 1024, 32, 8, 128, 16),
-]
+# _ATTN_PREFILL_SHAPES + _ATTN_DECODE_SHAPES imported from _bench_common.
 
 
 def _bench_attn_prefill(ctx: Ctx, b, seq, qh, kvh, hd) -> Result:
@@ -1404,10 +1390,7 @@ for _lbl, _s, _v in _SAMPLING_SHAPES:
 
 
 # ---------------------------- CROSS ENTROPY -------------------------------- #
-_CE_SHAPES = [
-    ("tokens=4096,vocab=32000", 4096, 32000),
-    ("tokens=8192,vocab=128256", 8192, 128256),
-]
+# _CE_SHAPES imported from _bench_common (shared with bench_sota).
 
 
 def _bench_cross_entropy(ctx: Ctx, num_tokens, vocab) -> Result:

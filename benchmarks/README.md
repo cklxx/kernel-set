@@ -101,9 +101,31 @@ time for launch-bound shapes, and never present the two side by side as equal.
 | file | purpose |
 |---|---|
 | `bench.py` | the harness: GPU detection, timing, the benchmark registry, reporting (markdown/JSON) |
+| `bench_sota.py` | kernel-set vs external SOTA providers, op-by-op |
+| `_bench_common.py` | shared shape tables + RoPE reference imported by both `bench.py` and `bench_sota.py` |
+| `baselines.yaml` | the rank-1 upstream baseline per operator — **auto-generated** from `providers/registry.json` (see below) |
 | `build_and_bench.sh` | build the lib for the detected arch, set `KERNEL_SET_LIB`, run `bench.py`, write `results/<gpu>.md` |
 | `colab_bench.ipynb` | a copy-paste-runnable Colab notebook (L4/A100) |
 | `results/` | generated reports, one per GPU (`results/l4.md`, `results/a100.md`, …) |
+
+### Regenerating `baselines.yaml`
+
+`baselines.yaml` is derived from `providers/registry.json` (the merged
+industry-operator provider catalog) — it is the rank-1 best-in-class upstream
+kernel per operator. Do not hand-edit it; regenerate after changing the
+registry:
+
+```bash
+python3 scripts/gen_baselines.py            # rewrite benchmarks/baselines.yaml
+python3 scripts/gen_baselines.py --check    # CI: exit 1 if it has drifted
+python3 scripts/gen_baselines.py --stdout   # preview without writing
+```
+
+The generator is pure stdlib. Provider facts (`lib`, `python_call`,
+`import_check`, install, dtypes, arch, perf note) come straight from the
+registry; the bucketing into the four sections and the per-entry
+`bench_category` / `gpu_arch_required` flags are derived (see the docstring in
+`scripts/gen_baselines.py`).
 
 ## Run locally
 

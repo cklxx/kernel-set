@@ -27,68 +27,47 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REGISTRY_PATH = os.path.join(HERE, "registry.json")
+GPU_CAPS_PATH = os.path.join(HERE, "gpu_caps.json")
 
 
 # ---------------------------------------------------------------------------
-# GPU capability table.
-#   sm: compute capability (major*10+minor)
-#   fp8: e4m3/e5m2 tensor cores
-#   bf16/tf32: native tensor-core support
-#   fp4: mxfp4/nvfp4 (Blackwell)
+# GPU capability + dtype tables.
+#   Single source of truth lives in models/gpu_caps.json (shared with the
+#   dispatch probe in bindings/.../backends/_probe.py). We load it here and
+#   reconstruct the public symbols this module has always exposed:
+#     GPUS  {gpu: {name, sm, arch, fp8, bf16, tf32, int8, int4, fp4, wgmma}}
+#     GPU_ALIASES {alias: canonical}
+#     DTYPES / DTYPE_NORMALIZE / KS_DTYPE
+#   sm: compute capability (major*10+minor); fp8: e4m3/e5m2 tensor cores;
+#   bf16/tf32: native tensor-core support; fp4: mxfp4/nvfp4 (Blackwell).
 # ---------------------------------------------------------------------------
-GPUS = {
-    "a100":    {"name": "NVIDIA A100",  "sm": 80, "arch": "Ampere",
-                "fp8": False, "bf16": True,  "tf32": True,  "int8": True,
-                "int4": True, "fp4": False, "wgmma": False},
-    "l4":      {"name": "NVIDIA L4",    "sm": 89, "arch": "Ada",
-                "fp8": True,  "bf16": True,  "tf32": True,  "int8": True,
-                "int4": True, "fp4": False, "wgmma": False},
-    "h100":    {"name": "NVIDIA H100",  "sm": 90, "arch": "Hopper",
-                "fp8": True,  "bf16": True,  "tf32": True,  "int8": True,
-                "int4": True, "fp4": False, "wgmma": True},
-    "t4":      {"name": "NVIDIA T4",    "sm": 75, "arch": "Turing",
-                "fp8": False, "bf16": False, "tf32": False, "int8": True,
-                "int4": True, "fp4": False, "wgmma": False},
-    "a10":     {"name": "NVIDIA A10",   "sm": 86, "arch": "Ampere",
-                "fp8": False, "bf16": True,  "tf32": True,  "int8": True,
-                "int4": True, "fp4": False, "wgmma": False},
-    "rtx4090": {"name": "NVIDIA RTX 4090", "sm": 89, "arch": "Ada",
-                "fp8": True,  "bf16": True,  "tf32": True,  "int8": True,
-                "int4": True, "fp4": False, "wgmma": True},
-}
+def _load_gpu_caps(path=GPU_CAPS_PATH):
+    with open(path) as f:
+        return json.load(f)
 
-# Aliases people actually type.
-GPU_ALIASES = {
-    "a100-80gb": "a100", "a100-40gb": "a100", "a800": "a100",
-    "h800": "h100", "h200": "h100", "hopper": "h100",
-    "l4": "l4", "ada": "l4",
-    "4090": "rtx4090", "rtx-4090": "rtx4090",
-    "a10g": "a10",
-}
 
-# Requested dtype vocabulary.
-DTYPES = {"bf16", "fp16", "f16", "fp8", "fp8_e4m3", "fp8_e5m2",
-          "w4a16", "int4", "awq", "gptq", "w8a8", "int8", "mxfp4", "fp4",
-          "tf32", "f32", "fp32", "auto"}
+_CAPS = _load_gpu_caps()
 
-DTYPE_NORMALIZE = {
-    "f16": "fp16", "fp8_e4m3": "fp8", "fp8_e5m2": "fp8_e5m2",
-    "int4": "w4a16", "awq": "w4a16", "gptq": "w4a16",
-    "int8": "w8a8", "fp32": "f32", "fp4": "mxfp4",
-}
+GPUS = {}
+GPU_ALIASES = {}
+for _gid, _g in _CAPS["gpus"].items():
+    entry = {"name": _g["name"], "sm": _g["sm"], "arch": _g["arch"]}
+    entry.update(_g["caps"])
+    GPUS[_gid] = entry
+    for _alias in _g.get("aliases", []):
+        GPU_ALIASES[_alias] = _gid
 
+# Requested dtype vocabulary + normalization (-> internal scheme tokens).
+DTYPES = set(_CAPS["ksctl_dtypes"])
+DTYPE_NORMALIZE = {k: v for k, v in _CAPS["ksctl_dtype_normalize"].items()
+                   if not k.startswith("_")}
 # ks_dtype_t enum tokens (compute dtype actually handed to the kernel).
-KS_DTYPE = {
-    "bf16": "KS_DTYPE_BF16",
-    "fp16": "KS_DTYPE_F16",
-    "f32": "KS_DTYPE_F32",
-    "tf32": "KS_DTYPE_F32",        # TF32 is the F32 path on tensor cores
-    "fp8": "KS_DTYPE_F8E4M3",
-    "fp8_e5m2": "KS_DTYPE_F8E5M2",
-    "w4a16": "KS_DTYPE_F16",       # activations fp16/bf16; weights packed I4
-    "w8a8": "KS_DTYPE_I8",
-    "mxfp4": "KS_DTYPE_F8E4M3",    # modeled as fp8 compute (no native fp4 ABI)
-}
+KS_DTYPE = {k: v for k, v in _CAPS["ks_dtype_enum"].items()
+            if not k.startswith("_")}
+# Named SM thresholds (FP8=89, BF16/TF32=80, ...) — available for callers that
+# want the magic numbers by name instead of hardcoding `sm >= 90` etc.
+SM_THRESHOLDS = {k: v for k, v in _CAPS["sm_thresholds"].items()
+                 if not k.startswith("_")}
 
 
 class SelectionError(Exception):

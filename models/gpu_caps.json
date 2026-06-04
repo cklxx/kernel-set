@@ -1,0 +1,122 @@
+{
+  "_comment": "Canonical GPU capability + dtype-alias table for kernel-set. SINGLE SOURCE OF TRUTH. Loaded by models/select.py (the static model->kernel planner) and bindings/python/kernel_set/backends/_probe.py (the runtime dispatch arch/dtype gate). Pure data (stdlib json), no python imports across packages. Add a new GPU arch or dtype alias HERE, not in the python modules.",
+
+  "_sm_doc": "sm = compute capability major*10+minor. T4=75, A100=80, A10=86, L4/RTX4090=89, H100/H200/H800=90, Blackwell DC (B200/GB200)=100, consumer Blackwell (RTX50xx)=120.",
+
+  "sm_thresholds": {
+    "_doc": "Minimum SM for each capability. Named so the magic numbers live in one place.",
+    "fp8": 89,
+    "bf16": 80,
+    "tf32": 80,
+    "int8": 75,
+    "int4": 75,
+    "fp4": 100,
+    "wgmma": 90
+  },
+
+  "gpus": {
+    "a100": {
+      "name": "NVIDIA A100", "sm": 80, "arch": "Ampere",
+      "aliases": ["a100-80gb", "a100-40gb", "a800"],
+      "caps": {"fp8": false, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": false, "wgmma": false}
+    },
+    "a10": {
+      "name": "NVIDIA A10", "sm": 86, "arch": "Ampere",
+      "aliases": ["a10g"],
+      "caps": {"fp8": false, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": false, "wgmma": false}
+    },
+    "l4": {
+      "name": "NVIDIA L4", "sm": 89, "arch": "Ada",
+      "aliases": ["l4", "ada"],
+      "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": false, "wgmma": false}
+    },
+    "rtx4090": {
+      "name": "NVIDIA RTX 4090", "sm": 89, "arch": "Ada",
+      "aliases": ["4090", "rtx-4090"],
+      "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": false, "wgmma": true}
+    },
+    "h100": {
+      "name": "NVIDIA H100", "sm": 90, "arch": "Hopper",
+      "aliases": ["h800", "h200", "hopper"],
+      "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": false, "wgmma": true}
+    },
+    "t4": {
+      "name": "NVIDIA T4", "sm": 75, "arch": "Turing",
+      "aliases": [],
+      "caps": {"fp8": false, "bf16": false, "tf32": false, "int8": true,
+               "int4": true, "fp4": false, "wgmma": false}
+    },
+    "b200": {
+      "name": "NVIDIA B200", "sm": 100, "arch": "Blackwell",
+      "aliases": ["b100", "blackwell", "gb200"],
+      "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": true, "wgmma": true}
+    },
+    "rtx5090": {
+      "name": "NVIDIA RTX 5090", "sm": 100, "arch": "Blackwell",
+      "aliases": ["5090"],
+      "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
+               "int4": true, "fp4": true, "wgmma": true}
+    }
+  },
+
+  "dtype_aliases": {
+    "_doc": "Free-form dtype request (or torch.dtype name minus 'torch.') -> short canonical token. Superset shared by select.py (DTYPE_NORMALIZE) and _probe.py (_DTYPE_ALIASES). Note: select.py historically normalized to its own scheme tokens (w4a16/w8a8/mxfp4); _probe.py normalizes to the gate tokens (int4/int8/fp4). Each module maps these canonical tokens to its own vocabulary; see KSCTL_DTYPE_NORMALIZE / PROBE_DTYPE_ALIASES below.",
+
+    "float16": "fp16", "half": "fp16", "f16": "fp16", "fp16": "fp16",
+    "bfloat16": "bf16", "bf16": "bf16",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "fp32": "fp32",
+    "tf32": "tf32",
+    "float8_e4m3fn": "fp8_e4m3", "float8_e4m3": "fp8_e4m3", "fp8_e4m3": "fp8_e4m3",
+    "fp8": "fp8",
+    "float8_e5m2": "fp8_e5m2", "fp8_e5m2": "fp8_e5m2",
+    "int8": "int8", "i8": "int8", "w8a8": "int8",
+    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
+    "gptq": "int4", "nf4": "int4",
+    "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4"
+  },
+
+  "ksctl_dtype_normalize": {
+    "_doc": "models/select.py DTYPE_NORMALIZE: requested-dtype token -> internal scheme token. Identity unless listed.",
+    "f16": "fp16", "fp8_e4m3": "fp8", "fp8_e5m2": "fp8_e5m2",
+    "int4": "w4a16", "awq": "w4a16", "gptq": "w4a16",
+    "int8": "w8a8", "fp32": "f32", "fp4": "mxfp4"
+  },
+
+  "ksctl_dtypes": [
+    "bf16", "fp16", "f16", "fp8", "fp8_e4m3", "fp8_e5m2",
+    "w4a16", "int4", "awq", "gptq", "w8a8", "int8", "mxfp4", "fp4",
+    "tf32", "f32", "fp32", "auto"
+  ],
+
+  "ks_dtype_enum": {
+    "_doc": "compute scheme -> ks_dtype_t enum token actually handed to the kernel.",
+    "bf16": "KS_DTYPE_BF16",
+    "fp16": "KS_DTYPE_F16",
+    "f32": "KS_DTYPE_F32",
+    "tf32": "KS_DTYPE_F32",
+    "fp8": "KS_DTYPE_F8E4M3",
+    "fp8_e5m2": "KS_DTYPE_F8E5M2",
+    "w4a16": "KS_DTYPE_F16",
+    "w8a8": "KS_DTYPE_I8",
+    "mxfp4": "KS_DTYPE_F8E4M3"
+  },
+
+  "probe_dtype_aliases": {
+    "_doc": "bindings/.../backends/_probe.py _DTYPE_ALIASES: torch/free-form dtype -> short gate token (fp16/bf16/fp32/fp8/int8/int4/fp4).",
+    "float16": "fp16", "half": "fp16", "f16": "fp16",
+    "bfloat16": "bf16", "bf16": "bf16",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
+    "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
+    "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
+    "int8": "int8", "i8": "int8", "w8a8": "int8",
+    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
+    "gptq": "int4", "nf4": "int4",
+    "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4"
+  }
+}

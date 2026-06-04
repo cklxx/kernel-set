@@ -1,9 +1,19 @@
 """Backend provider table + availability probing for the best-backend dispatch.
 
-This subpackage is import-safe with no torch / CUDA / kernel-set shared library:
-importing it only pulls in stdlib + the curated provider table. Heavy provider
-libraries are imported lazily, inside the per-provider call adapters and
-availability probes, never at import time.
+This subpackage powers **Tier 2** of kernel-set routing — runtime
+*best-available-provider* selection (see ``docs/ROUTING.md``). It is the data +
+gates behind ``kernel_set.dispatch``:
+
+* ``_registry`` — the curated, rank-ordered provider table (derived from
+  ``providers/registry.json``) with a lazy call adapter per provider.
+* ``_probe``    — the gates: import-availability + arch/dtype support. GPU
+  SM/caps and dtype aliases come from ``models/gpu_caps.json`` (the source of
+  truth it shares with the Tier-1 planner ``models/select.py``).
+
+Import-safe with no torch / CUDA / kernel-set shared library: importing only
+pulls in stdlib + the curated provider table. Heavy provider libraries are
+imported lazily, inside the per-provider call adapters and availability probes,
+never at import time.
 """
 
 from __future__ import annotations

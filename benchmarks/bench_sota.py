@@ -65,6 +65,16 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 # --------------------------------------------------------------------------- #
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Shared shape tables + RoPE reference (single source of truth across the two
+# harnesses). Import-safe with no torch. See benchmarks/_bench_common.py.
+from _bench_common import (  # noqa: E402
+    ATTN_PREFILL_SHAPES as _ATTN_PREFILL_SHAPES,
+    ATTN_DECODE_SHAPES as _ATTN_DECODE_SHAPES,
+    ROPE_SHAPES as _ROPE_SHAPES,
+    CE_SHAPES as _CE_SHAPES,
+)
+from _bench_common import ref_rope_neox as _ref_rope_neox_common
+
 _BENCH_IMPORT_ERROR = None
 try:
     import bench as _bench  # the sibling harness
@@ -376,17 +386,11 @@ def group(name: str):
 
 
 # ----------------------------- shared shapes ------------------------------- #
-# Reuse bench.py's representative LLM shapes where sensible.
-_ATTN_PREFILL_SHAPES = [
-    # (label, batch, seqlen, qheads, kvheads, head_dim)
-    ("b=1,seq=2048,qh=32,kvh=8,hd=128", 1, 2048, 32, 8, 128),
-    ("b=4,seq=1024,qh=32,kvh=8,hd=128", 4, 1024, 32, 8, 128),
-]
-_ATTN_DECODE_SHAPES = [
-    # (label, num_seqs, ctx_len, qheads, kvheads, head_dim, block_size)
-    ("seqs=64,ctx=2048,qh=32,kvh=8,hd=128", 64, 2048, 32, 8, 128, 16),
-    ("seqs=256,ctx=1024,qh=32,kvh=8,hd=128", 256, 1024, 32, 8, 128, 16),
-]
+# _ATTN_PREFILL_SHAPES, _ATTN_DECODE_SHAPES, _ROPE_SHAPES and _CE_SHAPES are
+# imported verbatim from _bench_common (single source of truth, shared with
+# bench.py). The tables below are deliberately a *subset* of bench.py's sweep
+# (cross-impl comparison) plus sota-only tables (MLA, SSM); they intentionally
+# differ from bench.py and stay local.
 _GEMM_SHAPES = [
     ("M=4096,N=4096,K=4096", 4096, 4096, 4096),
     ("M=8192,N=8192,K=8192", 8192, 8192, 8192),
@@ -401,10 +405,6 @@ _SWIGLU_SHAPES = [
     ("rows=4096,inter=14336", 4096, 14336),
     ("rows=1,inter=14336", 1, 14336),               # decode
 ]
-_ROPE_SHAPES = [
-    ("tokens=4096,qh=32,kvh=8,hd=128", 4096, 32, 8, 128),
-    ("tokens=1,qh=32,kvh=8,hd=128", 1, 32, 8, 128),
-]
 _MOE_SHAPES = [
     # (label, num_tokens, hidden, inter, num_experts, top_k)
     ("tokens=4096,h=4096,inter=14336,E=8,k=2", 4096, 4096, 14336, 8, 2),
@@ -412,10 +412,6 @@ _MOE_SHAPES = [
 _MLA_SHAPES = [
     # (label, num_seqs, ctx_len, heads, kv_lora_rank, rope_dim, block_size)
     ("seqs=64,ctx=2048,h=128,lora=512,rope=64", 64, 2048, 128, 512, 64, 64),
-]
-_CE_SHAPES = [
-    ("tokens=4096,vocab=32000", 4096, 32000),
-    ("tokens=8192,vocab=128256", 8192, 128256),
 ]
 _SSM_SHAPES = [
     # (label, batch, dim, seqlen, dstate)
@@ -1298,16 +1294,9 @@ def _g_fused_add_rmsnorm(ctx: SotaCtx) -> List[Row]:
 #   kernel-set vs flashinfer apply_rope vs liger
 # ----------------------------------------------------------------------------
 def _ref_rope_neox(x, cos, sin):
-    """x: (tokens, heads, hd); cos/sin: (tokens, hd/2). NeoX/rotate_half."""
-    hd = x.shape[-1]
-    half = hd // 2
-    x1 = x[..., :half].float()
-    x2 = x[..., half:].float()
-    c = cos.float().unsqueeze(1)
-    s = sin.float().unsqueeze(1)
-    o1 = x1 * c - x2 * s
-    o2 = x2 * c + x1 * s
-    return torch.cat([o1, o2], dim=-1)
+    """NeoX/rotate-half RoPE reference. Returns the raw fp32 result (no cast
+    back to x.dtype): cross-impl comparison upcasts to fp32 anyway."""
+    return _ref_rope_neox_common(x, cos, sin, cast=False)
 
 
 @group("rope")

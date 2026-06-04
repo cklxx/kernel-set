@@ -90,6 +90,11 @@ python3 models/ksctl table --gpu l4 --md docs/MODEL_KERNEL_MAP.md
 scheme + rationale given the GPU's capabilities (e.g. FP8 on L4/H100 but not
 A100) and the model's architecture (MLA→`ks_mla_decode`, MoE→`ks_moe_*`).
 
+This static plan is **Tier 1** of routing; the runtime
+best-available-provider dispatcher (`kernel_set.dispatch`) is **Tier 2**, and
+the kernel-set C ABI is the **Tier 3** portable fallback. See
+[`docs/ROUTING.md`](docs/ROUTING.md) for the full three-tier map.
+
 ## Call it from your language
 
 ```python
