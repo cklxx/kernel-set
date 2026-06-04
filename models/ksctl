@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""ksctl — kernel-set model->kernel planning CLI.
+
+Pure stdlib (argparse + json). Reads models/registry.json and uses the
+selection engine in select.py to pick the strongest kernel-set entry point per
+logical op for a given (model, gpu, dtype, mode).
+
+Subcommands:
+  ksctl list                                  list known models / families
+  ksctl info   --model M                      show architecture facts + op map
+  ksctl plan   --model M --gpu G --dtype D [--mode inference|training] [--json]
+  ksctl table  [--gpu G] [--dtype D] [--mode] [--md FILE]   model->kernel table
+
+Examples:
+  ksctl list
+  ksctl plan --model deepseek-v3 --gpu h100 --dtype fp8
+  ksctl plan --model llama-3-8b --gpu a100 --dtype bf16 --json
+  ksctl table --gpu h100 --md docs/MODEL_KERNEL_MAP.md
+"""
+
+import argparse
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import select as sel  # noqa: E402  (local module)
+
+
+# ---------------------------------------------------------------------------
+# Pretty helpers
+# ---------------------------------------------------------------------------
+def _hr(c="-", n=78):
+    return c * n
+
+
+def cmd_list(args):
+    reg = sel.load_registry()
+    fams = [m for m in reg["models"] if m["kind"] == "family"]
+    mods = [m for m in reg["models"] if m["kind"] == "model"]
+    if args.json:
+        print(json.dumps({
+            "families": [{"id": m["id"], "family": m["family"],
+                          "examples": m["examples"]} for m in fams],
+            "models": [{"id": m["id"], "family": m["family"]} for m in mods],
+        }, indent=2))
+        return 0
+    print(f"kernel-set models — {len(reg['models'])} entries "
+          f"({len(fams)} families, {len(mods)} concrete)\n")
+    print("FAMILIES")
+    for m in fams:
+        ex = ", ".join(m["examples"][:3])
+        print(f"  {m['id']:20s} {m['family']:30s} {ex}")
+    print("\nCONCRETE MODELS")
+    for m in mods:
+        print(f"  {m['id']:24s} ({m['family']})")
+    return 0
+
+
+def cmd_info(args):
+    reg = sel.load_registry()
+    try:
+        m = sel.find_model(reg, args.model)
+    except sel.SelectionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(m, indent=2))
+        return 0
+    a = m["arch"]
+    print(_hr("="))
+    print(f"{m['id']}   [{m['kind']}]   family: {m['family']}")
+    print(_hr("="))
+    print(m["notes"])
+    if m["examples"]:
+        print(f"examples: {', '.join(m['examples'])}")
+    print()
+    s = sel.arch_summary(a)
+    print("ARCHITECTURE")
+    print(f"  attention   : {s['attention']}  "
+          f"(heads={s['heads']} kv_heads={s['kv_heads']} head_dim={s['head_dim']})")
+    print(f"  hidden      : {s['hidden']}")
+    print(f"  vocab       : {s['vocab']}")
+    print(f"  norm        : {s['norm']}  ({a.get('norm_positions','pre')})")
+    print(f"  rope        : {s['rope']}")
+    print(f"  mlp         : {s['mlp']}  (inter={a['mlp'].get('inter')})")
+    print(f"  quant       : {s['quant']}")
+    if a.get("extras"):
+        print(f"  extras      : {', '.join(a['extras'])}")
+    print()
+    print("DEFAULT OP -> KERNEL MAP (pre-selection)")
+    for op in reg["logical_ops"]:
+        spec = m["ops"].get(op)
+        desc = reg["op_descriptions"].get(op, "")
+        if spec is None:
+            print(f"  {op:18s} {'-':28s} ({desc})")
+        else:
+            print(f"  {op:18s} {spec['fn']:28s} ({desc})")
+    return 0
+
+
+def _print_plan(plan):
+    s = plan["arch_summary"]
+    print(_hr("="))
+    print(f"PLAN  {plan['model']}  ({plan['family']})")
+    print(f"  GPU            : {plan['gpu']}  (sm{plan['sm']})")
+    print(f"  requested dtype: {plan['requested_dtype']}")
+    print(f"  resolved scheme: {plan['resolved_scheme']}"
+          + (f"   [{plan['dtype_note']}]" if plan["dtype_note"] else ""))
+    print(f"  mode           : {plan['mode']}")
+    print(f"  arch           : {s['attention']} | norm={s['norm']} | "
+          f"mlp={s['mlp']} | rope={s['rope']}")
+    print(_hr("="))
+    print(f"  {'OP':18s} {'KERNEL-SET FN':30s} {'KS_DTYPE':16s} RATIONALE")
+    print(f"  {_hr('-', 16):18s} {_hr('-', 28):30s} {_hr('-', 14):16s} "
+          f"{_hr('-', 8)}")
+    for op, e in plan["ops"].items():
+        print(f"  {op:18s} {e['fn']:30s} {e['ks_dtype']:16s} {e['rationale']}")
+    return 0
+
+
+def cmd_plan(args):
+    reg = sel.load_registry()
+    try:
+        plan = sel.select(args.model, args.gpu, args.dtype, args.mode, reg)
+    except sel.SelectionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(plan, indent=2))
+        return 0
+    return _print_plan(plan)
+
+
+# ---------------------------------------------------------------------------
+# table: rows = models, columns = logical ops -> chosen fn(+dtype)
+# ---------------------------------------------------------------------------
+TABLE_OPS = [
+    ("embedding", "embed"),
+    ("attn_norm", "attn_norm"),
+    ("rope", "rope"),
+    ("attn_prefill", "prefill"),
+    ("attn_decode", "decode"),
+    ("qkv_proj", "qkv"),
+    ("o_proj", "o_proj"),
+    ("ffn_norm", "ffn_norm"),
+    ("mlp_gate_up", "gate_up"),
+    ("mlp_act", "act"),
+    ("mlp_down", "down"),
+    ("moe_gate", "moe_gate"),
+    ("moe_grouped_gemm", "moe_gemm"),
+    ("lm_head", "lm_head"),
+    ("sampling", "sample"),
+]
+
+
+def _short_dt(ks_dtype):
+    return {
+        "KS_DTYPE_BF16": "bf16", "KS_DTYPE_F16": "fp16", "KS_DTYPE_F32": "f32",
+        "KS_DTYPE_F8E4M3": "fp8", "KS_DTYPE_F8E5M2": "fp8e5", "KS_DTYPE_I8": "i8",
+    }.get(ks_dtype, ks_dtype)
+
+
+def _cell(plan, op):
+    e = plan["ops"].get(op)
+    if e is None:
+        return "—"
+    return f"{e['fn']}<br>`{_short_dt(e['ks_dtype'])}`"
+
+
+def build_table_md(gpu, dtype, mode):
+    reg = sel.load_registry()
+    gkey, gcaps = sel.resolve_gpu(gpu)
+    lines = []
+    lines.append(f"# kernel-set Model -> Kernel Map")
+    lines.append("")
+    lines.append(f"Auto-generated by `ksctl table`. "
+                 f"Each cell is the strongest kernel-set C ABI entry point the "
+                 f"selection engine picks for that (model, op), with the compute "
+                 f"dtype handed to the kernel.")
+    lines.append("")
+    lines.append(f"- **GPU**: {gcaps['name']} (sm{gcaps['sm']}, {gcaps['arch']}; "
+                 f"fp8={'yes' if gcaps['fp8'] else 'no'}, "
+                 f"bf16={'yes' if gcaps['bf16'] else 'no'}, "
+                 f"tf32={'yes' if gcaps['tf32'] else 'no'})")
+    lines.append(f"- **Requested dtype**: `{dtype}`  ·  **Mode**: `{mode}`")
+    lines.append(f"- **ABI header**: `{reg['abi_header']}`")
+    lines.append("")
+    lines.append("Regenerate with:")
+    lines.append("")
+    lines.append("```")
+    lines.append(f"python3 models/ksctl table --gpu {gpu} --dtype {dtype} "
+                 f"--mode {mode} --md docs/MODEL_KERNEL_MAP.md")
+    lines.append("```")
+    lines.append("")
+
+    # --- summary table: arch + chosen quant scheme -------------------------
+    lines.append("## Architecture & dtype summary")
+    lines.append("")
+    hdr = ["model", "attention", "heads/kv", "head_dim", "norm", "rope",
+           "mlp", "scheme"]
+    lines.append("| " + " | ".join(hdr) + " |")
+    lines.append("|" + "|".join(["---"] * len(hdr)) + "|")
+    for m in reg["models"]:
+        plan = sel.select(m["id"], gpu, dtype, mode, reg)
+        s = plan["arch_summary"]
+        row = [
+            f"`{m['id']}`", s["attention"],
+            f"{s['heads']}/{s['kv_heads']}", str(s["head_dim"]),
+            s["norm"], s["rope"], s["mlp"],
+            f"`{plan['resolved_scheme']}`",
+        ]
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+
+    # --- the big op-by-op table (split for readability) --------------------
+    op_groups = [
+        ("Attention path", ["embedding", "attn_norm", "rope",
+                            "attn_prefill", "attn_decode", "qkv_proj", "o_proj"]),
+        ("MLP / MoE path", ["ffn_norm", "mlp_gate_up", "mlp_act", "mlp_down",
+                            "moe_gate", "moe_grouped_gemm", "lm_head", "sampling"]),
+    ]
+    label = {k: v for k, v in TABLE_OPS}
+    for title, group in op_groups:
+        lines.append(f"## {title}")
+        lines.append("")
+        hdr = ["model"] + [label.get(op, op) for op in group]
+        lines.append("| " + " | ".join(hdr) + " |")
+        lines.append("|" + "|".join(["---"] * len(hdr)) + "|")
+        for m in reg["models"]:
+            plan = sel.select(m["id"], gpu, dtype, mode, reg)
+            row = [f"`{m['id']}`"] + [_cell(plan, op) for op in group]
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("")
+
+    # --- legend ------------------------------------------------------------
+    lines.append("## Op legend")
+    lines.append("")
+    lines.append("| column | logical op |")
+    lines.append("|---|---|")
+    for op, short in TABLE_OPS:
+        lines.append(f"| `{short}` | {reg['op_descriptions'].get(op, op)} |")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_table(args):
+    md = build_table_md(args.gpu, args.dtype, args.mode)
+    if args.md:
+        with open(args.md, "w") as f:
+            f.write(md)
+        print(f"wrote {args.md} ({md.count(chr(10))} lines)")
+        return 0
+    sys.stdout.write(md)
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(
+        prog="ksctl",
+        description="kernel-set model->kernel planning CLI")
+    sub = p.add_subparsers(dest="cmd")
+
+    p_list = sub.add_parser("list", help="list known models / families")
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=cmd_list)
+
+    p_info = sub.add_parser("info", help="show architecture facts + op map")
+    p_info.add_argument("--model", required=True)
+    p_info.add_argument("--json", action="store_true")
+    p_info.set_defaults(func=cmd_info)
+
+    p_plan = sub.add_parser("plan", help="auto-select strongest kernel per op")
+    p_plan.add_argument("--model", required=True)
+    p_plan.add_argument("--gpu", required=True)
+    p_plan.add_argument("--dtype", default="auto")
+    p_plan.add_argument("--mode", default="inference",
+                        choices=["inference", "training"])
+    p_plan.add_argument("--json", action="store_true")
+    p_plan.set_defaults(func=cmd_plan)
+
+    p_tab = sub.add_parser("table", help="emit model->kernel markdown table")
+    p_tab.add_argument("--gpu", default="h100")
+    p_tab.add_argument("--dtype", default="auto")
+    p_tab.add_argument("--mode", default="inference",
+                       choices=["inference", "training"])
+    p_tab.add_argument("--md", help="write to this file instead of stdout")
+    p_tab.set_defaults(func=cmd_table)
+
+    args = p.parse_args(argv)
+    if not getattr(args, "cmd", None):
+        p.print_help()
+        return 0
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

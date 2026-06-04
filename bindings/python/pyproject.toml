@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernel_set"
+version = "0.1.0"
+description = "Python (ctypes) bindings for the kernel-set LLM inference & training kernels"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+authors = [{ name = "kernel-set authors" }]
+keywords = ["cuda", "llm", "kernels", "inference", "training", "flash-attention", "moe"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+]
+# No build/runtime dependencies: the binding is pure-ctypes and dlopens the
+# prebuilt shared library at import time. torch is OPTIONAL — only the
+# torch-tensor convenience paths require it.
+dependencies = []
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
+dev = ["pytest>=7", "torch>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/kernel-set/kernel-set"
+Source = "https://github.com/kernel-set/kernel-set"
+
+[tool.setuptools]
+# Pure-Python package; ship the package dir as-is. No C extension is built.
+packages = ["kernel_set"]
+
+[tool.setuptools.package-data]
+# If a wheel vendors the prebuilt library next to the package, include it.
+kernel_set = [
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "lib/*.so",
+    "lib/*.dylib",
+    "lib/*.dll",
+]

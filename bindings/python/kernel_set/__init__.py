@@ -1,0 +1,144 @@
+"""kernel_set — Python bindings for the kernel-set LLM kernel library.
+
+A thin, dependency-free ctypes layer over the frozen C ABI declared in
+``include/kernel_set/*.h``. The prebuilt shared library
+(``libkernel_set.so`` / ``.dylib`` / ``kernel_set.dll``) is located and
+``dlopen``-ed at import time — no compilation happens on install.
+
+Quick start
+-----------
+::
+
+    import torch
+    import kernel_set as ks
+
+    x = torch.randn(4, 4096, device="cuda", dtype=torch.float16)
+    w = torch.ones(4096, device="cuda", dtype=torch.float16)
+    out = torch.empty_like(x)
+
+    ks.norm.rms_norm(out, x, w, eps=1e-6)   # dtype/shape/stream inferred
+    torch.cuda.synchronize()
+
+Every wrapper accepts torch CUDA tensors *or* raw integer device pointers; with
+raw pointers you must pass shapes/dtype explicitly.
+
+Layout
+------
+* :mod:`kernel_set._lib`     — raw ctypes FFI (every function, argtypes/restype).
+* :mod:`kernel_set.runtime`  — device/stream/memory + introspection.
+* op modules: :mod:`norm`, :mod:`activation`, :mod:`attention`, :mod:`gemm`,
+  :mod:`moe`, :mod:`rope`, :mod:`quant`, :mod:`sampling`, :mod:`embedding`,
+  :mod:`elementwise`, :mod:`loss`, :mod:`optimizer`.
+"""
+
+from __future__ import annotations
+
+# Core error / FFI handle.
+from ._lib import KernelSetError, KsDeviceProperties, check, lib  # noqa: F401
+
+# dtype interop helpers.
+from ._tensor import (  # noqa: F401
+    KS_TO_TORCH,
+    TORCH_TO_KS,
+    dtype_to_ks,
+    infer_dtype,
+    ks_to_torch_dtype,
+    ptr,
+    stream_ptr,
+)
+
+# Pythonic enums.
+from .enums import (  # noqa: F401
+    Activation,
+    DType,
+    MemcpyKind,
+    QuantMode,
+    Status,
+)
+
+# Op category modules (imported as submodules: ks.norm.rms_norm(...), etc.).
+from . import (  # noqa: F401
+    activation,
+    attention,
+    elementwise,
+    embedding,
+    gemm,
+    loss,
+    moe,
+    norm,
+    optimizer,
+    quant,
+    rope,
+    runtime,
+    sampling,
+)
+
+# Frequently-used runtime functions promoted to the top level.
+from .runtime import (  # noqa: F401
+    Stream,
+    backend_name,
+    device_count,
+    dtype_name,
+    dtype_size_bits,
+    get_device,
+    get_device_properties,
+    set_device,
+    stream_synchronize,
+    version,
+)
+
+
+def lib_version() -> str:
+    """Version string reported by the loaded shared library."""
+    return version()
+
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "__version__",
+    "lib",
+    "lib_version",
+    # errors / interop
+    "KernelSetError",
+    "KsDeviceProperties",
+    "check",
+    "dtype_to_ks",
+    "ks_to_torch_dtype",
+    "infer_dtype",
+    "ptr",
+    "stream_ptr",
+    "TORCH_TO_KS",
+    "KS_TO_TORCH",
+    # enums
+    "Status",
+    "DType",
+    "Activation",
+    "QuantMode",
+    "MemcpyKind",
+    # runtime convenience
+    "Stream",
+    "version",
+    "backend_name",
+    "dtype_name",
+    "dtype_size_bits",
+    "device_count",
+    "set_device",
+    "get_device",
+    "get_device_properties",
+    "stream_synchronize",
+    # op modules
+    "runtime",
+    "norm",
+    "activation",
+    "attention",
+    "gemm",
+    "moe",
+    "rope",
+    "quant",
+    "sampling",
+    "embedding",
+    "elementwise",
+    "loss",
+    "optimizer",
+]

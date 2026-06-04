@@ -1,0 +1,5296 @@
+{
+  "schema_version": 1,
+  "abi_header": "include/kernel_set/kernel_set.h",
+  "logical_ops": [
+    "embedding",
+    "attn_norm",
+    "rope",
+    "attn_prefill",
+    "attn_decode",
+    "qkv_proj",
+    "o_proj",
+    "ffn_norm",
+    "mlp_gate_up",
+    "mlp_act",
+    "mlp_down",
+    "moe_gate",
+    "moe_grouped_gemm",
+    "lm_head",
+    "sampling"
+  ],
+  "training_ops": [
+    "attn_backward",
+    "cross_entropy",
+    "optimizer"
+  ],
+  "op_descriptions": {
+    "embedding": "token embedding lookup",
+    "attn_norm": "pre-attention normalization",
+    "rope": "rotary position embedding",
+    "attn_prefill": "prefill / context attention (full sequence)",
+    "attn_decode": "autoregressive decode attention (paged KV)",
+    "qkv_proj": "fused Q/K/V projection GEMM",
+    "o_proj": "attention output projection GEMM",
+    "ffn_norm": "pre-MLP normalization",
+    "mlp_gate_up": "MLP up/gate projection GEMM (or MoE grouped GEMM)",
+    "mlp_act": "gated MLP activation (SwiGLU/GeGLU) or dense act",
+    "mlp_down": "MLP down projection GEMM (or MoE grouped GEMM)",
+    "moe_gate": "MoE router / gating",
+    "moe_grouped_gemm": "grouped per-expert GEMM",
+    "lm_head": "final logits projection",
+    "sampling": "token sampling / decode head",
+    "attn_backward": "attention backward (training)",
+    "cross_entropy": "fused (linear) cross-entropy loss (training)",
+    "optimizer": "fused optimizer step (training)"
+  },
+  "models": [
+    {
+      "id": "llama-2",
+      "kind": "family",
+      "family": "Llama 2",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 32000,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 11008
+        },
+        "quant": [
+          "bf16",
+          "fp16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Baseline modern Llama recipe: RMSNorm(pre) + RoPE(theta=10k) + SwiGLU + GQA at scale.",
+      "examples": [
+        "Llama-2-7B",
+        "Llama-2-13B",
+        "Llama-2-70B"
+      ]
+    },
+    {
+      "id": "llama-2-7b",
+      "kind": "model",
+      "family": "Llama 2",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 32000,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 11008
+        },
+        "quant": [
+          "bf16",
+          "fp16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-2 7B: dense MHA (no GQA at this size).",
+      "examples": [
+        "Llama-2-7B"
+      ]
+    },
+    {
+      "id": "llama-2-70b",
+      "kind": "model",
+      "family": "Llama 2",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 80,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 32000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 28672
+        },
+        "quant": [
+          "bf16",
+          "fp16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-2 70B: GQA (8 kv heads), SwiGLU.",
+      "examples": [
+        "Llama-2-70B"
+      ]
+    },
+    {
+      "id": "llama-3",
+      "kind": "family",
+      "family": "Llama 3 / 3.1 / 3.3",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 128256,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "llama3",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "high-theta-rope",
+          "rope-scaling-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "High-theta RoPE (500k) + Llama3 rope-scaling for 128K ctx; vocab 128k.",
+      "examples": [
+        "Llama-3-8B",
+        "Llama-3.1-70B",
+        "Llama-3.1-405B"
+      ]
+    },
+    {
+      "id": "llama-3-8b",
+      "kind": "model",
+      "family": "Llama 3 / 3.1 / 3.3",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 128256,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "llama3",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "high-theta-rope",
+          "rope-scaling-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-3 8B: GQA(8 kv), 128k vocab, theta=500k.",
+      "examples": [
+        "Llama-3-8B",
+        "Llama-3.1-8B"
+      ]
+    },
+    {
+      "id": "llama-3-70b",
+      "kind": "model",
+      "family": "Llama 3 / 3.1 / 3.3",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 80,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 128256,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "llama3",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 28672
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "high-theta-rope",
+          "rope-scaling-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-3 70B: GQA(8 kv), theta=500k.",
+      "examples": [
+        "Llama-3-70B",
+        "Llama-3.1-70B",
+        "Llama-3.3-70B"
+      ]
+    },
+    {
+      "id": "llama-3.1-405b",
+      "kind": "model",
+      "family": "Llama 3 / 3.1 / 3.3",
+      "arch": {
+        "hidden": 16384,
+        "n_layers": 126,
+        "n_heads": 128,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 128256,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "llama3",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 53248
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "high-theta-rope",
+          "rope-scaling-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-3.1 405B: largest dense Llama; native FP8 serving common.",
+      "examples": [
+        "Llama-3.1-405B"
+      ]
+    },
+    {
+      "id": "llama-4",
+      "kind": "family",
+      "family": "Llama 4",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 48,
+        "n_heads": 40,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 202048,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "irope",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 8192,
+          "n_experts": 16,
+          "top_k": 1,
+          "n_shared": 1,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "irope",
+          "nope-layers",
+          "moe-interleaved-dense",
+          "early-fusion-multimodal"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "First Llama MoE; iRoPE (interleaved RoPE / NoPE blocks) for length generalization; routed+shared experts interleaved with dense.",
+      "examples": [
+        "Llama-4-Scout",
+        "Llama-4-Maverick"
+      ]
+    },
+    {
+      "id": "llama-4-scout",
+      "kind": "model",
+      "family": "Llama 4",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 48,
+        "n_heads": 40,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 202048,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": "irope",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 8192,
+          "n_experts": 16,
+          "top_k": 1,
+          "n_shared": 1,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "irope",
+          "nope-layers",
+          "moe-interleaved-dense"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-4 Scout: 16 experts, top-1 + 1 shared, iRoPE.",
+      "examples": [
+        "Llama-4-Scout"
+      ]
+    },
+    {
+      "id": "qwen2",
+      "kind": "family",
+      "family": "Qwen 1.5 / 2",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 28,
+        "n_heads": 28,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 152064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 18944
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "qkv-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Distinctive QKV bias term in attention projections; RoPE theta=1e6.",
+      "examples": [
+        "Qwen1.5-72B",
+        "Qwen2-7B",
+        "Qwen2-57B-A14B"
+      ]
+    },
+    {
+      "id": "qwen2-7b",
+      "kind": "model",
+      "family": "Qwen 1.5 / 2",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 28,
+        "n_heads": 28,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 152064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 18944
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "qkv-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen2 7B: GQA(4 kv) + QKV bias.",
+      "examples": [
+        "Qwen2-7B"
+      ]
+    },
+    {
+      "id": "qwen2-57b-a14b",
+      "kind": "model",
+      "family": "Qwen 1.5 / 2",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 28,
+        "n_heads": 28,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2560,
+          "n_experts": 64,
+          "top_k": 8,
+          "n_shared": 8,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "qkv-bias",
+          "shared-experts"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen2-MoE: 64 experts top-8 + shared experts; QKV bias.",
+      "examples": [
+        "Qwen2-57B-A14B"
+      ]
+    },
+    {
+      "id": "qwen2.5",
+      "kind": "family",
+      "family": "Qwen 2.5",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 28,
+        "n_heads": 28,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 152064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 18944
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8",
+          "w8a8"
+        ],
+        "extras": [
+          "qkv-bias",
+          "yarn-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "GQA + QKV bias; high-theta RoPE + YaRN long-context (128K+).",
+      "examples": [
+        "Qwen2.5-7B",
+        "Qwen2.5-72B",
+        "Qwen2.5-Coder"
+      ]
+    },
+    {
+      "id": "qwen2.5-7b",
+      "kind": "model",
+      "family": "Qwen 2.5",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 28,
+        "n_heads": 28,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 152064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 18944
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8",
+          "w8a8"
+        ],
+        "extras": [
+          "qkv-bias",
+          "yarn-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen2.5 7B: GQA(4 kv) + QKV bias + YaRN.",
+      "examples": [
+        "Qwen2.5-7B"
+      ]
+    },
+    {
+      "id": "qwen2.5-72b",
+      "kind": "model",
+      "family": "Qwen 2.5",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 80,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 152064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 29568
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8",
+          "w8a8"
+        ],
+        "extras": [
+          "qkv-bias",
+          "yarn-128k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen2.5 72B: GQA(8 kv) + QKV bias + YaRN.",
+      "examples": [
+        "Qwen2.5-72B"
+      ]
+    },
+    {
+      "id": "qwen3",
+      "kind": "family",
+      "family": "Qwen 3 / 3-Next",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 36,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 12288
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "yarn",
+          "dca"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Adds QK-norm; RoPE theta=1e6, YaRN/DCA. 3-Next uses hybrid linear/full attention.",
+      "examples": [
+        "Qwen3-8B",
+        "Qwen3-235B-A22B",
+        "Qwen3-Next-80B-A3B"
+      ]
+    },
+    {
+      "id": "qwen3-8b",
+      "kind": "model",
+      "family": "Qwen 3 / 3-Next",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 36,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 12288
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "yarn"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen3 8B dense: GQA(8 kv) + QK-norm.",
+      "examples": [
+        "Qwen3-8B"
+      ]
+    },
+    {
+      "id": "qwen3-235b-a22b",
+      "kind": "model",
+      "family": "Qwen 3 / 3-Next",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 94,
+        "n_heads": 64,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 1536,
+          "n_experts": 128,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "ultra-sparse-moe"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen3 235B-A22B: 128 experts top-8, no shared; QK-norm; ultra-sparse MoE.",
+      "examples": [
+        "Qwen3-235B-A22B"
+      ]
+    },
+    {
+      "id": "qwen3-30b-a3b",
+      "kind": "model",
+      "family": "Qwen 3 / 3-Next",
+      "arch": {
+        "hidden": 2048,
+        "n_layers": 48,
+        "n_heads": 32,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 768,
+          "n_experts": 128,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "ultra-sparse-moe"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Qwen3 30B-A3B: 128 experts top-8; QK-norm.",
+      "examples": [
+        "Qwen3-30B-A3B"
+      ]
+    },
+    {
+      "id": "mistral-7b",
+      "kind": "family",
+      "family": "Mistral 7B / NeMo",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 32000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "sliding-window-4096"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "GQA + sliding-window attention (4096); RoPE theta=1e6.",
+      "examples": [
+        "Mistral-7B",
+        "Mistral-NeMo-12B"
+      ]
+    },
+    {
+      "id": "mistral-nemo-12b",
+      "kind": "model",
+      "family": "Mistral 7B / NeMo",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 40,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 131072,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Mistral-NeMo 12B: GQA(8 kv), 128k vocab.",
+      "examples": [
+        "Mistral-NeMo-12B"
+      ]
+    },
+    {
+      "id": "mixtral-8x7b",
+      "kind": "family",
+      "family": "Mixtral 8x7B / 8x22B",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 32000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 14336,
+          "n_experts": 8,
+          "top_k": 2,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "sliding-window"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Sparse MoE top-2 of 8, SwiGLU experts; GQA (+SWA on 8x7B).",
+      "examples": [
+        "Mixtral-8x7B",
+        "Mixtral-8x22B"
+      ]
+    },
+    {
+      "id": "mixtral-8x22b",
+      "kind": "model",
+      "family": "Mixtral 8x7B / 8x22B",
+      "arch": {
+        "hidden": 6144,
+        "n_layers": 56,
+        "n_heads": 48,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 32768,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 16384,
+          "n_experts": 8,
+          "top_k": 2,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Mixtral 8x22B: 8 experts top-2.",
+      "examples": [
+        "Mixtral-8x22B"
+      ]
+    },
+    {
+      "id": "deepseek-v2",
+      "kind": "family",
+      "family": "DeepSeek V2",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 60,
+        "n_heads": 128,
+        "n_kv_heads": 128,
+        "head_dim": 128,
+        "vocab": 102400,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 1536,
+          "n_experts": 160,
+          "top_k": 6,
+          "n_shared": 2,
+          "gating": "softmax",
+          "n_group": 8,
+          "topk_group": 3
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "mla",
+          "kv-lora-rank-512",
+          "rope-dim-64",
+          "decoupled-rope-key",
+          "deepseek-moe",
+          "shared-experts"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Introduced MLA (low-rank KV compression + decoupled RoPE key) and shared-expert DeepSeekMoE; YaRN.",
+      "examples": [
+        "DeepSeek-V2",
+        "DeepSeek-V2-Lite"
+      ]
+    },
+    {
+      "id": "deepseek-v3",
+      "kind": "family",
+      "family": "DeepSeek V3 / R1",
+      "arch": {
+        "hidden": 7168,
+        "n_layers": 61,
+        "n_heads": 128,
+        "n_kv_heads": 128,
+        "head_dim": 128,
+        "vocab": 129280,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 256,
+          "top_k": 8,
+          "n_shared": 1,
+          "gating": "sigmoid_group",
+          "n_group": 8,
+          "topk_group": 4
+        },
+        "quant": [
+          "fp8",
+          "bf16",
+          "w4a16"
+        ],
+        "extras": [
+          "mla",
+          "kv-lora-rank-512",
+          "rope-dim-64",
+          "matrix-absorption-decode",
+          "deepseek-moe",
+          "aux-loss-free-sigmoid-gating",
+          "mtp",
+          "native-fp8-block-scaled"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_sigmoid_group_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "671B total / 37B active; native FP8 (block-scaled, DeepGEMM); MLA decode w/ matrix absorption; 256 routed + 1 shared top-8 with group-limited aux-loss-free sigmoid gating; MTP.",
+      "examples": [
+        "DeepSeek-V3",
+        "DeepSeek-R1"
+      ]
+    },
+    {
+      "id": "deepseek-r1",
+      "kind": "model",
+      "family": "DeepSeek V3 / R1",
+      "arch": {
+        "hidden": 7168,
+        "n_layers": 61,
+        "n_heads": 128,
+        "n_kv_heads": 128,
+        "head_dim": 128,
+        "vocab": 129280,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 256,
+          "top_k": 8,
+          "n_shared": 1,
+          "gating": "sigmoid_group",
+          "n_group": 8,
+          "topk_group": 4
+        },
+        "quant": [
+          "fp8",
+          "bf16",
+          "w4a16"
+        ],
+        "extras": [
+          "mla",
+          "kv-lora-rank-512",
+          "rope-dim-64",
+          "matrix-absorption-decode",
+          "deepseek-moe",
+          "aux-loss-free-sigmoid-gating",
+          "mtp",
+          "native-fp8-block-scaled"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_sigmoid_group_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "R1: same arch as V3 (reasoning RL fine-tune); native FP8 block-scaled.",
+      "examples": [
+        "DeepSeek-R1"
+      ]
+    },
+    {
+      "id": "gemma2",
+      "kind": "family",
+      "family": "Gemma 2",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 42,
+        "n_heads": 16,
+        "n_kv_heads": 8,
+        "head_dim": 256,
+        "vocab": 256000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm_prepost",
+        "norm_positions": "pre+post",
+        "mlp": {
+          "type": "GeGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "pre-post-norm",
+          "local-global-swa",
+          "logit-soft-cap",
+          "head-dim-256"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_geglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Pre+post RMSNorm; local/global interleaved SWA; attention/final logit soft-capping; GeGLU(gelu-tanh).",
+      "examples": [
+        "Gemma-2-9B",
+        "Gemma-2-27B"
+      ]
+    },
+    {
+      "id": "gemma2-9b",
+      "kind": "model",
+      "family": "Gemma 2",
+      "arch": {
+        "hidden": 3584,
+        "n_layers": 42,
+        "n_heads": 16,
+        "n_kv_heads": 8,
+        "head_dim": 256,
+        "vocab": 256000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm_prepost",
+        "norm_positions": "pre+post",
+        "mlp": {
+          "type": "GeGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "pre-post-norm",
+          "local-global-swa",
+          "logit-soft-cap",
+          "head-dim-256"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_geglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Gemma-2 9B: GQA(8 kv), head_dim 256, GeGLU, pre+post norm.",
+      "examples": [
+        "Gemma-2-9B"
+      ]
+    },
+    {
+      "id": "gemma2-27b",
+      "kind": "model",
+      "family": "Gemma 2",
+      "arch": {
+        "hidden": 4608,
+        "n_layers": 46,
+        "n_heads": 32,
+        "n_kv_heads": 16,
+        "head_dim": 128,
+        "vocab": 256000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm_prepost",
+        "norm_positions": "pre+post",
+        "mlp": {
+          "type": "GeGLU",
+          "inter": 36864
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "pre-post-norm",
+          "local-global-swa",
+          "logit-soft-cap"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_geglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Gemma-2 27B: GQA(16 kv), GeGLU, pre+post norm.",
+      "examples": [
+        "Gemma-2-27B"
+      ]
+    },
+    {
+      "id": "gemma3",
+      "kind": "family",
+      "family": "Gemma 3",
+      "arch": {
+        "hidden": 3840,
+        "n_layers": 48,
+        "n_heads": 16,
+        "n_kv_heads": 8,
+        "head_dim": 256,
+        "vocab": 262144,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm_prepost",
+        "norm_positions": "pre+post",
+        "mlp": {
+          "type": "GeGLU",
+          "inter": 15360
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "pre-post-norm",
+          "qk-norm",
+          "swa-5local-1global-w1024",
+          "multimodal",
+          "global-theta-1e6",
+          "head-dim-256"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_geglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "QK-norm replaces Gemma-2 soft-cap; 5 local : 1 global SWA (window 1024); GeGLU; 128K ctx.",
+      "examples": [
+        "Gemma-3-4B",
+        "Gemma-3-27B"
+      ]
+    },
+    {
+      "id": "gemma3-27b",
+      "kind": "model",
+      "family": "Gemma 3",
+      "arch": {
+        "hidden": 5376,
+        "n_layers": 62,
+        "n_heads": 32,
+        "n_kv_heads": 16,
+        "head_dim": 128,
+        "vocab": 262144,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm_prepost",
+        "norm_positions": "pre+post",
+        "mlp": {
+          "type": "GeGLU",
+          "inter": 21504
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16",
+          "w8a8"
+        ],
+        "extras": [
+          "pre-post-norm",
+          "qk-norm",
+          "swa-5local-1global-w1024",
+          "multimodal"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_geglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Gemma-3 27B: GQA(16 kv), QK-norm, GeGLU.",
+      "examples": [
+        "Gemma-3-27B"
+      ]
+    },
+    {
+      "id": "phi-3",
+      "kind": "family",
+      "family": "Phi-3",
+      "arch": {
+        "hidden": 3072,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 96,
+        "vocab": 32064,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "longrope",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 8192
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "longrope-su-scaling-128k",
+          "head-dim-96"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "LongRoPE (SU-scaling) for 128K; Phi-3.5 adds a MoE variant.",
+      "examples": [
+        "Phi-3-mini",
+        "Phi-3-medium",
+        "Phi-3.5-MoE"
+      ]
+    },
+    {
+      "id": "phi-3.5-moe",
+      "kind": "model",
+      "family": "Phi-3",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 32064,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "longrope",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 6400,
+          "n_experts": 16,
+          "top_k": 2,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "longrope"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Phi-3.5-MoE: 16 experts top-2; LongRoPE.",
+      "examples": [
+        "Phi-3.5-MoE"
+      ]
+    },
+    {
+      "id": "phi-4",
+      "kind": "family",
+      "family": "Phi-4",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 40,
+        "n_heads": 40,
+        "n_kv_heads": 10,
+        "head_dim": 128,
+        "vocab": 100352,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 250000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 17920
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": []
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama-style dense recipe (GQA, RMSNorm, SwiGLU) with curated/synthetic-data training.",
+      "examples": [
+        "Phi-4",
+        "Phi-4-mini"
+      ]
+    },
+    {
+      "id": "gpt-oss",
+      "kind": "family",
+      "family": "GPT-OSS (20B/120B)",
+      "arch": {
+        "hidden": 2880,
+        "n_layers": 24,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 64,
+        "vocab": 201088,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 150000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2880,
+          "n_experts": 32,
+          "top_k": 4,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "mxfp4",
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "attention-sinks",
+          "alternating-full-swa128",
+          "native-mxfp4-experts",
+          "head-dim-64"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "OpenAI open-weight; GQA(group 8) + learned per-head attention sinks; alternating full / 128-tok SWA; MoE (32 experts/20B, 128/120B; top-4; no shared); native MXFP4 experts.",
+      "examples": [
+        "gpt-oss-20b",
+        "gpt-oss-120b"
+      ]
+    },
+    {
+      "id": "gpt-oss-20b",
+      "kind": "model",
+      "family": "GPT-OSS (20B/120B)",
+      "arch": {
+        "hidden": 2880,
+        "n_layers": 24,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 64,
+        "vocab": 201088,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 150000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2880,
+          "n_experts": 32,
+          "top_k": 4,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "mxfp4",
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "attention-sinks",
+          "alternating-full-swa128",
+          "native-mxfp4-experts"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "gpt-oss-20b: 32 experts top-4, attention sinks, native MXFP4.",
+      "examples": [
+        "gpt-oss-20b"
+      ]
+    },
+    {
+      "id": "gpt-oss-120b",
+      "kind": "model",
+      "family": "GPT-OSS (20B/120B)",
+      "arch": {
+        "hidden": 2880,
+        "n_layers": 36,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 64,
+        "vocab": 201088,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 150000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2880,
+          "n_experts": 128,
+          "top_k": 4,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "mxfp4",
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "attention-sinks",
+          "alternating-full-swa128",
+          "native-mxfp4-experts"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "gpt-oss-120b: 128 experts top-4, attention sinks, native MXFP4.",
+      "examples": [
+        "gpt-oss-120b"
+      ]
+    },
+    {
+      "id": "yi",
+      "kind": "family",
+      "family": "Yi",
+      "arch": {
+        "hidden": 7168,
+        "n_layers": 60,
+        "n_heads": 56,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 64000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 20480
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "long-context-200k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Llama architecture clone with extended-context (200K) variants; RoPE high-theta.",
+      "examples": [
+        "Yi-6B",
+        "Yi-34B",
+        "Yi-1.5"
+      ]
+    },
+    {
+      "id": "yi-34b",
+      "kind": "model",
+      "family": "Yi",
+      "arch": {
+        "hidden": 7168,
+        "n_layers": 60,
+        "n_heads": 56,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 64000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 20480
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8"
+        ],
+        "extras": [
+          "long-context-200k"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Yi-34B: GQA(8 kv), Llama-like.",
+      "examples": [
+        "Yi-34B"
+      ]
+    },
+    {
+      "id": "baichuan2",
+      "kind": "family",
+      "family": "Baichuan 2",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 125696,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 11008
+        },
+        "quant": [
+          "w4a16",
+          "bf16"
+        ],
+        "extras": [
+          "7b-rope-13b-alibi"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MHA; 7B uses RoPE, 13B uses ALiBi (no rotary).",
+      "examples": [
+        "Baichuan2-7B",
+        "Baichuan2-13B"
+      ]
+    },
+    {
+      "id": "baichuan2-13b",
+      "kind": "model",
+      "family": "Baichuan 2",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 40,
+        "n_heads": 40,
+        "n_kv_heads": 40,
+        "head_dim": 128,
+        "vocab": 125696,
+        "attention": "MHA",
+        "rope": {
+          "style": "alibi",
+          "theta": 0,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 13696
+        },
+        "quant": [
+          "w4a16",
+          "bf16"
+        ],
+        "extras": [
+          "alibi"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": null,
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Baichuan2-13B: ALiBi positional bias instead of rotary.",
+      "examples": [
+        "Baichuan2-13B"
+      ]
+    },
+    {
+      "id": "glm-4",
+      "kind": "family",
+      "family": "ChatGLM / GLM-4 / GLM-4.5",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 40,
+        "n_heads": 32,
+        "n_kv_heads": 2,
+        "head_dim": 128,
+        "vocab": 151552,
+        "attention": "GQA",
+        "rope": {
+          "style": "gptj",
+          "theta": 10000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "post",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 13696
+        },
+        "quant": [
+          "w4a16",
+          "bf16",
+          "fp8"
+        ],
+        "extras": [
+          "partial-2d-rope",
+          "qkv-bias",
+          "post-norm"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MQA/GQA; rotary on half-dim (2D/partial RoPE, GPT-J interleaved); QKV bias; GLM-4.5+ are MoE.",
+      "examples": [
+        "ChatGLM3-6B",
+        "GLM-4-9B",
+        "GLM-4.5",
+        "GLM-4.6"
+      ]
+    },
+    {
+      "id": "glm-4-9b",
+      "kind": "model",
+      "family": "ChatGLM / GLM-4 / GLM-4.5",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 40,
+        "n_heads": 32,
+        "n_kv_heads": 2,
+        "head_dim": 128,
+        "vocab": 151552,
+        "attention": "GQA",
+        "rope": {
+          "style": "gptj",
+          "theta": 10000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "post",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 13696
+        },
+        "quant": [
+          "w4a16",
+          "bf16",
+          "fp8"
+        ],
+        "extras": [
+          "partial-2d-rope",
+          "qkv-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "GLM-4-9B: GQA(2 kv), partial RoPE (GPT-J interleaved), QKV bias.",
+      "examples": [
+        "GLM-4-9B"
+      ]
+    },
+    {
+      "id": "glm-4.5",
+      "kind": "model",
+      "family": "ChatGLM / GLM-4 / GLM-4.5",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 92,
+        "n_heads": 96,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 151552,
+        "attention": "GQA",
+        "rope": {
+          "style": "gptj",
+          "theta": 10000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "post",
+        "mlp": {
+          "type": "MoE",
+          "inter": 1536,
+          "n_experts": 160,
+          "top_k": 8,
+          "n_shared": 1,
+          "gating": "sigmoid_group",
+          "n_group": 1,
+          "topk_group": 1
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "partial-2d-rope",
+          "moe",
+          "qk-norm"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_sigmoid_group_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "GLM-4.5: MoE (160 experts top-8 + 1 shared), sigmoid gating; partial RoPE.",
+      "examples": [
+        "GLM-4.5",
+        "GLM-4.6"
+      ]
+    },
+    {
+      "id": "falcon",
+      "kind": "family",
+      "family": "Falcon",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 60,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 65024,
+        "attention": "MQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre-parallel",
+        "mlp": {
+          "type": "GeLU",
+          "inter": 32768
+        },
+        "quant": [
+          "w4a16",
+          "int8"
+        ],
+        "extras": [
+          "parallel-attn-mlp",
+          "multi-query"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_gelu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MQA (40B/180B) / MHA (7B); parallel attention+MLP block; LayerNorm; dense GeLU MLP.",
+      "examples": [
+        "Falcon-7B",
+        "Falcon-40B",
+        "Falcon-180B"
+      ]
+    },
+    {
+      "id": "falcon-40b",
+      "kind": "model",
+      "family": "Falcon",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 60,
+        "n_heads": 128,
+        "n_kv_heads": 8,
+        "head_dim": 64,
+        "vocab": 65024,
+        "attention": "MQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre-parallel",
+        "mlp": {
+          "type": "GeLU",
+          "inter": 32768
+        },
+        "quant": [
+          "w4a16",
+          "int8"
+        ],
+        "extras": [
+          "parallel-attn-mlp",
+          "multi-query",
+          "head-dim-64"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_gelu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Falcon-40B: MQA (8 kv-group), parallel attn+MLP, LayerNorm.",
+      "examples": [
+        "Falcon-40B"
+      ]
+    },
+    {
+      "id": "command-r",
+      "kind": "family",
+      "family": "Command-R / R+",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 40,
+        "n_heads": 64,
+        "n_kv_heads": 64,
+        "head_dim": 128,
+        "vocab": 256000,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 22528
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8",
+          "int8"
+        ],
+        "extras": [
+          "tied-embeddings",
+          "no-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Cohere RAG/tool-use; GQA/MHA, RoPE, LayerNorm, tied embeddings, no bias.",
+      "examples": [
+        "Command-R-35B",
+        "Command-R-Plus-104B"
+      ]
+    },
+    {
+      "id": "command-r-plus",
+      "kind": "model",
+      "family": "Command-R / R+",
+      "arch": {
+        "hidden": 12288,
+        "n_layers": 64,
+        "n_heads": 96,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 256000,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 33792
+        },
+        "quant": [
+          "bf16",
+          "w4a16",
+          "fp8",
+          "int8"
+        ],
+        "extras": [
+          "tied-embeddings",
+          "no-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Command-R+ 104B: GQA(8 kv), LayerNorm, tied embeddings.",
+      "examples": [
+        "Command-R-Plus-104B"
+      ]
+    },
+    {
+      "id": "stablelm",
+      "kind": "family",
+      "family": "StableLM",
+      "arch": {
+        "hidden": 2560,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 80,
+        "vocab": 100352,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 6912
+        },
+        "quant": [
+          "w4a16",
+          "bf16"
+        ],
+        "extras": [
+          "partial-rotary",
+          "optional-qk-layernorm",
+          "head-dim-80"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Partial-rotary RoPE (rotary_pct); LayerNorm or RMSNorm by variant; optional QK-LayerNorm.",
+      "examples": [
+        "StableLM-2-1.6B",
+        "StableLM-2-12B"
+      ]
+    },
+    {
+      "id": "mpt",
+      "kind": "family",
+      "family": "MPT",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 50432,
+        "attention": "MHA",
+        "rope": {
+          "style": "alibi",
+          "theta": 0,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "GeLU",
+          "inter": 16384
+        },
+        "quant": [
+          "w4a16",
+          "int8"
+        ],
+        "extras": [
+          "alibi",
+          "no-bias"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": null,
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_gelu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "ALiBi positional bias instead of rotary; LayerNorm (no bias); dense GeLU.",
+      "examples": [
+        "MPT-7B",
+        "MPT-30B"
+      ]
+    },
+    {
+      "id": "gpt-neox",
+      "kind": "family",
+      "family": "GPT-NeoX",
+      "arch": {
+        "hidden": 6144,
+        "n_layers": 44,
+        "n_heads": 64,
+        "n_kv_heads": 64,
+        "head_dim": 96,
+        "vocab": 50432,
+        "attention": "MHA",
+        "rope": {
+          "style": "gptj",
+          "theta": 10000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "layernorm",
+        "norm_positions": "pre-parallel",
+        "mlp": {
+          "type": "GeLU",
+          "inter": 24576
+        },
+        "quant": [
+          "w4a16",
+          "int8"
+        ],
+        "extras": [
+          "partial-rope",
+          "parallel-attn-mlp",
+          "head-dim-96"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_layer_norm",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_gelu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Partial/GPT-J RoPE (interleaved) + parallel residual; LayerNorm; ancestor of many open recipes.",
+      "examples": [
+        "GPT-NeoX-20B",
+        "Pythia"
+      ]
+    },
+    {
+      "id": "olmo-2",
+      "kind": "family",
+      "family": "OLMo / OLMo-2",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 100352,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "post",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 11008
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "reordered-post-norm"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Fully-open AllenAI; OLMo-2 uses RMSNorm + QK-norm + post-norm (reordered) for stability. OLMo-1 used non-parametric LayerNorm.",
+      "examples": [
+        "OLMo-7B",
+        "OLMo-2-13B"
+      ]
+    },
+    {
+      "id": "olmo-2-13b",
+      "kind": "model",
+      "family": "OLMo / OLMo-2",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 40,
+        "n_heads": 40,
+        "n_kv_heads": 40,
+        "head_dim": 128,
+        "vocab": 100352,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 500000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "post",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 13824
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "qk-norm",
+          "reordered-post-norm"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "OLMo-2 13B: MHA, RMSNorm, QK-norm, post-norm.",
+      "examples": [
+        "OLMo-2-13B"
+      ]
+    }
+  ]
+}

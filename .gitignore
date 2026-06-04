@@ -1,0 +1,50 @@
+# Build artifacts
+build/
+dist/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exp
+*.pdb
+*.ptx
+*.cubin
+*.fatbin
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.venv/
+venv/
+*.whl
+
+# Rust
+bindings/rust/target/
+**/Cargo.lock
+
+# Go
+bindings/go/**/*.test
+
+# Node / TS
+node_modules/
+bindings/ts/build/
+bindings/ts/dist/
+*.node
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp

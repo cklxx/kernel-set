@@ -1,0 +1,35 @@
+[package]
+name = "kernel-set"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "Apache-2.0"
+description = "Rust bindings (raw FFI + safe wrappers) for the kernel-set LLM inference & training kernel library."
+documentation = "https://docs.rs/kernel-set"
+repository = "https://github.com/kernel-set/kernel-set"
+readme = "README.md"
+keywords = ["cuda", "llm", "kernels", "ffi", "gpu"]
+categories = ["api-bindings", "external-ffi-bindings", "science"]
+
+# The crate links the system shared library `kernel_set` (libkernel_set.so /
+# libkernel_set.dylib / kernel_set.dll). `links` lets Cargo dedupe the native
+# dependency and lets downstream crates override the build via DEP_KERNEL_SET_*.
+links = "kernel_set"
+
+[dependencies]
+libc = "0.2"
+
+[features]
+default = []
+# Opt-in interop helpers. These are documentation/feature-gate hooks only — the
+# core crate never pulls in a GPU stack of its own. See README "Interop".
+# Enable in your own crate and convert pointers via the From/helper patterns
+# described in the README; we deliberately avoid a hard dependency so the base
+# crate stays buildable without a CUDA toolchain.
+cust = []
+tch = []
+
+[package.metadata.docs.rs]
+# docs.rs has no libkernel_set to link against; skip the linker via the
+# `docsrs` cfg honored in build.rs.
+rustdoc-args = ["--cfg", "docsrs"]
