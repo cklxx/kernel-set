@@ -176,9 +176,13 @@ constexpr int kBsLd = kWmmaBN + kSmemPad;   // B staging row stride (along N)
 // the direct-from-global load_matrix_sync version returned incorrect results on
 // L4; this rewrite stages A/B into shared memory with constant padded leading
 // dimensions (see the bug note above), which is the canonical correct form.
-// Set -DKS_ENABLE_WMMA_GEMM=0 to force every GEMM back through the SIMT path.
+// DISABLED by default: on-GPU verification (L4 sm89) showed even this staged-smem
+// rewrite still returns rel_err=inf vs cuBLAS, so the WMMA path is NOT trusted yet.
+// GEMM routes through the verified-correct SIMT path (rel_err ~3e-4). Production
+// should bind cuBLASLt/CUTLASS. Set -DKS_ENABLE_WMMA_GEMM=1 only after fixing +
+// re-verifying the tensor-core path on a GPU.
 #ifndef KS_ENABLE_WMMA_GEMM
-#define KS_ENABLE_WMMA_GEMM 1
+#define KS_ENABLE_WMMA_GEMM 0
 #endif
 
 template <typename scalar_t>
