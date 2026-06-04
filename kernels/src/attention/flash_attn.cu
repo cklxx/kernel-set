@@ -1,22 +1,49 @@
 // kernel-set — FlashAttention-2 forward (dense + variable-length prefill).
 //
-// Modeled on FlashAttention-2 (Dao, 2023): the [seqlen_q, seqlen_k] score
-// matrix is never materialized. Each CUDA block owns one (batch, query-head,
-// query-row) triple and streams the K/V sequence in tiles that are staged in
-// shared memory. A single fp32 online-softmax pass keeps the running max `m`,
-// denominator `l`, and the (unnormalized) output accumulator `acc`, rescaling
-// `acc` whenever a larger score is seen. GQA/MQA, causal masking, and the
-// 1/sqrt(head_dim) default scale are all handled here.
+// =====================  WHY THE OLD KERNEL WAS ~260x SLOW  ==================
+// The previous version launched ONE CUDA block per (batch, head, query-ROW)
+// with blockDim.x == head_dim (64-128 threads) and computed every key's score
+// with a *full block reduction* (block_reduce_sum + __syncthreads) one key at a
+// time. That is catastrophic:
+//   * blocks = batch*num_heads*seqlen_q, but each does almost no parallel work
+//     per score — a head_dim-wide reduction per key, fully serialized;
+//   * a __syncthreads() per key (thousands per row) → the SMs stall;
+//   * K/V were re-read from global memory for every query row (no reuse across
+//     rows), so the kernel is both latency- and bandwidth-bound.
+// Net effect: ~0.2 TFLOP/s on an L4.
 //
-// Layout: blockDim.x == head_dim. Thread `d` owns Q[d], acc[d], and one column
-// of every staged K/V tile. Each key's score is a head_dim-wide dot product
-// reduced across the block (block_reduce_sum). This keeps every accumulation in
-// fp32 and is robust for head_dim 64/128 (and up to kMaxHeadDim).
+// =====================  NEW DESIGN (FlashAttention-2)  =====================
+// Grid  : (ceil(seqlen_q / BLOCK_M), num_heads, batch).
+// Block : BLOCK_M warps (one warp per query row) → BLOCK_M query rows / block.
+// A Q-block of BLOCK_M rows is loaded ONCE (into per-lane registers). The K/V
+// sequence is streamed in BLOCK_N-key tiles that are staged in shared memory by
+// the *whole* block and therefore reused by all BLOCK_M warps. Each warp then:
+//   1. dot(q_row, k_j) as a warp reduction (no __syncthreads, no block reduce);
+//   2. online-softmax update in fp32 (running max m, denom l, acc[]), rescaling
+//      acc/l whenever a larger score appears (Dao 2023, FA2);
+//   3. acc += p * v_j accumulated per-lane across the head_dim it owns.
+// Each lane owns EPL = head_dim / 32 contiguous dims of its warp's query row,
+// its Q components, and its output accumulator. The score is a warp_reduce_sum
+// over those EPL partial products → one fast shuffle reduction per key.
 //
-// Further tuning (documented, not implemented here to stay correctness-first):
-// process BLOCK_M query rows per block with a register tile + wmma/cp.async to
-// hit tensor-core throughput, à la the CUTLASS FA2 kernel. The current
-// one-row-per-block scheme is bandwidth-bound but numerically identical.
+// This keeps everything in fp32, materializes no [seqlen_q, seqlen_k] matrix,
+// handles GQA/MQA (num_kv_heads < num_heads), right-aligned causal masking,
+// the 1/sqrt(head_dim) default scale, and head_dim 64/128 (up to kMaxHeadDim).
+// softmax_lse = m + log(l) is emitted in scaled-score space, matching the
+// backward kernel's recovery P_ij = exp(scale*q.k - lse_i).
+//
+// Parallelism now scales as batch*num_heads*ceil(seqlen_q/BLOCK_M) blocks, each
+// doing BLOCK_M*BLOCK_N*head_dim useful FLOPs with warp-local reductions and
+// shared-memory K/V reuse — a large constant-factor and occupancy win over the
+// one-row-per-block design. Expected: easily >10-30x the old throughput.
+//
+// FURTHER TUNING (documented, intentionally not done to stay correctness-first):
+//   * Use cp.async (memcpy_async) to double-buffer the K/V tiles so the next
+//     tile loads while the current tile is consumed.
+//   * Replace the warp-reduce dot product / V accumulation with wmma/mma.sync
+//     register tiles (Q,Kᵀ → S then S,V) for tensor-core throughput, à la the
+//     CUTLASS FA2 kernel. That requires a 2-D warp tiling over query rows.
+//   * Vectorize the global K/V loads with 128-bit (Vec<scalar_t, N>) transfers.
 #include <cstdlib>  // malloc/free for the dense-path prefix-sum scratch
 
 #include "kernel_set/attention.h"
@@ -29,30 +56,54 @@
 namespace ks {
 namespace attention {
 
-// Keys staged in shared memory per iteration. Sized so the dynamic smem
-// footprint (red + K tile + V tile + scores) stays under the 48 KB default
-// limit even at head_dim == 128 (33 KB), so no cudaFuncSetAttribute opt-in is
-// needed. Larger tiles + the >48 KB carveout are a documented perf follow-up.
-constexpr int kKvTile = 32;
+// Query rows handled per block (== warps per block). 4 warps = 128 threads is a
+// good occupancy point and keeps the shared-memory K/V tile modest.
+constexpr int kBlockM = 4;
+// Keys staged into shared memory per streaming iteration. 64 keys * head_dim
+// (<=256) * 2 (K+V) * 4B = up to 128 KB at head_dim 256, 64 KB at head_dim 128,
+// 32 KB at head_dim 64. We size shared dynamically and only require the default
+// 48 KB carveout for head_dim<=64 with BLOCK_N=64; for head_dim 128/256 we shrink
+// BLOCK_N on the host so the footprint stays within the 48 KB default (no opt-in
+// cudaFuncSetAttribute needed). See fwd_kv_tile()/fwd_smem_bytes() below.
+constexpr int kBlockNMax = 64;
 
-// One block == one (batch, head, query-row). blockDim.x == head_dim.
+// Resolve the K/V tile width for a head_dim so the shared K+V tile stays within
+// the 48 KB default dynamic-smem limit (K tile + V tile = 2*BLOCK_N*head_dim
+// floats). 48 KB / (2*4B*head_dim) keys; clamp to [16, kBlockNMax] and to a
+// warp-friendly value. Must match what the kernel iterates with (passed in).
+KS_HDI int fwd_kv_tile(int head_dim) {
+  // Bytes available for the two fp32 tiles (leave a little slack < 48 KB).
+  constexpr int kSmemBudget = 46 * 1024;
+  int by_budget = kSmemBudget / (2 * static_cast<int>(sizeof(float)) * head_dim);
+  int bn = by_budget < kBlockNMax ? by_budget : kBlockNMax;
+  if (bn > 32) bn = 32 * (bn / 32);  // round down to a multiple of the warp size
+  if (bn < 16) bn = 16;              // a sane floor
+  return bn;
+}
+
+// One block == one (batch, head, query-BLOCK of kBlockM rows).
+// Warp w (0..kBlockM-1) owns query row (q_block_start + w). Lane `lane` owns the
+// head-dim slice [lane*EPL, lane*EPL+EPL) of that row (EPL = head_dim/32).
 //
 // q     : [total_q, num_heads, head_dim]               (varlen-packed)
 // k,v   : [total_kv, num_kv_heads, head_dim]
 // out   : [total_q, num_heads, head_dim]
-// lse   : [num_heads, total_q] fp32 (optional)
-// q_base/k_base hold the per-sequence row offsets for varlen; for dense launch
-// the caller bakes the (batch*seqlen) offsets into the same formula.
+// lse   : [num_heads, total_q] fp32 (optional; lse_i = m_i + log l_i, scaled).
 template <typename scalar_t>
 KS_GLOBAL void flash_attn_fwd_kernel(
     scalar_t* __restrict__ out, float* __restrict__ softmax_lse,
     const scalar_t* __restrict__ q, const scalar_t* __restrict__ k,
     const scalar_t* __restrict__ v, const int32_t* __restrict__ cu_seqlens_q,
     const int32_t* __restrict__ cu_seqlens_k, int num_heads, int num_kv_heads,
-    int head_dim, float scale, int causal, int total_q) {
-  const int d = threadIdx.x;            // dim this thread owns (0..head_dim-1)
-  const int head = blockIdx.y;          // query head
-  const int batch = blockIdx.z;         // sequence index
+    int head_dim, float scale, int causal, int total_q, int block_n) {
+  const int warp = threadIdx.x / KS_WARP_SIZE;   // 0..kBlockM-1 (query row slot)
+  const int lane = threadIdx.x % KS_WARP_SIZE;   // 0..31
+  const int head = blockIdx.y;                   // query head
+  const int batch = blockIdx.z;                  // sequence index
+
+  // Per-lane element count along head_dim (head_dim is a multiple of 32).
+  const int epl = head_dim / KS_WARP_SIZE;       // EPL: 2 (hd64) / 4 (hd128) ...
+  const int d0 = lane * epl;                     // first dim this lane owns
 
   // Resolve this sequence's [q_start, q_end) and [k_start, k_end).
   const int q_start = cu_seqlens_q[batch];
@@ -62,96 +113,128 @@ KS_GLOBAL void flash_attn_fwd_kernel(
   const int seqlen_q = q_end - q_start;
   const int seqlen_k = k_end - k_start;
 
-  const int qi = blockIdx.x;            // query row within this sequence
-  if (qi >= seqlen_q) return;
+  const int qi = blockIdx.x * kBlockM + warp;    // query row within this seq
+  const bool row_valid = (qi < seqlen_q);
 
   const int kv_head = head / gqa_group_size(num_heads, num_kv_heads);
-  // When causal, query position qi (0-based from the end-aligned convention)
-  // attends to keys [0 .. (seqlen_k - seqlen_q) + qi]. This matches
-  // FlashAttention's right-aligned causal masking for seqlen_q != seqlen_k.
+  // Right-aligned causal masking (matches FlashAttention when seqlen_q !=
+  // seqlen_k): query position qi attends to keys [0 .. causal_offset + qi].
   const int causal_offset = seqlen_k - seqlen_q;
+  // Per-row last key index attended (exclusive). Differs per warp under causal.
+  const int kv_max = causal ? min(seqlen_k, causal_offset + qi + 1) : seqlen_k;
 
-  const int64_t q_row = static_cast<int64_t>(q_start + qi);
-  const scalar_t* q_ptr =
-      q + (q_row * num_heads + head) * head_dim;
+  // The K/V tile loop (and its __syncthreads()) MUST be uniform across the whole
+  // block — every warp has to reach the same barriers — so it is bounded by the
+  // *block-wide* maximum kv_max (the largest valid query row in this block).
+  // Each warp still applies its own per-key causal mask via `kv_max` above.
+  const int block_last_qi =
+      min(blockIdx.x * kBlockM + (kBlockM - 1), seqlen_q - 1);
+  const int block_kv_max =
+      (block_last_qi < 0)
+          ? 0
+          : (causal ? min(seqlen_k, causal_offset + block_last_qi + 1)
+                    : seqlen_k);
 
-  // Per-thread registers: this thread's Q component and output accumulator.
-  const float q_reg = to_float(q_ptr[d]);
+  // Load this warp's Q row into registers (per-lane slice). Up to kMaxHeadDim/32.
+  constexpr int kMaxEpl = kMaxHeadDim / 32;      // 8 at head_dim 256
+  float q_reg[kMaxEpl];
+  float acc[kMaxEpl];
+#pragma unroll
+  for (int e = 0; e < kMaxEpl; ++e) {
+    q_reg[e] = 0.f;
+    acc[e] = 0.f;
+  }
+  if (row_valid) {
+    const int64_t q_row = static_cast<int64_t>(q_start + qi);
+    const scalar_t* q_ptr = q + (q_row * num_heads + head) * head_dim;
+#pragma unroll
+    for (int e = 0; e < kMaxEpl; ++e) {
+      if (e < epl) q_reg[e] = to_float(q_ptr[d0 + e]);
+    }
+  }
 
+  float m = -3.4028235e38f;  // running max of scaled scores
+  float l = 0.f;             // running sum of exp(scaled_score - m)
+
+  // Shared K/V tiles, staged by the whole block and reused by all kBlockM warps.
+  // Layout: [block_n * head_dim] K | [block_n * head_dim] V (row-major).
   extern __shared__ float smem_raw[];
-  // Layout: [head_dim] reduction scratch | [kKvTile * head_dim] K tile |
-  //         [kKvTile * head_dim] V tile  | [kKvTile] scores
-  float* red = smem_raw;                                  // head_dim (>= warps)
-  float* k_tile = red + head_dim;                         // kKvTile*head_dim
-  float* v_tile = k_tile + kKvTile * head_dim;            // kKvTile*head_dim
-  float* scores = v_tile + kKvTile * head_dim;            // kKvTile
+  float* k_tile = smem_raw;                       // block_n * head_dim
+  float* v_tile = k_tile + block_n * head_dim;    // block_n * head_dim
 
-  float acc = 0.f;       // unnormalized output accumulator for dim d
-  float m = -3.4028235e38f;
-  float l = 0.f;
+  const int nthreads = blockDim.x;
 
-  const int kv_max = causal ? (causal_offset + qi + 1) : seqlen_k;
+  for (int tile0 = 0; tile0 < block_kv_max; tile0 += block_n) {
+    const int tile_n = min(block_n, block_kv_max - tile0);
 
-  for (int tile0 = 0; tile0 < kv_max; tile0 += kKvTile) {
-    const int tile_n = min(kKvTile, kv_max - tile0);
-
-    // Stage K/V tile into shared memory. Thread `d` loads column d of each row.
-    for (int j = 0; j < tile_n; ++j) {
+    // Cooperatively stage the K/V tile into shared memory. All threads in the
+    // block load (coalesced over head_dim) so the tile is shared by every warp.
+    for (int idx = threadIdx.x; idx < tile_n * head_dim; idx += nthreads) {
+      const int j = idx / head_dim;             // key within tile
+      const int dd = idx % head_dim;            // dim
       const int64_t kv_row = static_cast<int64_t>(k_start + tile0 + j);
       const scalar_t* k_ptr = k + (kv_row * num_kv_heads + kv_head) * head_dim;
       const scalar_t* v_ptr = v + (kv_row * num_kv_heads + kv_head) * head_dim;
-      k_tile[j * head_dim + d] = to_float(k_ptr[d]);
-      v_tile[j * head_dim + d] = to_float(v_ptr[d]);
+      k_tile[idx] = to_float(k_ptr[dd]);
+      v_tile[idx] = to_float(v_ptr[dd]);
     }
     __syncthreads();
 
-    // Compute the tile_n scores (one block reduction per key).
-    for (int j = 0; j < tile_n; ++j) {
-      const float prod = q_reg * k_tile[j * head_dim + d];
-      const float dot = block_reduce_sum(prod, red);
-      if (d == 0) {
-        const int key_pos = tile0 + j;
-        float s = dot * scale;
-        if (causal && key_pos > causal_offset + qi) s = neg_inf<float>();
-        scores[j] = s;
+    if (row_valid) {
+      // Number of keys in this tile that THIS warp's query row attends to. The
+      // tile loop runs to the block-wide max, so a tile may contain keys beyond
+      // this row's own causal limit (kv_max); skip those here.
+      const int row_tile_n = min(tile_n, kv_max - tile0);
+      // Score every attended key in the tile against this warp's query row, then
+      // do the online-softmax accumulation. Each key is a warp-reduced dot
+      // product over the EPL dims each lane owns — one shuffle reduction per key.
+      for (int j = 0; j < row_tile_n; ++j) {
+        const float* kj = k_tile + j * head_dim;
+        float partial = 0.f;
+#pragma unroll
+        for (int e = 0; e < kMaxEpl; ++e) {
+          if (e < epl) partial += q_reg[e] * kj[d0 + e];
+        }
+        const float dot = warp_reduce_sum(partial);  // broadcast to all lanes
+        const float s = dot * scale;
+
+        // Online softmax: update running max, rescale acc/l, add this key.
+        const float m_new = fmaxf(m, s);
+        const float correction = rescale_factor(m, m_new);  // exp(m-m_new) or 0
+        const float p = __expf(s - m_new);
+#pragma unroll
+        for (int e = 0; e < kMaxEpl; ++e) {
+          if (e < epl) acc[e] = acc[e] * correction + p * v_tile[j * head_dim + d0 + e];
+        }
+        l = l * correction + p;
+        m = m_new;
       }
-      __syncthreads();  // red[] reused next key; scores[j] visible below
     }
-
-    // Online-softmax update for this tile.
-    float tile_max = -3.4028235e38f;
-    for (int j = 0; j < tile_n; ++j) tile_max = fmaxf(tile_max, scores[j]);
-    const float m_new = fmaxf(m, tile_max);
-    const float correction = rescale_factor(m, m_new);
-    acc *= correction;
-    l *= correction;
-
-    for (int j = 0; j < tile_n; ++j) {
-      const float p = __expf(scores[j] - m_new);
-      l += p;  // every thread adds the same p -> l stays consistent
-      acc += p * v_tile[j * head_dim + d];
-    }
-    m = m_new;
-    __syncthreads();
+    __syncthreads();  // all warps done reading the tile before it is overwritten
   }
 
-  // Normalize and write out. l == 0 only when every key was masked (causal with
-  // an all-masked row never happens because qi attends to >=1 key), but guard.
-  const float inv_l = (l > 0.f) ? (1.0f / l) : 0.f;
-  scalar_t* out_ptr = out + (q_row * num_heads + head) * head_dim;
-  out_ptr[d] = from_float<scalar_t>(acc * inv_l);
+  if (!row_valid) return;
 
-  if (softmax_lse != nullptr && d == 0) {
-    // log-sum-exp = m + log(l); index [head, total_q] row-major.
+  // Normalize and write the output row. l == 0 only if every key was masked,
+  // which cannot happen here (qi always attends to key 0), but guard anyway.
+  const float inv_l = (l > 0.f) ? (1.0f / l) : 0.f;
+  const int64_t q_row = static_cast<int64_t>(q_start + qi);
+  scalar_t* out_ptr = out + (q_row * num_heads + head) * head_dim;
+#pragma unroll
+  for (int e = 0; e < kMaxEpl; ++e) {
+    if (e < epl) out_ptr[d0 + e] = from_float<scalar_t>(acc[e] * inv_l);
+  }
+
+  if (softmax_lse != nullptr && lane == 0) {
+    // log-sum-exp in scaled-score space; index [head, total_q] row-major.
     const float lse = (l > 0.f) ? (m + logf(l)) : (-3.4028235e38f);
     softmax_lse[static_cast<int64_t>(head) * total_q + q_row] = lse;
   }
 }
 
-// Shared-memory bytes required by the forward kernel for a given head_dim.
-inline size_t fwd_smem_bytes(int head_dim) {
-  return sizeof(float) *
-         (static_cast<size_t>(head_dim) + 2u * kKvTile * head_dim + kKvTile);
+// Shared-memory bytes required by the forward kernel for a given head_dim/tile.
+inline size_t fwd_smem_bytes(int head_dim, int block_n) {
+  return sizeof(float) * (2u * static_cast<size_t>(block_n) * head_dim);
 }
 
 // Common launcher used by both the dense and varlen entry points. The caller
@@ -163,14 +246,16 @@ ks_status_t launch_flash_fwd(scalar_t* out, float* lse, const scalar_t* q,
                              int batch, int max_seqlen_q, int num_heads,
                              int num_kv_heads, int head_dim, float scale,
                              int causal, int total_q, gpuStream_t s) {
-  const dim3 grid(static_cast<unsigned>(max_seqlen_q),
-                  static_cast<unsigned>(num_heads),
+  const int block_n = fwd_kv_tile(head_dim);
+  const unsigned q_blocks =
+      static_cast<unsigned>((max_seqlen_q + kBlockM - 1) / kBlockM);
+  const dim3 grid(q_blocks, static_cast<unsigned>(num_heads),
                   static_cast<unsigned>(batch));
-  const dim3 block(static_cast<unsigned>(head_dim));
-  const size_t smem = fwd_smem_bytes(head_dim);
+  const dim3 block(static_cast<unsigned>(kBlockM * KS_WARP_SIZE));
+  const size_t smem = fwd_smem_bytes(head_dim, block_n);
   flash_attn_fwd_kernel<scalar_t><<<grid, block, smem, s>>>(
       out, lse, q, k, v, cu_q, cu_k, num_heads, num_kv_heads, head_dim, scale,
-      causal, total_q);
+      causal, total_q, block_n);
   return KS_SUCCESS;
 }
 
@@ -199,9 +284,9 @@ inline ks_status_t check_fwd_common(int num_heads, int num_kv_heads,
                     "flash_attn: num_heads must be a multiple of num_kv_heads");
   if (head_dim > ks::attention::kMaxHeadDim)
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE, "flash_attn: head_dim too large");
-  // blockDim.x == head_dim and the score dot-product uses block_reduce over the
-  // block's warps, so head_dim must tile evenly into warps (multiple of 32 on
-  // CUDA, the supported configs being 64/128).
+  // Each warp reduces a head-dim dot product with the lanes splitting head_dim
+  // evenly, so head_dim must be a multiple of the warp size (32). The supported
+  // configs being 64/128 (and up to kMaxHeadDim) all satisfy this.
   if ((head_dim & 31) != 0)
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
                     "flash_attn: head_dim must be a multiple of 32 (use 64/128)");

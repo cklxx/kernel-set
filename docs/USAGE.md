@@ -297,3 +297,133 @@ already own. The contract is the same in every language:
 | default stream | `NULL` | `0` / `None` | `Stream::DEFAULT` | `ks.DefaultStream` | `0` / `null` |
 | wrap external stream | `(ks_stream_t)handle` | `stream=<int>` | `Stream::from_raw(p)` | `ks.StreamFromUintptr(addr)` | pass int address |
 | status check | return value | raises `KernelSetError` | `Result<_, Error>` | `*kernelset.Error` | throws `KernelSetError` |
+
+---
+
+## 7. Best-backend dispatch (Python)
+
+kernel-set's strategy is **prefer industry-best, don't reinvent**. The
+`kernel_set.dispatch` module makes that automatic: for each logical op it routes
+your call to the **strongest installed industry kernel** — flash-attn,
+FlashInfer, DeepGEMM, Marlin/vLLM, Liger, … — and falls back to kernel-set's own
+portable C-ABI kernel when nothing better is installed (or the op isn't
+supported on your GPU).
+
+It is **import-safe**: it imports cleanly with no torch, no CUDA, and even
+without the prebuilt shared library — the probes just report "unavailable" and
+introspection still works. Heavy provider libraries are imported **lazily**, only
+when an op is actually dispatched.
+
+### Auto-routing calls
+
+The dispatch wrappers mirror the ergonomic kernel-set signatures but pick the
+backend for you and return the output tensor:
+
+```python
+import torch
+import kernel_set as ks
+
+x = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)
+w = torch.ones(4096, device="cuda", dtype=torch.float16)
+
+# Auto-routes to liger / flashinfer / vLLM / … or the kernel-set fallback.
+out = ks.dispatch.rms_norm(x, w, eps=1e-6)
+
+# Same idea for the rest of the wired ops:
+q = torch.randn(1, 2048, 32, 128, device="cuda", dtype=torch.float16)
+k = torch.randn(1, 2048, 8, 128, device="cuda", dtype=torch.float16)
+v = torch.randn(1, 2048, 8, 128, device="cuda", dtype=torch.float16)
+o = ks.dispatch.attention_prefill(q, k, v, causal=True)   # -> flash-attn / SDPA / flashinfer / ks
+
+c   = ks.dispatch.gemm(a, b)                               # -> torch cuBLAS / ks
+y   = ks.dispatch.swiglu(gate, up)                         # -> flashinfer / vLLM / liger / ks
+qr, kr = ks.dispatch.rope(q2, k2, cos, sin)               # -> flashinfer / vLLM / ks
+loss = ks.dispatch.cross_entropy(logits, targets)         # -> liger / torch / ks
+```
+
+Other wired ops: `attention_decode`, `fp8_gemm`, `w4a16`, `fused_add_rmsnorm`,
+`moe`.
+
+### Introspection
+
+```python
+ks.dispatch.which("rmsnorm")                       # 'flashinfer'  (what runs here)
+ks.dispatch.which("fp8_gemm", gpu="h100", dtype="fp8")  # 'deep_gemm'
+ks.dispatch.which("fp8_gemm", gpu="l4",   dtype="fp8")  # 'torch-scaled-mm'  (sm89: DeepGEMM gated out)
+
+ks.dispatch.available()        # {op: [selectable providers in rank order, ... , 'kernel-set']}
+ks.dispatch.providers("rope")  # full chain regardless of install: ['flashinfer','vllm','kernel-set']
+```
+
+### How selection works
+
+For an op + `(gpu arch, dtype)` the dispatcher walks the rank-ordered chain
+(rank 1 = industry-best) and picks the first provider that is **selectable**:
+
+1. its library **imports** (cached probe), **and**
+2. the device compute capability meets the provider's **`min_sm` gate**
+   (DeepGEMM / FlashMLA need sm90, NVFP4 sm100, …), **and**
+3. its **dtype support** covers the request (when a dtype is given).
+
+Arch-/import-/dtype-gated providers are **skipped silently**. The chain always
+ends at the kernel-set C ABI, treated as selectable everywhere, so dispatch never
+dead-ends. With no explicit `gpu=`, the device arch is auto-detected (or treated
+as "unknown", in which case the import probe is the sole signal).
+
+### `ksctl backends` — see the chain + the selection
+
+The `ksctl backends` subcommand prints, per logical op, the rank-ordered provider
+chain and which one **would** be selected — for this host, or a hypothetical
+`--gpu` / `--dtype`. It is dependency-free (pure stdlib).
+
+```sh
+# Probe this host.
+python3 models/ksctl backends
+
+# Plan for a specific GPU + dtype.
+python3 models/ksctl backends --gpu h100 --dtype fp8
+python3 models/ksctl backends --gpu l4 --dtype fp8 --json
+```
+
+```
+==============================================================================
+BEST-AVAILABLE BACKEND PER OP   gpu=h100 (sm90)   dtype=fp8
+==============================================================================
+...
+fp8_gemm
+  -> [*] rank1  deep_gemm              [sm90+  fp8 e4m3, fp32 block scales]  DeepGEMM blockwise fp8
+     [*] rank2  torch-scaled-mm        [sm89+  fp8 e4m3/e5m2]  torch._scaled_mm fp8 tensor cores
+     [*] rank99 kernel-set (fallback)  [any    any]  no native fp8; dense-cast fallback
+
+rmsnorm
+  -> [*] rank1  flashinfer             [sm75+  fp16, bf16]  FlashInfer fused RMSNorm
+     [*] rank2  vllm                   [sm70+  fp16, bf16, fp32]  vLLM custom RMSNorm
+     [*] rank3  liger                  [sm80+  fp16, bf16, fp32]  Liger Triton RMSNorm
+     [*] rank99 kernel-set (fallback)  [any    any]  portable C-ABI fallback
+```
+
+`[*]` marks a selectable provider, `[ ]` one gated out (not installed / arch /
+dtype), and `->` the one that would run. On a no-GPU host every op resolves to
+`kernel-set (fallback)`.
+
+### Wired ops & providers
+
+| logical op | rank-1 industry provider | full chain (→ kernel-set fallback) |
+|---|---|---|
+| `attention_prefill` | flash-attn | flash-attn · torch-sdpa · flashinfer · **ks** |
+| `attention_decode` | flashinfer (paged) | flashinfer · **ks** |
+| `gemm` | torch (cuBLASLt) | torch · **ks** |
+| `fp8_gemm` | DeepGEMM (sm90) | deep_gemm · torch-scaled-mm · **ks** |
+| `w4a16` | vLLM Marlin/Machete | vllm-marlin · **ks** |
+| `rmsnorm` | flashinfer | flashinfer · vllm · liger · **ks** |
+| `fused_add_rmsnorm` | flashinfer | flashinfer · vllm · **ks** |
+| `rope` | flashinfer | flashinfer · vllm · **ks** |
+| `swiglu` | flashinfer | flashinfer · vllm · liger · **ks** |
+| `cross_entropy` | liger | liger · torch · **ks** |
+| `moe` | vLLM fused_experts | vllm · **ks** |
+
+Rankings and arch/dtype gates are derived from
+[`../providers/registry.json`](../providers/registry.json) (127 ops, ranked
+providers). The curated dispatch table lives in
+`bindings/python/kernel_set/backends/`; call patterns reuse the web-verified
+signatures proven in [`../benchmarks/bench_sota.py`](../benchmarks/bench_sota.py).

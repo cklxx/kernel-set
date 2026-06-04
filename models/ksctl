@@ -10,12 +10,15 @@ Subcommands:
   ksctl info   --model M                      show architecture facts + op map
   ksctl plan   --model M --gpu G --dtype D [--mode inference|training] [--json]
   ksctl table  [--gpu G] [--dtype D] [--mode] [--md FILE]   model->kernel table
+  ksctl backends [--gpu G] [--dtype D] [--json]  best-available backend per op
 
 Examples:
   ksctl list
   ksctl plan --model deepseek-v3 --gpu h100 --dtype fp8
   ksctl plan --model llama-3-8b --gpu a100 --dtype bf16 --json
   ksctl table --gpu h100 --md docs/MODEL_KERNEL_MAP.md
+  ksctl backends --gpu h100 --dtype fp8
+  ksctl backends                              # probe this host
 """
 
 import argparse
@@ -27,6 +30,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import select as sel  # noqa: E402  (local module)
+
+# The best-available-backend dispatcher (kernel_set.dispatch) is pure stdlib and
+# import-safe with no torch / CUDA / shared library, so importing it keeps ksctl
+# dependency-free. It lives in the Python binding tree; add that to the path.
+_REPO_ROOT = os.path.dirname(HERE)
+_BINDINGS_PY = os.path.join(_REPO_ROOT, "bindings", "python")
+if os.path.isdir(os.path.join(_BINDINGS_PY, "kernel_set")):
+    sys.path.insert(0, _BINDINGS_PY)
+try:  # optional: `ksctl backends` is the only command that needs it
+    from kernel_set import dispatch as _dispatch  # noqa: E402
+except Exception:  # pragma: no cover - binding tree absent
+    _dispatch = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +272,68 @@ def cmd_table(args):
     return 0
 
 
+# ---------------------------------------------------------------------------
+# backends: per logical op, the rank-ordered provider chain + which one WOULD
+# be selected for a given (gpu, dtype). Uses kernel_set.dispatch's curated
+# registry + availability probe. On a no-GPU host it prints the chain and
+# selects 'kernel-set (fallback)'.
+# ---------------------------------------------------------------------------
+def cmd_backends(args):
+    if _dispatch is None:
+        print("error: kernel_set.dispatch not importable (Python binding tree "
+              "not found next to this CLI).", file=sys.stderr)
+        return 2
+
+    gpu = args.gpu          # None => probe this host
+    dtype = args.dtype      # None => no dtype gate
+    sm = _dispatch.resolve_sm(gpu)
+
+    if args.json:
+        out = {
+            "gpu": gpu or "auto",
+            "sm": sm,
+            "dtype": dtype or "any",
+            "ops": {},
+        }
+        for op in _dispatch.ops():
+            chosen = _dispatch.which(op, gpu=gpu, dtype=dtype)
+            out["ops"][op] = {
+                "selected": chosen,
+                "chain": _dispatch.chain(op, gpu=gpu, dtype=dtype),
+            }
+        print(json.dumps(out, indent=2))
+        return 0
+
+    where = (f"gpu={gpu} (sm{sm})" if gpu else
+             (f"this host (sm{sm})" if sm is not None
+              else "this host (no CUDA GPU detected)"))
+    print(_hr("="))
+    print(f"BEST-AVAILABLE BACKEND PER OP   {where}   dtype={dtype or 'any'}")
+    print(_hr("="))
+    print("Each op lists its rank-ordered provider chain; [*] marks installed &")
+    print("arch/dtype-compatible providers; -> marks the one that WOULD be used.")
+    print("The kernel-set C ABI is the always-available portable fallback.")
+    print(_hr("-"))
+    for op in _dispatch.ops():
+        chosen = _dispatch.which(op, gpu=gpu, dtype=dtype)
+        rows = _dispatch.chain(op, gpu=gpu, dtype=dtype)
+        print(f"\n{op}")
+        for r in rows:
+            mark = "->" if r["name"] == chosen else "  "
+            avail = "[*]" if r["selectable"] else "[ ]"
+            gate = f"sm{r['min_sm']}+" if r["min_sm"] else "any"
+            name = r["name"]
+            if r["is_kernel_set"]:
+                name = f"{name} (fallback)"
+            note = f"  {r['note']}" if r["note"] else ""
+            print(f"  {mark} {avail} rank{r['rank']:<2} {name:<22} "
+                  f"[{gate:<6} {r['dtypes'] or 'any'}]{note}")
+    print(_hr("-"))
+    print("Legend: [*] selectable here · [ ] gated out (not installed / arch / "
+          "dtype) · -> chosen.")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="ksctl",
@@ -288,6 +365,18 @@ def main(argv=None):
                        choices=["inference", "training"])
     p_tab.add_argument("--md", help="write to this file instead of stdout")
     p_tab.set_defaults(func=cmd_table)
+
+    p_be = sub.add_parser(
+        "backends",
+        help="best-available industry backend per op (probes this host)")
+    p_be.add_argument("--gpu", default=None,
+                      help="target GPU (h100, l4, a100, ... or smXX); "
+                           "default: auto-detect this host")
+    p_be.add_argument("--dtype", default=None,
+                      help="gate by dtype (fp16/bf16/fp8/int8/int4); "
+                           "default: no dtype gate")
+    p_be.add_argument("--json", action="store_true")
+    p_be.set_defaults(func=cmd_backends)
 
     args = p.parse_args(argv)
     if not getattr(args, "cmd", None):
