@@ -118,7 +118,7 @@ constexpr int kElemBlock = 256;
 // excessive number of idle blocks; the grid-stride loops cover any remainder.
 constexpr int kMaxBlocks = 65535;
 
-KS_DI int grid_for(int64_t work) {
+KS_HDI int grid_for(int64_t work) {
   int64_t blocks = (work + kElemBlock - 1) / kElemBlock;
   if (blocks < 1) blocks = 1;
   if (blocks > kMaxBlocks) blocks = kMaxBlocks;

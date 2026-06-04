@@ -1,0 +1,679 @@
+# kernel-set external baselines — real upstream SOTA kernels to compare against.
+#
+# PURPOSE
+#   This is the config that makes the bench "comprehensive": instead of only
+#   comparing kernel-set vs a naive PyTorch reference, the harness installs the
+#   real, current best-in-class kernel for each op and compares against it.
+#
+# SCOPE
+#   2026 H1 high/medium-confidence libraries (see docs/KERNEL_LANDSCAPE_2026.md
+#   for the sourced, human-readable catalog with versions, claims, source links).
+#
+# SCHEMA (per baseline entry)
+#   name              display name (lib + op family)
+#   pip_install       shell command(s) to install (null => build-from-source only)
+#   build_from_source short note if pip is not the canonical path (else null)
+#   import_check      python expr that must succeed to confirm the lib is usable
+#   maps_to           kernel-set op(s) this baseline competes with (ks_* / bench category)
+#   bench_category    bench.py op category bucket (attention/gemm/w8a8/w4a16/moe/...)
+#   gpu_arch_required min/required SM archs; bench should SKIP (not error) otherwise
+#   blackwell_only    true => needs sm100+ (datacenter Blackwell); skip on T4/L4/A100/Hopper
+#   hopper_only       true => needs sm90 (WGMMA/TMA); skip on T4/L4/A100 and (mostly) consumer
+#   dtypes            dtypes the baseline supports for this op
+#   benchable         false => multi-GPU / comm-only, cannot be benched single-GPU here
+#   confidence        high | medium  (from the research catalog)
+#   notes             anything the harness/operator should know
+#
+# ARCH TOKENS: sm75(T4) sm80(A100) sm89(L4/4090) sm90(Hopper H100/H200/H800)
+#              sm100/sm103(Blackwell DC: B200/GB200/GB300) sm120/sm121(consumer Blackwell/Spark/Thor)
+#
+# COLAB TARGETS are T4(sm75)/L4(sm89)/A100(sm80): every blackwell_only or
+# hopper_only entry below will SKIP there — that is expected, not a failure.
+
+schema_version: 1
+generated: "2026-06-04"
+catalog_doc: docs/KERNEL_LANDSCAPE_2026.md
+
+# ---------------------------------------------------------------------------
+# Domain: attention / SSM
+# ---------------------------------------------------------------------------
+attention:
+  - name: FlashAttention-4 (FA4)
+    pip_install: "pip install flash-attn==4.0.0b16 --no-build-isolation"
+    build_from_source: "CuTe-DSL kernels; prefer FA4 beta wheels, else build from source"
+    import_check: "import flash_attn; assert flash_attn.__version__.startswith('4')"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen, ks_flash_attn_backward]
+    bench_category: attention
+    gpu_arch_required: [sm100, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp8_e4m3, fp8_e5m2]
+    benchable: true
+    confidence: high
+    notes: >-
+      Best-in-class attention prefill/training on Blackwell sm100 (B200);
+      also has an sm90 Hopper path. ~1605-1613 TFLOP/s BF16 on B200. head_dim<=256.
+      Will skip on T4/L4/A100.
+
+  - name: FlashAttention-3 (FA3)
+    pip_install: "pip install flash-attn --no-build-isolation"
+    build_from_source: "build from source for the FA3/Hopper kernels"
+    import_check: "from flash_attn_interface import flash_attn_func"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen, ks_flash_attn_backward]
+    bench_category: attention
+    gpu_arch_required: [sm90]
+    blackwell_only: false
+    hopper_only: true
+    dtypes: [fp16, bf16, fp8_e4m3]
+    benchable: true
+    confidence: high
+    notes: >-
+      The sm90 best-in-class attention baseline (FA2 covers sm80/sm89).
+      HOPPER-ONLY: skip on T4/L4/A100.
+
+  - name: FlashInfer attention (paged decode / MLA)
+    pip_install: "pip install flashinfer-python"
+    build_from_source: null
+    import_check: "import flashinfer; flashinfer.decode"
+    maps_to: [ks_paged_attn_decode, ks_reshape_and_cache, ks_mla_decode]
+    bench_category: attention
+    gpu_arch_required: [sm80, sm89, sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16, fp8_e4m3, fp8_e5m2, nvfp4, mxfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      Portable best-in-class decode + MLA across all archs (sm80->sm120);
+      backend for vLLM/SGLang. Benchable on A100/L4 (T4 sm75 may be limited).
+
+  - name: FlashMLA
+    pip_install: null
+    build_from_source: "git clone deepseek-ai/FlashMLA + pip install -v ."
+    import_check: "import flash_mla"
+    maps_to: [ks_mla_decode]
+    bench_category: attention
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp8_e4m3]
+    benchable: true
+    confidence: medium
+    notes: >-
+      Hopper(sm90)/Blackwell(sm100) MLA decode (DeepSeek V3.2/V4 sparse).
+      Skip on T4/L4/A100.
+
+  - name: SageAttention3 (FP4 quantized attention)
+    pip_install: null
+    build_from_source: "git clone thu-ml/SageAttention; cd sageattention3_blackwell; python setup.py install"
+    import_check: "import sageattention"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen]
+    bench_category: attention
+    gpu_arch_required: [sm100, sm120]
+    blackwell_only: true
+    hopper_only: false
+    dtypes: [mxfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      BLACKWELL-ONLY FP4 attention (RTX5090 sm120 / B200 sm100). ~5x over
+      fastest FlashAttention on RTX5090. Skip on T4/L4/A100/Hopper.
+
+  - name: SageAttention2++ (INT8/FP8 quantized attention)
+    pip_install: "pip install sageattention==2.2.0 --no-build-isolation"
+    build_from_source: null
+    import_check: "import sageattention"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen]
+    bench_category: attention
+    gpu_arch_required: [sm80, sm89, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [int8, fp8_e4m3]
+    benchable: true
+    confidence: high
+    notes: >-
+      INT8 QK + FP8 PV quantized attention on Ada(sm89)/Hopper(sm90); also sm80.
+      Matches FA3-FP8 speed with better accuracy. Benchable on L4/A100.
+
+  - name: ThunderKittens 2.0 (tile attention/GEMM DSL)
+    pip_install: null
+    build_from_source: "git clone HazyResearch/ThunderKittens + build (C++/CUDA tile DSL) + python bindings"
+    import_check: "import thunderkittens"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen, ks_gemm]
+    bench_category: attention
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp8_e4m3, mxfp8, nvfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      Tile-primitive attention+GEMM substrate; full B200 sm100 support + sm90.
+      Skip on T4/L4/A100.
+
+  - name: xformers (memory_efficient_attention)
+    pip_install: "pip install xformers"
+    build_from_source: null
+    import_check: "import xformers.ops; xformers.ops.memory_efficient_attention"
+    maps_to: [ks_flash_attn, ks_flash_attn_varlen]
+    bench_category: attention
+    gpu_arch_required: [sm70, sm80, sm89, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16, fp8_e4m3]
+    benchable: true
+    confidence: medium
+    notes: >-
+      Portable fallback attention (sm70+ broad coverage); uses FA3 by default on
+      H100. Blackwell sm100/sm120 partial/in-progress. Good for older archs/head-dims.
+
+  - name: flash-linear-attention (fla)
+    pip_install: "pip install flash-linear-attention"
+    build_from_source: null
+    import_check: "import fla"
+    maps_to: [ks_flash_attn]  # linear/SSM-attention substitute; no exact ks ABI op
+    bench_category: linear_attention
+    gpu_arch_required: [sm80, sm89, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16]
+    benchable: true
+    confidence: high
+    notes: >-
+      Linear/SSM attention class (Gated DeltaNet, RWKV-7, NSA). Triton portable +
+      TileLang(sm90) backend. No direct kernel-set C ABI op yet -> informational
+      baseline for the linear-attention class.
+
+  - name: FlashQLA (Gated DeltaNet)
+    pip_install: null
+    build_from_source: "git clone QwenLM/FlashQLA + pip install -v ."
+    import_check: "import flashqla"
+    maps_to: [ks_flash_attn]  # CP-friendly GDN linear attention; no exact ks ABI op
+    bench_category: linear_attention
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: true
+    dtypes: [bf16, fp16]
+    benchable: true
+    confidence: high
+    notes: >-
+      HOPPER+(sm90+) TileLang GDN chunked fwd+bwd; 2-3x fwd / 2x bwd over FLA
+      Triton. No direct ks ABI op -> baselines the linear-attention class. Skip on T4/L4/A100.
+
+  - name: mamba-ssm (selective scan)
+    pip_install: "pip install mamba-ssm[causal-conv1d] --no-build-isolation"
+    build_from_source: "Mamba-3: MAMBA_FORCE_BUILD=TRUE pip install git+...  --no-build-isolation"
+    import_check: "import mamba_ssm"
+    maps_to: []  # SSM scan; no kernel-set C ABI op (attention substitute in hybrids)
+    bench_category: ssm
+    gpu_arch_required: [sm80, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp32]
+    benchable: true
+    confidence: high
+    notes: >-
+      SSM/selective-scan class (Mamba/Mamba-2/Mamba-3) for hybrid models. No
+      kernel-set ABI op -> informational baseline only.
+
+  - name: causal-conv1d
+    pip_install: "pip install causal-conv1d --no-build-isolation"
+    build_from_source: null
+    import_check: "import causal_conv1d"
+    maps_to: []  # conv-mixer; no kernel-set C ABI op
+    bench_category: ssm
+    gpu_arch_required: [sm80, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp32]
+    benchable: true
+    confidence: medium
+    notes: >-
+      Fused short causal depthwise conv1d for Mamba/SSM blocks. No kernel-set ABI
+      op -> informational baseline only.
+
+  - name: DeepSeek Sparse Attention (DSA/NSA/FSA)
+    pip_install: null
+    build_from_source: "served via vLLM/SGLang day-0; FlashMLA + DeepGEMM build from source"
+    import_check: "import flash_mla  # sparse path via FlashMLA + DeepGEMM indexer"
+    maps_to: [ks_mla_decode]  # sparse variant of MLA decode / attn prefill
+    bench_category: attention
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp8_e4m3]
+    benchable: true
+    confidence: high
+    notes: >-
+      Emerging sparse-attention op class (DeepSeek V3.2/V4 long-context). FSA up
+      to 3.5x kernel-latency vs vanilla NSA. Realized via FlashMLA+DeepGEMM. Skip on T4/L4/A100.
+
+  - name: Ring / Context-Parallel Attention (vLLM/SGLang)
+    pip_install: "pip install sglang  # or vllm"
+    build_from_source: null
+    import_check: "import sglang"
+    maps_to: [ks_flash_attn_varlen, ks_paged_attn_decode]  # distributed wrapper
+    bench_category: attention
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp8_e4m3]
+    benchable: false
+    confidence: medium
+    notes: >-
+      MULTI-GPU context-parallel orchestration (zigzag/pass-KV ring) over NVLink/RDMA.
+      Wraps the per-rank kernel-set attention op; NOT single-GPU benchable here.
+
+# ---------------------------------------------------------------------------
+# Domain: GEMM / quantization
+# ---------------------------------------------------------------------------
+gemm_quant:
+  - name: CUTLASS (dense + epilogue + mixed-input GEMM)
+    pip_install: "pip install nvidia-cutlass-dsl  # Python DSL; C++ is header-only via CMake"
+    build_from_source: "git clone NVIDIA/cutlass + CMake for C++ templates"
+    import_check: "import cutlass"
+    maps_to: [ks_gemm, ks_gemm_bias_act, ks_gemm_batched, ks_gemm_w8a8, ks_gemm_w4a16]
+    bench_category: gemm
+    gpu_arch_required: [sm80, sm89, sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16, tf32, fp8_e4m3, fp8_e5m2, int8, nvfp4, mxfp4, mxfp6]
+    benchable: true
+    confidence: high
+    notes: >-
+      Substrate GEMM baseline across all archs. tcgen05 on sm100 ~2-4x WGMMA.
+      Block-scaled FP4/MX paths are Blackwell-only.
+
+  - name: DeepGEMM (block-scaled FP8 dense GEMM)
+    pip_install: null
+    build_from_source: "git clone --recursive deepseek-ai/DeepGEMM; ./develop.sh; ./install.sh (CUDA 12.3+, C++20)"
+    import_check: "import deep_gemm"
+    maps_to: [ks_gemm, ks_gemm_w8a8]  # block-scaled FP8 dense; pairs w/ ks_quantize_fp8
+    bench_category: gemm
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, nvfp4, mxfp4, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      ~1550 TFLOP/s FP8 on H800; sm90 NT-only, sm100 NT/TN/NN/TT; B200 FP4 ~2x FP8.
+      Skip on T4/L4/A100 (needs WGMMA). FP4 path needs PyTorch>=2.9.
+
+  - name: TileKernels (DeepSeek FP8/FP4/E5M6 quant cast)
+    pip_install: "pip install tile-kernels  # Python 3.10+, PyTorch 2.10+, TileLang 0.1.9+, CUDA 13.1+"
+    build_from_source: null
+    import_check: "import tile_kernels"
+    maps_to: [ks_quantize_fp8, ks_dequantize_fp8]  # + per-block/channel FP4/E5M6 ext
+    bench_category: quant
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, mxfp4, nvfp4, e5m6]
+    benchable: true
+    confidence: high
+    notes: >-
+      Per-token/per-block/per-channel FP8/FP4/E5M6 quant casting (sm90/sm100,
+      CUDA 13.1+). MoE gating maps to MoE routing path, not a GEMM. Skip on T4/L4/A100.
+
+  - name: Marlin / Machete (W4A16 mixed-input, vLLM)
+    pip_install: "pip install vllm"
+    build_from_source: null
+    import_check: "from vllm import _custom_ops as ops; ops.gptq_marlin_gemm"
+    maps_to: [ks_gemm_w4a16]
+    bench_category: w4a16
+    gpu_arch_required: [sm80, sm86, sm89, sm90, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [int4, nvfp4]  # INT4/NVFP4 weight x fp16/bf16 act
+    benchable: true
+    confidence: high
+    notes: >-
+      Direct W4A16 analog of ks_gemm_w4a16. Marlin sweet spot sm80/86/89
+      (benchable on A100/L4); Machete is the sm90 path; NVFP4 Marlin needs Blackwell.
+
+  - name: TransformerEngine (FP8/MXFP8/NVFP4 quant+GEMM)
+    pip_install: "pip install transformer-engine[pytorch]"
+    build_from_source: null
+    import_check: "import transformer_engine.pytorch as te"
+    maps_to: [ks_quantize_fp8, ks_dequantize_fp8, ks_gemm_bias_act]  # FP8 GEMM+epilogue
+    bench_category: quant
+    gpu_arch_required: [sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, fp8_e5m2, mxfp8, nvfp4, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      Standard FP8 training/inference cast+GEMM stack. FP8 benchable on L4(sm89)+
+      Hopper; MXFP8/NVFP4 are Blackwell. NOT on A100/T4 (no FP8 tensor cores).
+
+  - name: torchao (float8/MX/NVFP4 quant + GEMM)
+    pip_install: "pip install torchao"
+    build_from_source: null
+    import_check: "import torchao; import torchao.quantization"
+    maps_to: [ks_quantize_fp8, ks_dequantize_fp8, ks_quantize_int8, ks_dequantize_int8, ks_dequantize_int4, ks_gemm_w4a16]
+    bench_category: quant
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, fp8_e5m2, mxfp8, mxfp4, nvfp4, int8, int4]
+    benchable: true
+    confidence: high
+    notes: >-
+      int4/int8 broadly sm75+ (benchable on T4/L4/A100); float8 needs sm89+;
+      MXFP8/MXFP4/NVFP4 are Blackwell sm100+. Same package as torchao optimizer entry.
+
+  - name: FlashInfer GEMM (NVFP4/FP8 + W4A16)
+    pip_install: "pip install flashinfer-python"
+    build_from_source: null
+    import_check: "import flashinfer; flashinfer.gemm"
+    maps_to: [ks_gemm, ks_gemm_w8a8, ks_gemm_w4a16, ks_quantize_fp8]
+    bench_category: gemm
+    gpu_arch_required: [sm80, sm89, sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [nvfp4, fp8_e4m3, mxfp8, mxint4, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      ~1225 TFLOP/s NVFP4 GEMM on Blackwell. NVFP4/FP4 paths need sm100/sm120;
+      FP8 needs sm89+; SM120 W4A16 kernel for consumer Blackwell. Same package as
+      FlashInfer attention/MoE entries.
+
+  - name: GPTQModel (GPTQ/AWQ W4A16)
+    pip_install: "pip install gptqmodel"
+    build_from_source: null
+    import_check: "import gptqmodel"
+    maps_to: [ks_gemm_w4a16, ks_dequantize_int4, ks_quantize_fp8]
+    bench_category: w4a16
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [int4, int8, fp8_e4m3, exl3]
+    benchable: true
+    confidence: high
+    notes: >-
+      GPTQ/AWQ W4A16 (group-wise scales/zeros) via GPTQ-Marlin, sm75+ -> benchable
+      on T4/L4/A100. Fully JIT CUDA kernels (6.1.0+). Also AMD/Intel/Ascend/CPU.
+
+  - name: ExLlamaV3 (EXL3 trellis W4A16)
+    pip_install: "pip install exllamav3"
+    build_from_source: null
+    import_check: "import exllamav3"
+    maps_to: [ks_gemm_w4a16, ks_dequantize_int4]
+    bench_category: w4a16
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [exl3]  # ~1.6-8 bpw trellis weight x fp16/bf16 act
+    benchable: true
+    confidence: high
+    notes: >-
+      Low-bit trellis (QTIP) W4A16 analog; 16x16 tensor-core tiles sm75+ ->
+      benchable on T4/L4/A100. Non-uniform variant of the int4 path.
+
+  - name: bitsandbytes (LLM.int8 W8A8 + NF4/FP4)
+    pip_install: "pip install bitsandbytes"
+    build_from_source: null
+    import_check: "import bitsandbytes as bnb"
+    maps_to: [ks_quantize_int8, ks_dequantize_int8, ks_gemm_w8a8, ks_dequantize_int4]
+    bench_category: w8a8
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm100, sm110]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [int8, nf4, fp4]  # NF4 != NVIDIA native NVFP4
+    benchable: true
+    confidence: high
+    notes: >-
+      LLM.int8() W8A8 + NF4/FP4 4-bit blockwise (QLoRA) dequant, sm75+ ->
+      benchable on T4/L4/A100. Branchless NF4/FP4 dequant on A100/H100/B200.
+
+  - name: Quack (Hopper/Blackwell GEMM + memory-bound CuTe)
+    pip_install: "pip install quack-kernels  # CUDA 12.9; cu13 extra-index for CUDA 13.x"
+    build_from_source: null
+    import_check: "import quack"
+    maps_to: [ks_gemm, ks_gemm_bias_act, ks_rms_norm, ks_layer_norm, ks_softmax, ks_cross_entropy]
+    bench_category: gemm
+    gpu_arch_required: [sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16]
+    benchable: true
+    confidence: high
+    notes: >-
+      GEMM+epilogue (Hopper/Blackwell) + near-SOL memory-bound norm/softmax/CE.
+      No FP8/INT quant-GEMM. Skip on T4/L4/A100 (sm90+).
+
+  - name: AutoAWQ (legacy AWQ W4A16 — provenance)
+    pip_install: "pip install autoawq  # DEPRECATED; use vllm-project/llm-compressor"
+    build_from_source: null
+    import_check: "import awq"
+    maps_to: [ks_gemm_w4a16, ks_dequantize_int4]
+    bench_category: w4a16
+    gpu_arch_required: [sm75, sm80, sm89]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [int4]
+    benchable: true
+    confidence: high
+    notes: >-
+      DEPRECATED/archived May 2025 (provenance only). AWQ algorithm now lives in
+      llm-compressor. Prefer GPTQModel/Marlin for an actual W4A16 baseline.
+
+# ---------------------------------------------------------------------------
+# Domain: MoE / comm / training
+# ---------------------------------------------------------------------------
+moe_comm_training:
+  - name: DeepGEMM (Mega MoE grouped GEMM)
+    pip_install: null
+    build_from_source: "git clone --recursive deepseek-ai/DeepGEMM; python setup.py install"
+    import_check: "import deep_gemm; deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous"
+    maps_to: [ks_moe_grouped_gemm, ks_gemm, ks_gemm_w8a8]
+    bench_category: moe
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, mxfp4, nvfp4, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      FP8/FP4 grouped MoE experts (contiguous + masked) = ks_moe_grouped_gemm
+      analog. Mega MoE fuses permute->grouped-GEMM(x2 SwiGLU)->unpermute + DeepEP.
+      Mega MoE needs NVLink + PyTorch>=2.9. Skip on T4/L4/A100.
+
+  - name: sgl-kernel (SGLang fused MoE)
+    pip_install: "pip install sgl-kernel"
+    build_from_source: "or build from sglang/sgl-kernel"
+    import_check: "import sgl_kernel; sgl_kernel.moe_fused_gate"
+    maps_to: [ks_moe_gate_softmax_topk, ks_moe_gate_sigmoid_group_topk, ks_moe_compute_permutation, ks_moe_permute, ks_moe_grouped_gemm, ks_moe_unpermute, ks_rms_norm, ks_rope, ks_gemm_w8a8]
+    bench_category: moe
+    gpu_arch_required: [sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp8_e4m3, mxfp8, int8, nvfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      Production fused MoE gate (DeepSeek group-limited, up to 256 experts) +
+      permute/grouped-GEMM/unpermute. Benchable on A100/L4 (BF16/INT8); FP8/FP4
+      need sm89+/sm100. Direct match for the kernel-set MoE pipeline.
+
+  - name: vLLM kernels (fused MoE / FP4)
+    pip_install: "pip install vllm"
+    build_from_source: null
+    import_check: "from vllm.model_executor.layers.fused_moe import fused_moe"
+    maps_to: [ks_moe_gate_softmax_topk, ks_moe_gate_sigmoid_group_topk, ks_moe_compute_permutation, ks_moe_permute, ks_moe_grouped_gemm, ks_moe_unpermute, ks_gemm_w8a8, ks_gemm_w4a16]
+    bench_category: moe
+    gpu_arch_required: [sm80, sm89, sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16, fp8_e4m3, int8, int4, mxfp4, nvfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      Full MoE pipeline. Triton fused_moe benchable on A100/L4 (BF16); CUTLASS FP8
+      MoE sm89+/sm90; MXFP4/NVFP4 W4A4 MoE is SM100; b12x NVFP4 MoE is SM120/121.
+
+  - name: FlashInfer fused MoE (NVFP4/MXFP8)
+    pip_install: "pip install flashinfer-python"
+    build_from_source: null
+    import_check: "import flashinfer; flashinfer.fused_moe"
+    maps_to: [ks_moe_grouped_gemm, ks_moe_gate_softmax_topk, ks_moe_gate_sigmoid_group_topk, ks_gemm, ks_rms_norm, ks_rope, ks_swiglu, ks_sample]
+    bench_category: moe
+    gpu_arch_required: [sm80, sm89, sm90, sm100, sm120]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16, fp8_e4m3, mxfp8, nvfp4, mxfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      b12x NVFP4 fused MoE (SM120/121) + mxfp8 MoE; also activation/sampling kernels.
+      One install covers attention + GEMM + MoE/activation/sampling baselines.
+
+  - name: Megatron-Core (MoE GroupedGEMM + FusedAdam)
+    pip_install: "pip install megatron-core"
+    build_from_source: null
+    import_check: "import megatron.core"
+    maps_to: [ks_moe_grouped_gemm, ks_moe_gate_softmax_topk, ks_moe_gate_sigmoid_group_topk, ks_moe_permute, ks_moe_unpermute, ks_adamw, ks_global_grad_norm]
+    bench_category: moe
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp8_e4m3, mxfp8, fp32]
+    benchable: true
+    confidence: high
+    notes: >-
+      GroupedGEMM (FP8/MXFP8) + router + FusedAdam + grad clip. MXFP8 native on
+      sm100 (~2x BF16). Multi-node EP via DeepEP, but GroupedGEMM/optimizer are
+      single-GPU benchable on Hopper/Blackwell. Skip on T4/L4/A100.
+
+  - name: Liger-Kernel (norm/rope/act/CE)
+    pip_install: "pip install liger-kernel"
+    build_from_source: null
+    import_check: "import liger_kernel"
+    maps_to: [ks_rms_norm, ks_layer_norm, ks_rope, ks_swiglu, ks_geglu, ks_cross_entropy, ks_fused_linear_cross_entropy]
+    bench_category: cross_entropy
+    gpu_arch_required: [sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      DIRECT reference for chunked CE + fused-linear-CE; also norm/rope/act.
+      Arch-portable Triton (also AMD/Intel/NPU). Benchable on T4/L4/A100.
+
+  - name: torchao optimizers (8/4-bit AdamW)
+    pip_install: "pip install torchao"
+    build_from_source: null
+    import_check: "import torchao.optim"
+    maps_to: [ks_adamw, ks_gemm, ks_moe_grouped_gemm, ks_gemm_w8a8, ks_gemm_w4a16]
+    bench_category: adamw
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, mxfp8, int8, int4, nvfp4]
+    benchable: true
+    confidence: high
+    notes: >-
+      8-bit/4-bit AdamW + master-weight optimizer (benchable broadly); FP8/MXFP8
+      training GEMM needs sm89+/sm100. Same package as the torchao quant entry.
+
+  - name: Unsloth MoE kernels
+    pip_install: "pip install unsloth"
+    build_from_source: null
+    import_check: "import unsloth"
+    maps_to: [ks_moe_grouped_gemm, ks_moe_permute, ks_moe_unpermute, ks_cross_entropy, ks_fused_linear_cross_entropy, ks_rope, ks_swiglu]
+    bench_category: moe
+    gpu_arch_required: [sm75, sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16]
+    benchable: true
+    confidence: high
+    notes: >-
+      12x faster MoE training (Triton); fused experts + CE + RoPE + SwiGLU.
+      Runs on T4/H100/B200/RTX6000Pro -> benchable on T4/L4/A100.
+
+  - name: cut-cross-entropy (CCE)
+    pip_install: "pip install cut-cross-entropy"
+    build_from_source: null
+    import_check: "from cut_cross_entropy import linear_cross_entropy"
+    maps_to: [ks_fused_linear_cross_entropy, ks_cross_entropy]
+    bench_category: cross_entropy
+    gpu_arch_required: [sm80, sm89, sm90]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [bf16, fp16]
+    benchable: true
+    confidence: medium
+    notes: >-
+      Canonical reference for chunked no-logit-materialization linear-CE (Triton;
+      torch.compile fallback on MacOS). Not a 2026 H1 release; vendored into Liger/Unsloth.
+
+  - name: NVIDIA Apex (FusedAdamW / FusedLayerNorm / grad-norm)
+    pip_install: null
+    build_from_source: "pip install -v --no-build-isolation .  (CUDA extensions from source)"
+    import_check: "import apex; from apex.optimizers import FusedAdam"
+    maps_to: [ks_adamw, ks_global_grad_norm, ks_layer_norm, ks_rms_norm]
+    bench_category: adamw
+    gpu_arch_required: [sm70, sm80, sm89, sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp16, bf16, fp32]
+    benchable: true
+    confidence: high
+    notes: >-
+      Classic fused FusedAdamW + multi-tensor L2 grad-norm + FusedLayerNorm/RMSNorm,
+      sm70+ -> benchable on T4/L4/A100. Build from source (no semver releases).
+
+  # ---- multi-GPU comm: cataloged but NOT single-GPU benchable ----
+  - name: DeepEP (EPv2 all-to-all)
+    pip_install: null
+    build_from_source: "git clone deepseek-ai/DeepEP + python setup.py install (NCCL Gin backend)"
+    import_check: "import deep_ep"
+    maps_to: [ks_moe_permute, ks_moe_unpermute]  # comm layer around the grouped GEMM
+    bench_category: ep_comm
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, bf16]
+    benchable: false
+    confidence: high
+    notes: >-
+      MULTI-GPU EP all-to-all dispatch/combine (CX7 RDMA + NVLink, up to EP2048).
+      1.3x peak vs V1 at ~4x fewer SMs. Comm counterpart to the MoE pipeline; NOT
+      single-GPU benchable.
+
+  - name: NCCL EP (ncclEpDispatch/ncclEpCombine)
+    pip_install: null
+    build_from_source: "NCCL >= 2.30 (vendor lib); C/Python ncclEp* interfaces"
+    import_check: "import cupy.cuda.nccl  # ncclEp* via NCCL Device API >=2.30"
+    maps_to: [ks_moe_permute, ks_moe_unpermute]
+    bench_category: ep_comm
+    gpu_arch_required: [sm90]
+    blackwell_only: false
+    hopper_only: true
+    dtypes: [bf16, fp8_e4m3]
+    benchable: false
+    confidence: high
+    notes: >-
+      MULTI-GPU vendor-unified EP all-to-all (LL decode + HT train/prefill modes)
+      on H100 clusters. Alternative to DeepEP/pplx; NOT single-GPU benchable.
+
+  - name: Perplexity pplx-garden (EP all-to-all)
+    pip_install: null
+    build_from_source: "git clone perplexityai/pplx-garden + build (CUDA 12/13 bindings)"
+    import_check: "import pplx_garden"
+    maps_to: [ks_moe_permute, ks_moe_unpermute]
+    bench_category: ep_comm
+    gpu_arch_required: [sm90, sm100]
+    blackwell_only: false
+    hopper_only: false
+    dtypes: [fp8_e4m3, bf16]
+    benchable: false
+    confidence: high
+    notes: >-
+      MULTI-GPU portable EP all-to-all (NVLink/CX7/EFA, IBGDA). 2.5x lower latency
+      single-node, ~10x multi-node vs standard all-to-all. NOT single-GPU benchable.

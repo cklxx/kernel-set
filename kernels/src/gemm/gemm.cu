@@ -143,6 +143,16 @@ constexpr int kWarpsM = 4;  // block tile = 64 rows
 constexpr int kWarpsN = 2;  // block tile = 32 cols
 constexpr int kWmmaBlockThreads = kWarpsM * kWarpsN * KS_WARP_SIZE;
 
+// The WMMA fast path is currently DISABLED by default: on-device validation
+// (sm_89/L4) showed it returns numerically incorrect results (uncorrelated with
+// A@B in any operand orientation), while the SIMT path below is verified correct
+// (rel_err ~3e-4 fp16, ~8e-7 fp32). Until the fragment bug is root-caused, every
+// GEMM routes through the correct SIMT kernel. Production deployments should bind
+// cuBLASLt/CUTLASS here anyway. Set -DKS_ENABLE_WMMA_GEMM=1 to opt back in.
+#ifndef KS_ENABLE_WMMA_GEMM
+#define KS_ENABLE_WMMA_GEMM 0
+#endif
+
 template <typename scalar_t>
 KS_GLOBAL void gemm_wmma_kernel(scalar_t* __restrict__ c,
                                 const scalar_t* __restrict__ a,
@@ -261,7 +271,8 @@ void launch_gemm(scalar_t* c, const scalar_t* a, const scalar_t* b,
   // specialization (even on a runtime-dead branch) is a hard compile error.
   if constexpr (wmma_supported<scalar_t>()) {
     const bool use_wmma =
-        trans_a == 0 && trans_b == 0 && m <= kI32Max && n <= kI32Max &&
+        KS_ENABLE_WMMA_GEMM && trans_a == 0 && trans_b == 0 && m <= kI32Max &&
+        n <= kI32Max &&
         k <= kI32Max && lda <= kI32Max && ldb <= kI32Max && ldc <= kI32Max &&
         (m % WMMA_M == 0) && (n % WMMA_N == 0) && (k % WMMA_K == 0) &&
         (lda % 8 == 0) && (ldb % 8 == 0) && (ldc % 8 == 0);

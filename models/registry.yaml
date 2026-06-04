@@ -5134,4 +5134,5101 @@ models:
     notes: "OLMo-2 13B: MHA, RMSNorm, QK-norm, post-norm."
     examples:
       - OLMo-2-13B
+  - id: deepseek-v3.2-exp
+    kind: model
+    family: DeepSeek V3.2
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 128
+      n_kv_heads: 128
+      head_dim: 192
+      vocab: 129280
+      attention: MLA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 2048
+        n_experts: 256
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+        n_group: 8
+        topk_group: 4
+
+      quant:
+        - fp8
+        - bf16
+        - w4a16
+
+      extras:
+        - mla
+        - kv-lora-rank-512
+        - rope-dim-64
+        - matrix-absorption-decode
+        - deepseek-sparse-attention
+        - lightning-indexer-topk-2048
+        - deepseek-moe
+        - aux-loss-free-sigmoid-gating
+        - first-3-dense-swiglu
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "671B total (685B incl. MTP) / 37B active. Adds DeepSeek Sparse Attention (DSA, lightning-indexer top-k=2048) on top of V3 MLA, cutting attention to O(Lk); decode maps to ks_mla_decode over compressed latent KV. DSA top-k indexer is a sparse-mask selection step needing ks_sparse_attn_indexer (Wave-2, unmapped); first 3 layers dense SwiGLU. MLA dims qk_nope=128/qk_rope=64/v=128/kv_lora=512/q_lora=1536. Config-verified."
+    examples:
+      - DeepSeek-V3.2-Exp
+      - DeepSeek-V3.2
+      - DeepSeek-V3.2-Speciale
+  - id: deepseek-v4-pro
+    kind: model
+    family: DeepSeek V4
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 128
+      n_kv_heads: 1
+      head_dim: 128
+      vocab: 129280
+      attention: MQA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 3072
+        n_experts: 384
+        top_k: 6
+        n_shared: 1
+        gating: sqrt_softplus
+
+      quant:
+        - fp8
+        - bf16
+
+      extras:
+        - compressed-sparse-attention-csa
+        - heavily-compressed-attention-hca
+        - index-topk-1024
+        - index-heads-64
+        - rope-dim-64
+        - manifold-constrained-hyper-connections-mhc
+        - muon-optimizer
+        - deepseek-moe
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1.6T total / ~49B active, 1M context. Hybrid sparse attention: Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA), index_topk=1024 / 64 index heads \u2014 NOT classic MLA. CSA/HCA sparse selection + state compression needs ks_sparse_attn_indexer and ks_ssm_scan-style compression (Wave-2, unmapped); attn_decode falls back to ks_paged_attn_decode (MQA, 1 kv head) for the dense path. MoE gate sqrtsoftplus -> modeled via ks_moe_gate_softmax_topk (Wave-2: ks_moe_gate_sqrt_softplus unmapped). mHC residual + Muon optimizer. Some MLA-style config fields null in fetched config -> attention internals medium confidence. Sibling DeepSeek-V4-Flash ~284B."
+    examples:
+      - DeepSeek-V4-Pro
+      - DeepSeek-V4-Flash
+  - id: kimi-k2-instruct
+    kind: model
+    family: Kimi-K2
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 192
+      vocab: 163840
+      attention: MLA
+      rope:
+        style: neox
+        theta: 50000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 2048
+        n_experts: 384
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+
+      quant:
+        - fp8
+        - bf16
+        - w4a16
+
+      extras:
+        - mla
+        - kv-lora-rank-512
+        - rope-dim-64
+        - matrix-absorption-decode
+        - deepseek-moe
+        - aux-loss-free-sigmoid-gating
+        - first-layer-dense
+        - muonclip-optimizer
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1T total / 32B active. DeepSeek-V3-style MLA (decode -> ks_mla_decode over latent KV, kv_lora=512) + 384-expert top-8 + 1 shared sigmoid-gated MoE; first layer dense. RoPE theta=50000 + YaRN factor 32. Trained with MuonClip on 15.5T tokens. Config-verified."
+    examples:
+      - Kimi-K2-Instruct
+      - Kimi-K2-Instruct-0905
+  - id: kimi-k2-thinking
+    kind: model
+    family: Kimi-K2
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 192
+      vocab: 163840
+      attention: MLA
+      rope:
+        style: neox
+        theta: 50000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 2048
+        n_experts: 384
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+
+      quant:
+        - w4a16
+        - bf16
+
+      extras:
+        - mla
+        - kv-lora-rank-512
+        - rope-dim-64
+        - matrix-absorption-decode
+        - deepseek-moe
+        - native-int4-qat
+        - int4-group-size-32
+        - routed-scaling-2.827
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1T total / 32B active reasoning model, 256K context. Same MLA backbone as K2 (decode -> ks_mla_decode). First open-weights model trained natively in INT4 via QAT (group_size=32, compressed-tensors) on MoE weights -> GEMM-shaped ops route to ks_gemm_w4a16. RoPE theta=50000 + YaRN factor 64. 200-300 sequential tool calls. Config-verified."
+    examples:
+      - Kimi-K2-Thinking
+  - id: kimi-k2.5
+    kind: model
+    family: Kimi-K2
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 192
+      vocab: 163840
+      attention: MLA
+      rope:
+        style: neox
+        theta: 50000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 2048
+        n_experts: 384
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+
+      quant:
+        - w4a16
+        - bf16
+
+      extras:
+        - mla
+        - kv-lora-rank-512
+        - rope-dim-64
+        - matrix-absorption-decode
+        - deepseek-moe
+        - native-int4
+        - int4-group-size-32
+        - multimodal
+        - moonvit-vision-encoder
+        - first-layer-dense
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1T total / 32B active native-multimodal. DeepSeek-V3-style MLA text backbone (decode -> ks_mla_decode) wrapped by KimiK25ForConditionalGeneration + MoonViT (~400M, patch=14) vision encoder; the ViT patch-embed/attention path is unmapped (Wave-2 vision kernels). INT4 (group_size=32) on MoE -> ks_gemm_w4a16. Kimi-K2.6 (1.1T) is a later update. Config-verified."
+    examples:
+      - Kimi-K2.5
+      - Kimi-K2.6
+  - id: qwen3-4b
+    kind: model
+    family: Qwen 3 / 3-Next
+    arch:
+      hidden: 2560
+      n_layers: 36
+      n_heads: 32
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 151669
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 9728
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - qk-norm
+        - yarn
+        - dca
+        - tied-embeddings
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Qwen3 4B dense: GQA(8 kv) + QK-norm; tied embeddings; YaRN+DCA long-ctx. SwiGLU. QKV-bias removed vs Qwen2. Config from arXiv 2505.09388."
+    examples:
+      - Qwen3-4B
+  - id: qwen3-14b
+    kind: model
+    family: Qwen 3 / 3-Next
+    arch:
+      hidden: 5120
+      n_layers: 40
+      n_heads: 40
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 151669
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 17408
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - qk-norm
+        - yarn
+        - dca
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Qwen3 14B dense: GQA(8 kv) + QK-norm; YaRN+DCA. SwiGLU."
+    examples:
+      - Qwen3-14B
+  - id: qwen3-32b
+    kind: model
+    family: Qwen 3 / 3-Next
+    arch:
+      hidden: 5120
+      n_layers: 64
+      n_heads: 64
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 151669
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: yarn
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 25600
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - qk-norm
+        - yarn
+        - dca
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Qwen3 32B dense flagship: GQA(8 kv) + QK-norm; YaRN+DCA. SwiGLU."
+    examples:
+      - Qwen3-32B
+  - id: qwen3-next-80b-a3b
+    kind: family
+    family: Qwen3-Next
+    arch:
+      hidden: 2048
+      n_layers: 48
+      n_heads: 16
+      n_kv_heads: 2
+      head_dim: 256
+      vocab: 151936
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: partial
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 512
+        n_experts: 512
+        top_k: 10
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - hybrid-linear-attention
+        - gated-deltanet
+        - gated-full-attention
+        - full-attention-interval-4
+        - partial-rotary-0.25
+        - qk-norm
+        - ultra-sparse-moe
+        - mtp
+        - zero-centered-layernorm
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "80B total / 3B active hybrid: 3x Gated DeltaNet (linear attn) : 1x Gated full attention (full_attention_interval=4). The 36 Gated-Attention layers map to ks_paged_attn_decode (GQA, 2 kv heads); the 12 Gated DeltaNet linear-attn layers need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped) and are NOT covered by the listed decode kernel. 512-expert top-10 + 1 shared MoE; partial RoPE 0.25, theta=1e7; MTP head. Config-verified."
+    examples:
+      - Qwen3-Next-80B-A3B-Instruct
+      - Qwen3-Next-80B-A3B
+  - id: qwen3.5-397b-a17b
+    kind: family
+    family: Qwen3.5
+    arch:
+      hidden: 4096
+      n_layers: 60
+      n_heads: 32
+      n_kv_heads: 2
+      head_dim: 256
+      vocab: 248320
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: mrope
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1024
+        n_experts: 512
+        top_k: 10
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - hybrid-linear-attention
+        - gated-deltanet
+        - gated-full-attention
+        - full-attention-interval-4
+        - partial-rotary-0.25
+        - m-rope-interleaved
+        - attn-output-gate
+        - multimodal
+        - siglip-vision-encoder
+        - ultra-sparse-moe
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "397B total / 17B active native-multimodal flagship. Carries Qwen3-Next hybrid 3x Gated DeltaNet : 1x Gated full attention (interval=4); full-attn layers -> ks_paged_attn_decode (GQA, 2 kv heads), the linear Gated DeltaNet layers need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped). 512-expert top-10 + 1 shared MoE; M-RoPE interleaved (sections [11,11,10]); SigLIP-style vision encoder (depth 27) path unmapped (Wave-2 vision). 201 languages. Config-verified."
+    examples:
+      - Qwen3.5-397B-A17B
+  - id: qwen3-max
+    kind: model
+    family: Qwen 3 / 3-Next
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 0
+        n_experts: 0
+        top_k: 0
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - closed-weight
+        - api-only
+        - sparse-moe
+        - arch-undisclosed
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "CLOSED-WEIGHT (API only). >1T params, pretrained ~36T tokens, 256K context. Architecture hyperparameters not publicly released -> all dims set to 0 (placeholders); op map is a best-effort sparse-MoE template, NOT config-verified. Included for completeness."
+    examples:
+      - Qwen3-Max
+  - id: minimax-m1-80k
+    kind: model
+    family: MiniMax-M1
+    arch:
+      hidden: 6144
+      n_layers: 80
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 96
+      vocab: 200064
+      attention: MHA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 9216
+        n_experts: 32
+        top_k: 2
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-linear-attention
+        - lightning-attention
+        - softmax-periodic-7to1
+        - moe
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "456B total / 45.9B active, 1M context. Hybrid: Lightning Attention (linear) interleaved with periodic softmax attention (7:1). The 1-in-8 softmax layers map to ks_paged_attn_decode; the 7-in-8 Lightning (linear/transnormer) layers need ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). 32-expert top-2 MoE. World's first open large-scale hybrid-attention reasoning model (arXiv 2506.13585). head_dim approximate."
+    examples:
+      - MiniMax-M1-80k
+      - MiniMax-M1-40k
+  - id: minimax-m2
+    kind: family
+    family: MiniMax-M2
+    arch:
+      hidden: 3072
+      n_layers: 62
+      n_heads: 48
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 200064
+      attention: GQA
+      rope:
+        style: neox
+        theta: 5000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1536
+        n_experts: 256
+        top_k: 8
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - fp8
+        - bf16
+
+      extras:
+        - qk-norm
+        - full-attention-every-layer
+        - moe
+        - mtp-3-modules
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "230B total / 10B active. Returns to full softmax attention every layer (lightning attn dropped vs M1) -> ks_paged_attn_decode (GQA, 8 kv heads) + per-layer QK-Norm. 256-expert top-8 MoE; 3 MTP modules; RoPE theta=5e6. Agentic/coding focus. Config-verified."
+    examples:
+      - MiniMax-M2
+  - id: minimax-m2.7
+    kind: model
+    family: MiniMax-M2
+    arch:
+      hidden: 3072
+      n_layers: 62
+      n_heads: 48
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 200064
+      attention: GQA
+      rope:
+        style: neox
+        theta: 5000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1536
+        n_experts: 256
+        top_k: 8
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - fp8
+        - bf16
+
+      extras:
+        - qk-norm
+        - full-attention-every-layer
+        - moe
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "230B total / 10B active, 200K context. Architecturally identical backbone to M2 (model_type minimax_m2): full softmax GQA(8 kv) + QK-Norm -> ks_paged_attn_decode; 256-expert top-8 MoE. Newest M2.x (M2.1/M2.5 intermediate). Config-verified."
+    examples:
+      - MiniMax-M2.7
+  - id: glm-4.6
+    kind: model
+    family: ChatGLM / GLM-4 / GLM-4.5
+    arch:
+      hidden: 5120
+      n_layers: 92
+      n_heads: 96
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 151552
+      attention: GQA
+      rope:
+        style: gptj
+        theta: 1000000
+        scaling: partial
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: post
+      mlp:
+        type: MoE
+        inter: 1536
+        n_experts: 160
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+        n_group: 1
+        topk_group: 1
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - partial-2d-rope
+        - moe
+        - qk-norm
+        - first-3-dense
+        - mtp
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "357B total / 32B active, 200K context. GQA(8 kv) + partial RoPE (50%) + QK-Norm; 160-expert top-8 + 1 shared sigmoid-gated MoE; first 3 layers dense; MTP. Glm4MoeForCausalLM. Config-verified."
+    examples:
+      - GLM-4.6
+  - id: glm-4.7
+    kind: model
+    family: ChatGLM / GLM-4 / GLM-4.5
+    arch:
+      hidden: 5120
+      n_layers: 92
+      n_heads: 96
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 151552
+      attention: GQA
+      rope:
+        style: gptj
+        theta: 1000000
+        scaling: partial
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: post
+      mlp:
+        type: MoE
+        inter: 1536
+        n_experts: 160
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+        n_group: 1
+        topk_group: 1
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - partial-2d-rope
+        - moe
+        - qk-norm
+        - first-3-dense
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "358B total / ~32B active, 200K context. Identical glm4_moe backbone to GLM-4.6 (GQA 8 kv + partial RoPE + QK-Norm; 160-expert top-8 + 1 shared sigmoid MoE) with better SWE-bench. GLM-4.7-Flash (~31B) released alongside. Config-verified."
+    examples:
+      - GLM-4.7
+      - GLM-4.7-Flash
+  - id: glm-5
+    kind: family
+    family: GLM-5
+    arch:
+      hidden: 6144
+      n_layers: 78
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 64
+      vocab: 154880
+      attention: MHA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 2048
+        n_experts: 256
+        top_k: 8
+        n_shared: 1
+        gating: sigmoid_group
+        n_group: 1
+        topk_group: 1
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - full-mha
+        - deepseek-sparse-attention
+        - glm-moe-dsa
+        - moe
+        - first-3-dense
+        - head-dim-64
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "744B total / 40B active (model_type glm_moe_dsa = MoE + DeepSeek-style Sparse Attention). Full MHA (64 KV heads, head_dim 64) -> ks_paged_attn_decode for the dense path; the DSA sparse top-k indexer needs ks_sparse_attn_indexer (Wave-2, unmapped). 256-expert top-8 + 1 shared sigmoid MoE; first 3 layers dense; ~2x scale-up over GLM-4.5. GLM-5.1 (754B) later. Config-verified."
+    examples:
+      - GLM-5
+      - GLM-5-FP8
+      - GLM-5.1
+  - id: ernie-4.5-300b-a47b
+    kind: model
+    family: ERNIE-4.5
+    arch:
+      hidden: 8192
+      n_layers: 54
+      n_heads: 64
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 103424
+      attention: GQA
+      rope:
+        style: neox
+        theta: 500000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 3584
+        n_experts: 64
+        top_k: 8
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+        - w8a8
+
+      extras:
+        - heterogeneous-moe
+        - modality-isolated-routing
+        - router-orthogonal-loss
+        - multimodal
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "300B total / 47B active, 128K context. GQA(8 kv) -> ks_paged_attn_decode; heterogeneous multimodal MoE (64 text experts top-8, modality-dedicated experts + modality-isolated routing) -> ks_moe_grouped_gemm + softmax gate (modality routing logic Wave-2 beyond the single ks_moe_gate). Apache-2.0; PaddlePaddle (PT port). Config-verified (text MoE)."
+    examples:
+      - ERNIE-4.5-300B-A47B-PT
+  - id: step-3
+    kind: model
+    family: Step-3
+    arch:
+      hidden: 7168
+      n_layers: 61
+      n_heads: 64
+      n_kv_heads: 1
+      head_dim: 256
+      vocab: 128815
+      attention: MQA
+      rope:
+        style: neox
+        theta: 500000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 5120
+        n_experts: 48
+        top_k: 3
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+
+      extras:
+        - mfa-multi-matrix-factorization-attention
+        - low-rank-qk
+        - share-q-dim-2048
+        - single-kv-head
+        - multimodal
+        - attention-ffn-disaggregation
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "321B total / 38B active, 64K context. MFA (Multi-Matrix Factorization Attention): low-rank QK factorization (share_q_dim=2048) with a single KV head -> ~22% of DeepSeek-V3 per-token attention cost. Modeled as MQA (1 kv head) -> ks_paged_attn_decode; the low-rank QK up/down factorization is an extra GEMM pair (ks_gemm) plus a possible ks_mfa_decode (Wave-2, unmapped) for the fused variant. 48-expert top-3 + 1 shared MoE; vision (depth 63) path unmapped. AFD inference. arXiv 2507.19427. Config-verified."
+    examples:
+      - Step-3
+  - id: hunyuan-a13b
+    kind: model
+    family: Hunyuan
+    arch:
+      hidden: 4096
+      n_layers: 32
+      n_heads: 32
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 128000
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 3072
+        n_experts: 64
+        top_k: 8
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - fine-grained-moe
+        - shared-experts
+        - dual-mode-reasoning
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "80B total / 13B active, 256K context, dual-mode (fast/slow) reasoning. GQA -> ks_paged_attn_decode; fine-grained 64-expert top-8 + 1 shared MoE -> ks_moe_grouped_gemm + softmax gate. head_dim/kv_heads not config-verified here (from repo/HF README) -> medium confidence on those fields. Replaces dense Hunyuan-Large."
+    examples:
+      - Hunyuan-A13B
+  - id: dots.llm1
+    kind: model
+    family: dots.llm
+    arch:
+      hidden: 4096
+      n_layers: 62
+      n_heads: 32
+      n_kv_heads: 32
+      head_dim: 128
+      vocab: 152064
+      attention: MHA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1408
+        n_experts: 128
+        top_k: 6
+        n_shared: 2
+        gating: sigmoid_group
+
+      quant:
+        - bf16
+
+      extras:
+        - fine-grained-moe
+        - shared-experts
+        - qk-norm
+        - first-layer-dense
+        - aux-loss-free-sigmoid-gating
+        - routed-scaling-2.5
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_sigmoid_group_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "142B total / 14B active, 32K context. Full MHA (32 q = 32 kv heads, not GQA) + QK-Norm -> ks_paged_attn_decode; DeepSeek-V3-style fine-grained 128-expert top-6 + 2 shared sigmoid MoE; first layer dense. Dots1ForCausalLM, 11.2T non-synthetic tokens. Config-verified."
+    examples:
+      - dots.llm1.inst
+      - dots.llm1.base
+  - id: llama-4-maverick-17b-128e
+    kind: model
+    family: Llama 4
+    arch:
+      hidden: 5120
+      n_layers: 48
+      n_heads: 40
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 202048
+      attention: GQA
+      rope:
+        style: neox
+        theta: 500000
+        scaling: irope
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 16384
+        n_experts: 128
+        top_k: 1
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - irope
+        - nope-layers
+        - moe-interleaved-dense
+        - qk-norm
+        - early-fusion-multimodal
+        - chunked-attention-8192
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "~400B total / 17B active, 1M context. iRoPE: interleaved chunked attention (chunk=8192) with NoPE layers; GQA(8 kv) -> ks_paged_attn_decode (RoPE on most layers, NoPE on interleaved). 128-expert top-1 routed + 1 shared MoE every other layer; QK-Norm; native multimodal early fusion (vision path unmapped). Config-verified (unsloth mirror)."
+    examples:
+      - Llama-4-Maverick-17B-128E-Instruct
+  - id: gemma-3-1b
+    kind: model
+    family: Gemma 3
+    arch:
+      hidden: 1152
+      n_layers: 26
+      n_heads: 4
+      n_kv_heads: 1
+      head_dim: 256
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm_prepost
+      norm_positions: pre+post
+      mlp:
+        type: GeGLU
+        inter: 6912
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - pre-post-norm
+        - qk-norm
+        - swa-5local-1global-w1024
+        - text-only
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Gemma-3 1b: GQA(1 kv) + QK-norm + 5 local SWA(1024):1 global; GeGLU -> ks_geglu; pre+post RMSNorm; local theta=10K/global theta=1M. Text-only. 1B is 32K-ctx only; softcap removed vs Gemma 2. Layer/head medium-confidence."
+    examples:
+      - Gemma-3-1B
+  - id: gemma-3-4b
+    kind: model
+    family: Gemma 3
+    arch:
+      hidden: 2560
+      n_layers: 34
+      n_heads: 8
+      n_kv_heads: 4
+      head_dim: 256
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm_prepost
+      norm_positions: pre+post
+      mlp:
+        type: GeGLU
+        inter: 10240
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - pre-post-norm
+        - qk-norm
+        - swa-5local-1global-w1024
+        - multimodal
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Gemma-3 4b: GQA(4 kv) + QK-norm + 5 local SWA(1024):1 global; GeGLU -> ks_geglu; pre+post RMSNorm; local theta=10K/global theta=1M. Multimodal (SigLIP). query_pre_attn_scalar=256. Layer/head counts medium-confidence (config gated)."
+    examples:
+      - Gemma-3-4B
+  - id: gemma-3-12b
+    kind: model
+    family: Gemma 3
+    arch:
+      hidden: 3840
+      n_layers: 48
+      n_heads: 16
+      n_kv_heads: 8
+      head_dim: 256
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm_prepost
+      norm_positions: pre+post
+      mlp:
+        type: GeGLU
+        inter: 15360
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - pre-post-norm
+        - qk-norm
+        - swa-5local-1global-w1024
+        - multimodal
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Gemma-3 12b: GQA(8 kv) + QK-norm + 5 local SWA(1024):1 global; GeGLU -> ks_geglu; pre+post RMSNorm; local theta=10K/global theta=1M. Multimodal (SigLIP). head_dim=256, query_pre_attn_scalar=256. KV-head count medium-confidence."
+    examples:
+      - Gemma-3-12B
+  - id: gemma-3-27b
+    kind: model
+    family: Gemma 3
+    arch:
+      hidden: 5376
+      n_layers: 62
+      n_heads: 32
+      n_kv_heads: 16
+      head_dim: 128
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm_prepost
+      norm_positions: pre+post
+      mlp:
+        type: GeGLU
+        inter: 21504
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - pre-post-norm
+        - qk-norm
+        - swa-5local-1global-w1024
+        - multimodal
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "Gemma-3 27b: GQA(16 kv) + QK-norm + 5 local SWA(1024):1 global; GeGLU -> ks_geglu; pre+post RMSNorm; local theta=10K/global theta=1M. Multimodal (SigLIP). query_pre_attn_scalar=168. Config-verified."
+    examples:
+      - Gemma-3-27B
+  - id: gemma-3n-e2b
+    kind: model
+    family: Gemma 3n
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: GeGLU
+        inter: 0
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - matformer-nesting
+        - per-layer-embeddings-ple
+        - sliding-window
+        - edge-multimodal
+        - mix-n-match
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "5B total / ~2B effective edge model. MatFormer (Matryoshka) nesting + Per-Layer Embeddings (PLE offloaded to CPU). GQA + sliding-window within MatFormer -> ks_paged_attn_decode; GeGLU -> ks_geglu. Layer/head dims not cleanly enumerable due to MatFormer -> set 0. PLE offload needs host/device gather plumbing (Wave-2). Medium confidence."
+    examples:
+      - Gemma-3n-E2B
+  - id: gemma-3n-e4b
+    kind: model
+    family: Gemma 3n
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 262144
+      attention: GQA
+      rope:
+        style: neox
+        theta: 1000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: GeGLU
+        inter: 0
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - matformer-nesting
+        - per-layer-embeddings-ple
+        - sliding-window
+        - edge-multimodal
+        - mix-n-match
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_geglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "8B total / ~4B effective edge multimodal (text/image/audio/video). MatFormer + PLE; Mix-n-Match sub-models. GQA + sliding-window -> ks_paged_attn_decode; GeGLU -> ks_geglu. Dims not enumerable (MatFormer) -> 0. Vision/audio encoders unmapped (Wave-2). Medium confidence."
+    examples:
+      - Gemma-3n-E4B
+  - id: phi-4-mini
+    kind: model
+    family: Phi-4
+    arch:
+      hidden: 3072
+      n_layers: 32
+      n_heads: 24
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 200064
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: longrope
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 8192
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - tied-embeddings
+        - longrope
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "3.8B dense decoder-only, 128K context. GQA(8 kv) -> ks_paged_attn_decode; SwiGLU; 200K vocab, tied embeddings; LongRoPE. Phi-4-mini-reasoning shares this arch. (Note: Phi-4-mini-flash is a different hybrid SambaY/Mamba arch.) Medium confidence on dims."
+    examples:
+      - Phi-4-mini
+      - Phi-4-mini-reasoning
+  - id: mistral-small-3-24b
+    kind: family
+    family: Mistral Small 3
+    arch:
+      hidden: 5120
+      n_layers: 40
+      n_heads: 32
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope:
+        style: neox
+        theta: 100000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 32768
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - no-sliding-window
+        - low-latency-40-layers
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "24B dense, text-only, 32K context. GQA(8 kv), full attention (no sliding window) -> ks_paged_attn_decode; SwiGLU; RoPE theta=1e8; deliberately few (40) layers for latency. Apache 2.0. Config-verified."
+    examples:
+      - Mistral-Small-24B-Instruct-2501
+  - id: mistral-small-3.2-24b
+    kind: model
+    family: Mistral Small 3
+    arch:
+      hidden: 5120
+      n_layers: 40
+      n_heads: 32
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope:
+        style: neox
+        theta: 100000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 32768
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - no-sliding-window
+        - multimodal
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "24B dense transformer + SigLIP-style vision, 128K context. Same backbone as 3.1: GQA(8 kv) -> ks_paged_attn_decode; SwiGLU; RoPE theta=1e8. Instruction/function-calling refinements. Vision encoder path unmapped (Wave-2). Apache 2.0. Config-verified."
+    examples:
+      - Mistral-Small-3.2-24B
+  - id: llama-3.3-70b
+    kind: model
+    family: Llama 3 / 3.1 / 3.3
+    arch:
+      hidden: 8192
+      n_layers: 80
+      n_heads: 64
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 128256
+      attention: GQA
+      rope:
+        style: neox
+        theta: 500000
+        scaling: llama3
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 28672
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+        - w8a8
+
+      extras:
+        - high-theta-rope
+        - rope-scaling-128k
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "70B dense, text-only, 128K context. Same arch as Llama-3.1-70B (GQA 8 kv + Llama3 rope scaling, theta=5e5) with improved post-training -> ks_paged_attn_decode + SwiGLU. Config-verified."
+    examples:
+      - Llama-3.3-70B
+  - id: granite-4.0-micro
+    kind: model
+    family: Granite 4.0
+    arch:
+      hidden: 2560
+      n_layers: 40
+      n_heads: 40
+      n_kv_heads: 8
+      head_dim: 64
+      vocab: 100352
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 8192
+
+      quant:
+        - bf16
+        - fp8
+        - w4a16
+
+      extras:
+        - pure-transformer
+        - no-ssm
+        - dense-ffn
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "3B dense pure-transformer (no Mamba), 128K context. GQA(8 kv, head_dim 64) -> ks_paged_attn_decode; SwiGLU dense FFN (no MoE); RoPE theta=1e7. For platforms without SSM support. Apache 2.0. Config-verified."
+    examples:
+      - Granite-4.0-Micro
+  - id: granite-4.0-h-micro
+    kind: model
+    family: Granite 4.0
+    arch:
+      hidden: 2560
+      n_layers: 40
+      n_heads: 40
+      n_kv_heads: 8
+      head_dim: 64
+      vocab: 100352
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 8192
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - hybrid-mamba2
+        - mamba2-attention-9to1
+        - ssm
+        - dense-ffn
+        - mamba-d-state-256
+        - mamba-heads-128
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "3B hybrid Mamba-2/transformer (9:1), 128K context. The ~1-in-10 self-attention layers (GQA 8 kv) map to ks_paged_attn_decode; the Mamba-2 majority needs ks_ssm_scan (Wave-2, unmapped) and is NOT covered by the listed decode kernel. Dense SwiGLU FFN (no MoE). Mamba: d_state 256, d_conv 4, expand 2, 128 heads. model_type=granitemoehybrid. Config-verified."
+    examples:
+      - Granite-4.0-H-Micro
+  - id: granite-4.0-h-small
+    kind: model
+    family: Granite 4.0
+    arch:
+      hidden: 4096
+      n_layers: 40
+      n_heads: 32
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 100352
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1024
+        n_experts: 72
+        top_k: 10
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - hybrid-mamba2
+        - mamba2-attention-9to1
+        - ssm
+        - nope
+        - moe
+        - mamba-d-state-128
+        - mamba-heads-128
+        - tied-embeddings
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "32B total / 9B active hybrid MoE, 128K validated. 4 attention (GQA 8 kv, NoPE) layers -> ks_paged_attn_decode; 36 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 72-expert top-10 + shared MoE -> ks_moe_grouped_gemm. NoPE (no positional encoding) -> rope op is a no-op for attn layers. Apache 2.0. Config-verified."
+    examples:
+      - Granite-4.0-H-Small
+  - id: granite-4.0-h-tiny
+    kind: model
+    family: Granite 4.0
+    arch:
+      hidden: 1536
+      n_layers: 40
+      n_heads: 12
+      n_kv_heads: 4
+      head_dim: 128
+      vocab: 100352
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 512
+        n_experts: 64
+        top_k: 6
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - w4a16
+
+      extras:
+        - hybrid-mamba2
+        - mamba2-attention-9to1
+        - ssm
+        - nope
+        - moe
+        - mamba-d-state-128
+        - mamba-heads-48
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "7B total / 1B active hybrid MoE, 128K validated. 4 attention (GQA 4 kv, NoPE) layers -> ks_paged_attn_decode; 36 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 64-expert top-6 + shared MoE; expert hidden 512. NoPE. Apache 2.0. Config-verified."
+    examples:
+      - Granite-4.0-H-Tiny
+  - id: nemotron-nano-12b-v2-base
+    kind: model
+    family: Nemotron Nano 2
+    arch:
+      hidden: 5120
+      n_layers: 62
+      n_heads: 40
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 20480
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - 6-attn-28-mamba-28-ffn
+        - dense-ffn
+        - mamba-state-128
+        - mamba-groups-8
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "12B dense hybrid, 128K context. 62 layers = 6 self-attn (GQA 8 kv) + 28 Mamba-2 + 28 FFN. Attention layers -> ks_paged_attn_decode; the 28 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). SwiGLU FFN (hidden 20480). Mamba: 8 groups, state 128, head_dim 64. Pretrained 20T tokens FP8. Config-verified."
+    examples:
+      - Nemotron-Nano-12B-v2-Base
+  - id: nemotron-nano-9b-v2
+    kind: model
+    family: Nemotron Nano 2
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: GQA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 0
+
+      quant:
+        - bf16
+        - fp8
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - minitron-compressed
+        - dims-unpublished
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "9B dense hybrid Mamba-Transformer reasoning model, Minitron-compressed from 12B-v2-Base, 128K context. Attention path -> ks_paged_attn_decode; most attention replaced by Mamba-2 -> needs ks_ssm_scan (Wave-2, unmapped). 9B per-layer dims not separately published -> set 0 (see 12B-base for full dims). Medium confidence."
+    examples:
+      - Nemotron-Nano-9B-v2
+  - id: nemotron-3-nano-30b-a3b
+    kind: model
+    family: NVIDIA Nemotron 3
+    arch:
+      hidden: 2688
+      n_layers: 52
+      n_heads: 32
+      n_kv_heads: 2
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1856
+        n_experts: 128
+        top_k: 6
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+        - f32
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - gqa-attention-anchors
+        - moe
+        - nope
+        - relu2-ffn-activation
+        - mamba-heads-64
+        - mamba-state-128
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "30B total / 3B active hybrid MoE, 128K default (up to 1M). hybrid_override_pattern interleaves Mamba-2 / MoE / attention anchors (~17 attn / 17 mamba / 18 moe). GQA(2 kv) anchor-attention -> ks_paged_attn_decode; Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 128-expert top-6 + 1 shared MoE. relu2 (squared ReLU) FFN activation -> modeled via ks_swiglu placeholder (Wave-2: ks_relu2 unmapped). NoPE. First Nemotron 3. Config-verified."
+    examples:
+      - Nemotron-3-Nano-30B-A3B-BF16
+  - id: nemotron-3-super-120b-a12b
+    kind: model
+    family: NVIDIA Nemotron 3
+    arch:
+      hidden: 4096
+      n_layers: 88
+      n_heads: 32
+      n_kv_heads: 2
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1024
+        n_experts: 512
+        top_k: 22
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - fp8
+        - mxfp4
+        - bf16
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - latent-moe
+        - sparse-global-attention
+        - nope
+        - nvfp4-pretrained
+        - mtp-2-layers
+        - mamba-heads-128
+        - mamba-state-128
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "120.6B total / 12.7B active, 1M context. 88-layer stack interleaves LatentMoE + Mamba-2 with a few self-attention global anchors. Sparse GQA(2 kv) anchors -> ks_paged_attn_decode; Mamba-2 needs ks_ssm_scan (Wave-2, unmapped). LatentMoE (512 experts top-22, MoE latent size 1024, shared) -> ks_moe_grouped_gemm + softmax gate (the latent down/up projection is an extra GEMM, Wave-2 ks_latent_moe unmapped). NoPE; NVFP4 pretrained (-> fp8/mxfp4 path); 2 shared-weight MTP layers. 25T tokens. Config-verified."
+    examples:
+      - Nemotron-3-Super-120B-A12B
+  - id: nemotron-3-ultra-550b-a55b
+    kind: model
+    family: NVIDIA Nemotron 3
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 0
+        n_experts: 0
+        top_k: 0
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - mxfp4
+        - fp8
+        - bf16
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - latent-moe
+        - sparse-global-attention
+        - nope
+        - nvfp4
+        - dims-unpublished
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "~550B total / ~55B active, 1M context (family). Largest Nemotron 3 (Computex 2026). Hybrid Mamba-2 majority + sparse global attention + LatentMoE, NVFP4. Sparse attention -> ks_paged_attn_decode; Mamba-2 needs ks_ssm_scan (Wave-2, unmapped); LatentMoE -> ks_moe_grouped_gemm. Detailed layer/head/expert config not yet in a parsed technical report -> dims set 0, medium confidence."
+    examples:
+      - Nemotron-3-Ultra-550B-A55B
+  - id: nemotron-h-56b
+    kind: family
+    family: NVIDIA Nemotron-H
+    arch:
+      hidden: 8192
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 8
+      head_dim: 128
+      vocab: 131072
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 0
+
+      quant:
+        - fp8
+        - bf16
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - 8pct-attention
+        - dense-ffn
+        - no-moe
+        - relu2-ffn-activation
+        - mamba-groups-8
+        - nope
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "56B dense hybrid (no MoE), 8K base context. ~8% of layers are self-attention (GQA 8 kv) evenly dispersed -> ks_paged_attn_decode; the rest alternate Mamba-2 (needs ks_ssm_scan, Wave-2 unmapped) and FFN (squared-ReLU, modeled via ks_swiglu placeholder). Precursor to Nemotron Nano 2 / Nemotron 3. Layer count not enumerated here -> 0. arXiv 2504.03624. Config-verified family-level."
+    examples:
+      - Nemotron-H-56B
+      - Nemotron-H-47B
+      - Nemotron-H-8B
+      - Nemotron-H-4B
+  - id: falcon-h1-34b
+    kind: model
+    family: Falcon-H1
+    arch:
+      hidden: 5120
+      n_layers: 72
+      n_heads: 20
+      n_kv_heads: 4
+      head_dim: 128
+      vocab: 261120
+      attention: GQA
+      rope:
+        style: neox
+        theta: 100000000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 21504
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-parallel-heads
+        - attention-plus-mamba2-parallel
+        - ssm
+        - mamba-heads-32
+        - mamba-d-state-256
+        - mamba-groups-2
+        - high-theta-rope
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "33.6B hybrid-head, 256K context. Attention (GQA 4 kv) and Mamba-2 (SSM) branches run in PARALLEL per block and are concatenated. The attention branch -> ks_paged_attn_decode; the parallel Mamba-2 branch needs ks_ssm_scan (Wave-2, unmapped) plus a concat/fuse step. Dense SwiGLU (no MoE). RoPE theta=1e11. Mamba: 32 heads, d_state 256, 2 groups. ~18T tokens. arXiv 2507.22448. Config-verified."
+    examples:
+      - Falcon-H1-34B-Instruct
+  - id: jamba-large-1.7
+    kind: model
+    family: Jamba 1.6/1.7
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: GQA
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 0
+        n_experts: 16
+        top_k: 2
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - bf16
+        - w8a8
+
+      extras:
+        - hybrid-ssm-transformer
+        - mamba1
+        - ssm
+        - moe-every-other-layer
+        - attention-mamba-1to7
+        - dims-gated
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "398B total / 94B active SSM-Transformer hybrid, 256K context. 4 blocks of 8 layers, 1:7 attention:Mamba ratio, MoE (16 experts top-2) every other layer. The 1-in-8 attention layers -> ks_paged_attn_decode; the Mamba-1 (SSM/conv1d) majority needs ks_ssm_scan (Wave-2, unmapped). MoE -> ks_moe_grouped_gemm. ExpertsInt8. config.json gated on HF -> dims set 0, medium confidence. Jamba Mini 1.7 is the smaller sibling."
+    examples:
+      - AI21-Jamba-Large-1.7
+  - id: minimax-m1-456b
+    kind: family
+    family: MiniMax-M1 / MiniMax-01
+    arch:
+      hidden: 6144
+      n_layers: 80
+      n_heads: 64
+      n_kv_heads: 64
+      head_dim: 96
+      vocab: 200064
+      attention: MHA
+      rope:
+        style: neox
+        theta: 10000000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 9216
+        n_experts: 32
+        top_k: 2
+        n_shared: 0
+        gating: softmax
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-linear-attention
+        - lightning-attention
+        - softmax-1in8
+        - moe
+        - cispo-rl
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "456B total / 45.9B active, 1M native context. Lightning (linear/transnormer) attention with one softmax block per ~8 (softmax-attn at layer indices [7,15,...,79]). Softmax layers -> ks_paged_attn_decode; the Lightning linear-attn layers need ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). 32-expert top-2 MoE. CISPO RL. (M2 reverted to full attention.) head_dim approximate. Config-verified."
+    examples:
+      - MiniMax-M1-80k
+      - MiniMax-Text-01
+  - id: kimi-linear-48b-a3b
+    kind: model
+    family: Kimi Linear
+    arch:
+      hidden: 2304
+      n_layers: 27
+      n_heads: 32
+      n_kv_heads: 32
+      head_dim: 72
+      vocab: 163840
+      attention: MLA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 1024
+        n_experts: 256
+        top_k: 8
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-linear-attention
+        - kimi-delta-attention-kda
+        - mla
+        - kda-mla-3to1
+        - kv-lora-rank-512
+        - ssm
+        - short-conv-4
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "48B total / 3B active, 1M context. Hybrid 3:1 KDA:MLA -> 20 Kimi Delta Attention (linear) layers + 7 full-attention MLA layers (at [4,8,12,16,20,24,27]). The MLA layers -> ks_mla_decode (kv_lora=512, v=128); the 20 KDA linear-attn layers (gated delta rule, DPLR transition, conv kernel 4) need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped). 256-expert top-8 + 1 shared MoE every layer. arXiv 2510.26692. Config-verified."
+    examples:
+      - Kimi-Linear-48B-A3B-Instruct
+  - id: ring-2.5-1t
+    kind: model
+    family: Ling/Ring 2.5
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: MLA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: partial
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: MoE
+        inter: 0
+        n_experts: 0
+        top_k: 0
+        n_shared: 1
+        gating: softmax
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-linear-attention
+        - lightning-linear
+        - mla
+        - lightning-mla-7to1
+        - ssm
+        - qk-norm
+        - partial-rope
+        - dims-unpublished
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_mla_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      moe_gate:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
+      moe_grouped_gemm:
+        fn: ks_moe_grouped_gemm
+        dtype: model
+
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1T total / 63B active, 128K native (256K YaRN, up to 1M). 'World's first hybrid linear-architecture thinking model': 1 MLA per 7 Lightning Linear layers. MLA layers -> ks_mla_decode; the Lightning Linear (linear-attn) majority needs ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). Sparse MoE (Ling 2.0 lineage) -> ks_moe_grouped_gemm. QK-Norm, partial RoPE. Exact layer/expert counts not in parsed config -> dims 0, medium confidence."
+    examples:
+      - Ring-2.5-1T
+      - Ling-2.5-1T
+  - id: zamba2-7b
+    kind: model
+    family: Zamba2
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: MHA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 0
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-mamba2
+        - ssm
+        - shared-attention-blocks-abab
+        - lora-projectors
+        - dense-ffn
+        - dims-gated
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "7B hybrid: Mamba-2 backbone interleaved with TWO weight-shared attention blocks alternated ABAB (LoRA projectors per block, embedding concat into attention input). The shared attention blocks -> ks_paged_attn_decode; the Mamba-2 backbone needs ks_ssm_scan (Wave-2, unmapped). Dense GLU/SwiGLU (no MoE). config.json gated -> dims set 0, medium confidence."
+    examples:
+      - Zamba2-7B
+  - id: rwkv-7-goose-2.9b
+    kind: model
+    family: RWKV-7 (Goose)
+    arch:
+      hidden: 2560
+      n_layers: 32
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 64
+      vocab: 65536
+      attention: none
+      rope: null
+      norm: layernorm
+      norm_positions: pre
+      mlp:
+        type: dense
+        inter: 10240
+
+      quant:
+        - bf16
+        - f32
+
+      extras:
+        - pure-rnn
+        - attention-free
+        - linear
+        - dynamic-state-evolution
+        - delta-rule
+        - no-kv-cache
+        - channel-mix
+        - sqrelu-activation
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_gelu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "2.9B pure RNN, attention-free, linear-time / constant-memory (NO KV cache). RWKV-7 generalizes the delta rule with vector-valued gating (Dynamic State Evolution). There is NO softmax attention: the entire token-mix (time-mix) is a recurrent state update that needs ks_ssm_scan / ks_rwkv_wkv7 (Wave-2, unmapped) -> attn_prefill/attn_decode/rope/qkv/o_proj are placeholders only and NOT load-bearing for this model. LayerNorm; channel-mix FFN (sqrelu) -> ks_gelu placeholder. No RoPE. arXiv 2503.14456. Config-verified."
+    examples:
+      - RWKV-7-Goose-2.9B
+      - rwkv7-2.9B-world
+  - id: hymba-1.5b
+    kind: model
+    family: Hymba
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: MHA
+      rope:
+        style: neox
+        theta: 10000
+        scaling: null
+        interleaved: 0
+
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: SwiGLU
+        inter: 0
+
+      quant:
+        - bf16
+
+      extras:
+        - hybrid-parallel-heads
+        - attention-plus-mamba-parallel
+        - ssm
+        - sliding-window
+        - 3-full-attention-layers
+        - cross-layer-kv-sharing
+        - meta-tokens-128
+        - dims-partial
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "1.5B hybrid-HEAD: standard attention heads and Mamba SSM heads run in PARALLEL within the same layer (>50% of compute is SSM). The attention heads (mostly sliding-window + 3 full layers, cross-layer KV sharing) -> ks_paged_attn_decode; the parallel Mamba SSM heads need ks_ssm_scan (Wave-2, unmapped). 128 learnable meta-tokens prepended. Dense FFN. arXiv 2411.13676. Per-layer dims partial -> set 0, high-confidence on the architecture."
+    examples:
+      - Hymba-1.5B-Base
+  - id: codestral-mamba-7b
+    kind: model
+    family: Codestral Mamba
+    arch:
+      hidden: 0
+      n_layers: 0
+      n_heads: 0
+      n_kv_heads: 0
+      head_dim: 0
+      vocab: 0
+      attention: none
+      rope: null
+      norm: rmsnorm
+      norm_positions: pre
+      mlp:
+        type: dense
+        inter: 0
+
+      quant:
+        - bf16
+
+      extras:
+        - pure-mamba2
+        - ssm
+        - no-attention
+        - linear-time
+        - constant-memory
+        - code-model
+        - dims-unpublished
+
+
+    ops:
+      embedding:
+        fn: ks_embedding_lookup
+        dtype: model
+
+      attn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      rope:
+        fn: ks_rope_gather
+        dtype: model
+
+      attn_prefill:
+        fn: ks_flash_attn_varlen
+        dtype: model
+
+      attn_decode:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      qkv_proj:
+        fn: ks_gemm
+        dtype: model
+
+      o_proj:
+        fn: ks_gemm
+        dtype: model
+
+      ffn_norm:
+        fn: ks_rms_norm_residual
+        dtype: model
+
+      mlp_gate_up:
+        fn: ks_gemm
+        dtype: model
+
+      mlp_act:
+        fn: ks_swiglu
+        dtype: model
+
+      mlp_down:
+        fn: ks_gemm
+        dtype: model
+
+      moe_gate: null
+      moe_grouped_gemm: null
+      lm_head:
+        fn: ks_gemm
+        dtype: model
+
+      sampling:
+        fn: ks_sample
+        dtype: f32
+
+
+    notes: "7B pure Mamba-2 state-space code model \u2014 NO attention layers at all. The whole sequence mixer is Mamba-2 selective scan -> needs ks_ssm_scan (Wave-2, unmapped); attn_* / rope / qkv / o_proj ops are placeholders and NOT load-bearing. Linear-time inference, constant memory, 256K tested. Apache 2.0. Dims not enumerated here -> 0. Medium confidence."
+    examples:
+      - Codestral-Mamba-7B
 

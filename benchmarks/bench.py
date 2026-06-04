@@ -4,24 +4,37 @@
 Detects the GPU, then benchmarks each kernel category over representative LLM
 shapes and reports:
 
-  * latency (microseconds, median over `--iters` timed launches),
+  * latency (microseconds, robust stats over an auto-calibrated number of timed
+    launches): median with the min in parentheses, plus p20/p80 spread,
   * achieved memory bandwidth (GB/s) for bandwidth-bound ops, or compute
-    throughput (TFLOP/s) for compute-bound ops,
-  * correctness (relative error) vs a PyTorch reference where one exists, and
-  * the kernel-set / PyTorch speedup.
+    throughput (TFLOP/s) for compute-bound ops, each as a % of the SKU's dense
+    peak for the active dtype,
+  * correctness (relative error) vs the strongest available PyTorch reference,
+    *gated before* reporting speed (a kernel that fails tolerance is flagged
+    INCORRECT rather than presented as a clean speedup), and
+  * the kernel-set / PyTorch speedup vs the fastest baseline.
 
-Timing uses CUDA events (``torch.cuda.Event``) with a warmup phase, and falls
-back to a CPU wall-clock timer (with ``torch.cuda.synchronize``) only when torch
-is unavailable.
+Timing uses CUDA events (``torch.cuda.Event``) with a budget-derived warmup,
+an L2-cache flush between every measured iteration (Triton ``do_bench`` style)
+so each launch reads cold from HBM, and an optional CUDA-graph replay path that
+amortizes launch overhead for tiny / launch-bound ops.
+
+Methodology spec: ``docs/BENCHMARK_METHODOLOGY.md``.
 
 Examples
 --------
     # everything, fp16
     python bench.py --dtype fp16
 
-    # just norm + activation, bf16, more iters, write a markdown report
+    # just norm + activation, bf16, fill a 300ms budget, write a markdown report
     python bench.py --ops rmsnorm,layernorm,swiglu --dtype bf16 \
-        --iters 100 --output results/l4.md --format md
+        --target-ms 300 --output results/l4.md --format md
+
+    # launch-bound decode ops via cuda graphs (warm-L2, launch overhead removed)
+    python bench.py --ops attention --shape decode --cudagraph --no-l2-flush
+
+    # lock clocks (if permitted) for low-variance numbers
+    python bench.py --lock-clocks --dtype bf16
 
     # list the op categories this harness knows about
     python bench.py --list-ops
@@ -34,6 +47,7 @@ Library discovery: the kernel-set shared library is located by the
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import math
 import os
@@ -104,28 +118,70 @@ class GpuInfo:
         return safe or f"sm{self.sm_arch}"
 
 
-# Known peak specs (memory bandwidth GB/s, dense tensor-core TFLOP/s for the
-# relevant dtype) for roofline context. These are *marketing* peaks used only to
-# print a "% of peak" hint; absence of an entry is fine.
+# Per-SKU DENSE peak specs for the roofline / %-of-peak columns:
+#   bw   = HBM/GDDR bandwidth in GB/s
+#   tf16 = dense bf16/fp16 tensor-core TFLOP/s (NO 2x sparsity)
+#   tf8  = dense fp8/int8 tensor-core TFLOP/s (NO sparsity); 0 if unsupported
+# Numbers are vendor dense peaks (sparsity stripped). SXM/PCIe/NVL and 40/80GB
+# variants differ; we disambiguate a few by detected memory size below.
+# An achieved value over ~105% of these almost always means warm cache (no L2
+# flush) or dead-code elimination — that is the smell the audit calls out.
 _GPU_PEAKS: Dict[str, Dict[str, float]] = {
-    # name-substring : {bw_gbps, tf16 (fp16/bf16 tensor-core dense, no sparsity)}
-    "a100": {"bw": 1935.0, "tf16": 312.0, "tf8": 624.0},
-    "h100": {"bw": 3350.0, "tf16": 989.0, "tf8": 1979.0},
-    "l4":   {"bw": 300.0,  "tf16": 121.0, "tf8": 242.0},
+    # name-substring : {bw, tf16, tf8}
+    "a100": {"bw": 2039.0, "tf16": 312.0, "tf8": 624.0},   # SXM 80GB; PCIe/40GB adjusted below
+    "h200": {"bw": 4800.0, "tf16": 989.0, "tf8": 1979.0},  # SXM 141GB
+    "h100": {"bw": 3350.0, "tf16": 989.0, "tf8": 1979.0},  # SXM 80GB; PCIe/NVL adjusted below
+    "l40s": {"bw": 864.0,  "tf16": 362.0, "tf8": 733.0},
     "l40":  {"bw": 864.0,  "tf16": 181.0, "tf8": 362.0},
-    "t4":   {"bw": 320.0,  "tf16": 65.0,  "tf8": 0.0},
-    "v100": {"bw": 900.0,  "tf16": 125.0, "tf8": 0.0},
-    "4090": {"bw": 1008.0, "tf16": 165.0, "tf8": 330.0},
+    "l4":   {"bw": 300.0,  "tf16": 121.0, "tf8": 242.0},
+    "4090": {"bw": 1008.0, "tf16": 165.0, "tf8": 330.0},   # RTX 4090 (Ada)
+    "3090": {"bw": 936.0,  "tf16": 71.0,  "tf8": 0.0},
+    "a6000": {"bw": 768.0, "tf16": 155.0, "tf8": 310.0},
+    "a10g": {"bw": 600.0,  "tf16": 70.0,  "tf8": 140.0},
     "a10":  {"bw": 600.0,  "tf16": 125.0, "tf8": 250.0},
+    "t4":   {"bw": 320.0,  "tf16": 65.0,  "tf8": 130.0},
+    "v100": {"bw": 900.0,  "tf16": 125.0, "tf8": 0.0},
 }
 
 
 def _peaks_for(gpu: GpuInfo) -> Dict[str, float]:
+    """Dense peaks for the detected SKU, disambiguated by memory size where it
+    matters (A100 40 vs 80GB, H100 PCIe vs SXM). Returns {} if unknown."""
     n = gpu.name.lower().replace(" ", "")
-    for key, peaks in _GPU_PEAKS.items():
+    peaks: Dict[str, float] = {}
+    for key, p in _GPU_PEAKS.items():
         if key in n:
-            return peaks
-    return {}
+            peaks = dict(p)
+            break
+    if not peaks:
+        return {}
+    mem = gpu.total_mem_gb
+    # A100 40GB (HBM2) tops out ~1555 GB/s vs 80GB (HBM2e) ~2039 GB/s.
+    if "a100" in n and 0 < mem < 60:
+        peaks["bw"] = 1555.0
+    # H100 PCIe has lower bandwidth (~2039) than SXM (~3350); NVL ~3900.
+    if "h100" in n:
+        if "pcie" in n or (0 < mem < 90):
+            peaks["bw"] = 2039.0
+        elif "nvl" in n:
+            peaks["bw"] = 3900.0
+    return peaks
+
+
+def peak_for_metric(gpu: GpuInfo, dtype_name: str, metric: str) -> float:
+    """Return the dense peak for the given metric ('bw' GB/s, or 'tflops' for the
+    active dtype). 0.0 when unknown so callers can skip the %-of-peak column."""
+    peaks = _peaks_for(gpu)
+    if not peaks:
+        return 0.0
+    if metric == "bw":
+        return peaks.get("bw", 0.0)
+    # compute peak depends on dtype class
+    name = (dtype_name or "").lower()
+    if name in ("int8", "fp8", "w8a8", "e4m3", "e5m2"):
+        return peaks.get("tf8", 0.0)
+    # fp16/bf16 (and fp32-via-TF32 -> use the same TC dense peak as a ceiling)
+    return peaks.get("tf16", 0.0)
 
 
 def detect_gpu() -> GpuInfo:
@@ -216,6 +272,163 @@ def _detect_via_nvidia_smi() -> Optional[GpuInfo]:
 
 
 # --------------------------------------------------------------------------- #
+# Clock control + environment / repro metadata
+# --------------------------------------------------------------------------- #
+def _nvsmi_query(field: str) -> Optional[str]:
+    """Query a single nvidia-smi --query-gpu field for device 0. None on failure."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", f"--query-gpu={field}",
+             "--format=csv,noheader,nounits"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return out.splitlines()[0].strip() if out else None
+    except Exception:
+        return None
+
+
+def query_clocks() -> Dict[str, object]:
+    """Current SM + memory clocks (MHz) and active throttle reasons via
+    nvidia-smi. Always best-effort; missing values are None."""
+    info: Dict[str, object] = {"sm_mhz": None, "mem_mhz": None,
+                               "throttle": None}
+    sm = _nvsmi_query("clocks.sm")
+    mem = _nvsmi_query("clocks.mem")
+    try:
+        info["sm_mhz"] = int(float(sm)) if sm not in (None, "", "[N/A]") else None
+    except Exception:
+        info["sm_mhz"] = None
+    try:
+        info["mem_mhz"] = int(float(mem)) if mem not in (None, "", "[N/A]") else None
+    except Exception:
+        info["mem_mhz"] = None
+    thr = _nvsmi_query("clocks_throttle_reasons.active")
+    info["throttle"] = thr
+    return info
+
+
+def lock_clocks() -> Dict[str, object]:
+    """Attempt to enable persistence mode and lock GPU clocks to a mid value via
+    nvidia-smi. Returns a status dict; NEVER raises and NEVER fails the run if
+    locking is not permitted (e.g. Colab) — it just reports that it could not."""
+    status: Dict[str, object] = {"requested": True, "locked": False,
+                                 "lock_mhz": None, "detail": ""}
+
+    def _run(cmd: List[str]) -> Tuple[bool, str]:
+        try:
+            p = subprocess.run(cmd, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=20)
+            return p.returncode == 0, p.stdout.decode(errors="ignore").strip()
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    # persistence mode (often needs root)
+    _run(["nvidia-smi", "-pm", "1"])
+
+    # pick a sustainable graphics clock: the median of supported SM clocks.
+    lock_mhz = None
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "-q", "-d", "SUPPORTED_CLOCKS"],
+            stderr=subprocess.DEVNULL).decode(errors="ignore")
+        gr = []
+        for line in out.splitlines():
+            ls = line.strip()
+            if ls.startswith("Graphics") and "MHz" in ls:
+                try:
+                    gr.append(int(ls.split(":")[1].strip().split()[0]))
+                except Exception:
+                    pass
+        if gr:
+            gr = sorted(set(gr))
+            lock_mhz = gr[len(gr) // 2]   # mid value (sustainable, not max-boost)
+    except Exception:
+        lock_mhz = None
+
+    if lock_mhz is not None:
+        ok, detail = _run(["nvidia-smi", f"--lock-gpu-clocks={lock_mhz}"])
+        status["lock_mhz"] = lock_mhz
+        status["locked"] = ok
+        status["detail"] = detail or ("locked" if ok else "lock not permitted")
+    else:
+        status["detail"] = "could not read SUPPORTED_CLOCKS; not locked"
+    return status
+
+
+def reset_clocks() -> None:
+    """Best-effort reset of any locked clocks. Never raises."""
+    for cmd in (["nvidia-smi", "--reset-gpu-clocks"],
+                ["nvidia-smi", "--reset-memory-clocks"]):
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=20)
+        except Exception:
+            pass
+
+
+def collect_env() -> Dict[str, object]:
+    """Driver / CUDA / cuDNN / TF32 / ECC metadata for the repro header.
+    All fields best-effort; missing ones are None."""
+    env: Dict[str, object] = {}
+    env["driver"] = _nvsmi_query("driver_version")
+    env["power_limit_w"] = _nvsmi_query("power.limit")
+    env["ecc"] = _nvsmi_query("ecc.mode.current")
+    if _HAVE_TORCH:
+        env["torch_cuda"] = getattr(torch.version, "cuda", None)
+        try:
+            env["cudnn"] = torch.backends.cudnn.version()
+        except Exception:
+            env["cudnn"] = None
+    else:
+        env["torch_cuda"] = None
+        env["cudnn"] = None
+    # toolkit nvcc (if present on PATH)
+    try:
+        out = subprocess.check_output(["nvcc", "--version"],
+                                      stderr=subprocess.DEVNULL).decode()
+        for line in out.splitlines():
+            if "release" in line:
+                env["nvcc"] = line.strip()
+                break
+    except Exception:
+        env["nvcc"] = None
+    return env
+
+
+def git_commit() -> Optional[str]:
+    """Short git commit hash of the harness, or None."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.check_output(
+            ["git", "-C", here, "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL).decode().strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def apply_tf32(allow: bool) -> Dict[str, object]:
+    """Pin TF32 settings explicitly (BP-08) and return what was set so it can be
+    reported. allow=True enables TF32 for matmul+cudnn (fp16/bf16 paths are
+    unaffected; this governs fp32 GEMM internal precision)."""
+    info: Dict[str, object] = {"matmul_allow_tf32": None,
+                               "cudnn_allow_tf32": None,
+                               "float32_matmul_precision": None}
+    if not _HAVE_TORCH:
+        return info
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = bool(allow)
+        torch.backends.cudnn.allow_tf32 = bool(allow)
+        torch.set_float32_matmul_precision("high" if allow else "highest")
+        info["matmul_allow_tf32"] = torch.backends.cuda.matmul.allow_tf32
+        info["cudnn_allow_tf32"] = torch.backends.cudnn.allow_tf32
+        info["float32_matmul_precision"] = "high" if allow else "highest"
+    except Exception:
+        pass
+    return info
+
+
+# --------------------------------------------------------------------------- #
 # dtype helpers
 # --------------------------------------------------------------------------- #
 _DTYPE_ALIASES = {
@@ -239,36 +452,237 @@ def dtype_bytes(dt) -> int:
 # --------------------------------------------------------------------------- #
 # Timing
 # --------------------------------------------------------------------------- #
-def time_cuda(fn: Callable[[], None], warmup: int, iters: int) -> float:
-    """Median per-call latency in microseconds, timed with CUDA events.
+@dataclass
+class Timing:
+    """Per-call latency distribution in microseconds, plus how it was measured."""
+    median_us: float = float("nan")
+    min_us: float = float("nan")
+    p20_us: float = float("nan")
+    p80_us: float = float("nan")
+    iters: int = 0
+    method: str = "event"   # "event" (flushed or warm eager) or "cudagraph"
 
-    `fn` must enqueue exactly one logical op (no host sync inside). We time each
-    iteration individually so we can take a median (robust to clock/boost jitter
-    and the occasional context switch).
-    """
+    @classmethod
+    def from_samples(cls, samples_ms: Sequence[float], method: str) -> "Timing":
+        us = sorted(s * 1e3 for s in samples_ms)   # ms -> us, sorted
+        if not us:
+            return cls(method=method)
+
+        def _pct(p: float) -> float:
+            if len(us) == 1:
+                return us[0]
+            idx = p * (len(us) - 1)
+            lo = int(math.floor(idx))
+            hi = int(math.ceil(idx))
+            if lo == hi:
+                return us[lo]
+            return us[lo] + (us[hi] - us[lo]) * (idx - lo)
+
+        return cls(
+            median_us=statistics.median(us),
+            min_us=us[0],
+            p20_us=_pct(0.20),
+            p80_us=_pct(0.80),
+            iters=len(us),
+            method=method,
+        )
+
+
+# Global timing knobs, set once in main() from the CLI. Kept as module state so
+# the per-op bench functions keep their existing (ctx) signature.
+@dataclass
+class TimingConfig:
+    l2_flush: bool = True
+    cudagraph: bool = False
+    target_ms: float = 200.0
+    iters: Optional[int] = None       # explicit override; None => auto-calibrate
+    warmup: int = 10                  # floor; budget may raise it
+    max_iters: int = 1000
+    l2_bytes: int = 256 * 1024 * 1024  # fallback; replaced by ~2x L2 query
+
+
+_TIMING = TimingConfig()
+_L2_BUFFER = None   # lazily-allocated device scratch for the L2 flush
+
+
+def query_l2_flush_bytes(gpu: "GpuInfo") -> int:
+    """~2x the GPU L2 cache size in bytes (Triton do_bench uses a buffer larger
+    than L2 so the prior iteration's footprint is evicted). Falls back to 256MB
+    when the L2 size cannot be queried."""
+    l2 = 0
     if _HAVE_TORCH and torch.cuda.is_available():
-        for _ in range(max(1, warmup)):
-            fn()
-        torch.cuda.synchronize()
-        starts = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-        ends = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-        for i in range(iters):
-            starts[i].record()
-            fn()
-            ends[i].record()
-        torch.cuda.synchronize()
-        times_ms = [s.elapsed_time(e) for s, e in zip(starts, ends)]
-        return statistics.median(times_ms) * 1e3   # ms -> us
+        try:
+            props = torch.cuda.get_device_properties(0)
+            l2 = int(getattr(props, "L2_cache_size", 0) or 0)
+        except Exception:
+            l2 = 0
+    if l2 <= 0:
+        return 256 * 1024 * 1024
+    # 2x L2, but never smaller than 64MB and cap at 512MB to bound the per-iter cost.
+    want = 2 * l2
+    return max(64 * 1024 * 1024, min(want, 512 * 1024 * 1024))
 
-    # CPU wall-clock fallback (no torch CUDA): coarse but functional.
+
+def _get_l2_buffer():
+    global _L2_BUFFER
+    if not (_HAVE_TORCH and torch.cuda.is_available()):
+        return None
+    n = max(1, _TIMING.l2_bytes // 4)
+    if _L2_BUFFER is None or _L2_BUFFER.numel() != n:
+        _L2_BUFFER = torch.empty(n, dtype=torch.int32, device="cuda")
+    return _L2_BUFFER
+
+
+def _flush_l2() -> None:
+    buf = _get_l2_buffer()
+    if buf is not None:
+        buf.zero_()
+
+
+def _estimate_iters(fn: Callable[[], None]) -> Tuple[int, float]:
+    """Estimate one-iter cost (ms) from a few flushed launches, then derive the
+    iteration count to fill the target-ms budget. Returns (n_iters, est_ms)."""
+    if _TIMING.iters is not None:
+        return max(1, _TIMING.iters), float("nan")
+    # a few quick samples to estimate cost (with L2 flush so the estimate matches
+    # the real measurement regime)
+    n_probe = 5
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    if _TIMING.l2_flush:
+        _flush_l2()
+    start.record()
+    for _ in range(n_probe):
+        fn()
+    end.record()
+    torch.cuda.synchronize()
+    est_ms = max(start.elapsed_time(end) / n_probe, 1e-4)
+    n = int(_TIMING.target_ms / est_ms)
+    n = max(_TIMING.warmup, n)             # always at least a warmup's worth
+    n = max(20, min(n, _TIMING.max_iters))  # floor 20 for a stable median
+    return n, est_ms
+
+
+def _time_cuda_events(fn: Callable[[], None], warmup: int, iters: int) -> Timing:
+    """Flushed (or warm) per-iteration CUDA-event timing.
+
+    `fn` must enqueue exactly one logical op (no host sync inside). Each iteration
+    is timed individually; when L2 flush is enabled the scratch buffer is zeroed
+    immediately before each timed launch so the op reads cold from HBM. We enqueue
+    all iterations then synchronize once (no inner sync), then read elapsed_time.
+    """
     for _ in range(max(1, warmup)):
+        if _TIMING.l2_flush:
+            _flush_l2()
         fn()
-    samples = []
-    for _ in range(iters):
-        t0 = time.perf_counter()
+    torch.cuda.synchronize()
+
+    starts = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+    ends = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+    for i in range(iters):
+        if _TIMING.l2_flush:
+            _flush_l2()
+        starts[i].record()
         fn()
-        samples.append((time.perf_counter() - t0) * 1e6)
-    return statistics.median(samples)
+        ends[i].record()
+    torch.cuda.synchronize()
+    times_ms = [s.elapsed_time(e) for s, e in zip(starts, ends)]
+    return Timing.from_samples(times_ms, method="event")
+
+
+def _time_cudagraph(fn: Callable[[], None], warmup: int, iters: int) -> Timing:
+    """Capture `fn` into a CUDA graph and replay it to amortize launch overhead.
+
+    NOTE (BP-22): L2 is NOT flushed between graph replays, so these are WARM-L2,
+    launch-overhead-removed numbers — not directly comparable to flushed-eager.
+    Falls back to event timing if capture is unavailable or fails.
+    """
+    if not hasattr(torch.cuda, "CUDAGraph"):
+        return _time_cuda_events(fn, warmup, iters)
+
+    # warm up + let any lazy allocation/autotune settle before capture
+    for _ in range(max(3, warmup)):
+        fn()
+    torch.cuda.synchronize()
+
+    # number of fn() invocations baked into one replay window
+    replays = max(10, min(iters, 50))
+    try:
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            for _ in range(replays):
+                fn()
+    except Exception:
+        # capture not supported for this op (e.g. dynamic shapes / sync inside)
+        return _time_cuda_events(fn, warmup, iters)
+
+    # warm the graph itself
+    for _ in range(3):
+        g.replay()
+    torch.cuda.synchronize()
+
+    # each measured window = one replay (replays invocations); divide by replays
+    windows = max(20, min(iters, _TIMING.max_iters))
+    starts = [torch.cuda.Event(enable_timing=True) for _ in range(windows)]
+    ends = [torch.cuda.Event(enable_timing=True) for _ in range(windows)]
+    for i in range(windows):
+        starts[i].record()
+        g.replay()
+        ends[i].record()
+    torch.cuda.synchronize()
+    times_ms = [s.elapsed_time(e) / replays for s, e in zip(starts, ends)]
+    return Timing.from_samples(times_ms, method="cudagraph")
+
+
+def time_op(fn: Callable[[], None]) -> Timing:
+    """Time one logical op and return a full latency distribution.
+
+    Honors the global TimingConfig: budget-derived iteration count (or --iters
+    override), optional L2 flush per iteration, and an optional CUDA-graph replay
+    path for launch-bound ops. Requires torch+CUDA (main() guarantees this).
+    """
+    n_iters, _ = _estimate_iters(fn)
+    warmup = _TIMING.warmup
+    if _TIMING.cudagraph:
+        return _time_cudagraph(fn, warmup, n_iters)
+    return _time_cuda_events(fn, warmup, n_iters)
+
+
+def time_cuda(fn: Callable[[], None], warmup: int = 0, iters: int = 0) -> float:
+    """Backward-compatible shim: returns the median latency in microseconds.
+
+    Retained so the per-op bench functions can call ``time_cuda(run, ...)`` as
+    before; the ``warmup``/``iters`` args are ignored in favor of the global
+    TimingConfig (auto-calibration + L2 flush). Use :func:`time_op` for the full
+    distribution.
+    """
+    return time_op(fn).median_us
+
+
+# Consume timed-ref outputs so the launch is not dead-code-eliminated (BP-10).
+# We accumulate one element of the output into a persistent DEVICE scalar — this
+# observes the result and keeps it live WITHOUT a host sync (a host sync would
+# serialize and corrupt the async event timing).
+_DCE_SINK = None
+
+
+def _sink(fn: Callable[[], object]) -> Callable[[], None]:
+    """Wrap a function that returns a tensor so its output is consumed each call,
+    preventing the timed launch from being optimized away. The consume is a
+    device-side accumulate (no host sync)."""
+    global _DCE_SINK
+    if _HAVE_TORCH and torch.cuda.is_available():
+        _DCE_SINK = torch.zeros((), device="cuda", dtype=torch.float32)
+
+    def wrapped() -> None:
+        out = fn()
+        if (_DCE_SINK is not None and out is not None
+                and hasattr(out, "numel") and out.numel() > 0):
+            try:
+                _DCE_SINK.add_(out.reshape(-1)[0].float())
+            except Exception:
+                pass
+    return wrapped
 
 
 # --------------------------------------------------------------------------- #
@@ -279,14 +693,38 @@ class Result:
     op: str
     shape: str
     dtype: str
-    ks_us: float = float("nan")
-    ref_us: float = float("nan")
+    ks_us: float = float("nan")        # representative (median) kernel-set latency
+    ref_us: float = float("nan")       # representative (median) baseline latency
+    # full latency distribution (us) for the kernel-set op
+    ks_min_us: float = float("nan")
+    ks_p20_us: float = float("nan")
+    ks_p80_us: float = float("nan")
+    ref_min_us: float = float("nan")
     gbps: float = float("nan")
     tflops: float = float("nan")
+    bw_util: float = float("nan")      # achieved GB/s as % of dense peak
+    compute_util: float = float("nan")  # achieved TFLOP/s as % of dense peak
     rel_err: float = float("nan")
+    tol: float = float("nan")          # tolerance the correctness was gated at
+    is_correct: Optional[bool] = None  # None = no reference available
     speedup: float = float("nan")
-    status: str = "ok"            # "ok", "skip", or "error: ..."
+    baseline: str = ""                 # which baseline the speedup is vs
+    method: str = ""                   # "event" / "cudagraph"
+    n_iters: int = 0
+    status: str = "ok"            # "ok", "skip", "INCORRECT", or "error: ..."
     note: str = ""
+
+    def set_ks_timing(self, t: "Timing") -> None:
+        self.ks_us = t.median_us
+        self.ks_min_us = t.min_us
+        self.ks_p20_us = t.p20_us
+        self.ks_p80_us = t.p80_us
+        self.method = t.method
+        self.n_iters = t.iters
+
+    def set_ref_timing(self, t: "Timing") -> None:
+        self.ref_us = t.median_us
+        self.ref_min_us = t.min_us
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -317,6 +755,44 @@ class Ctx:
     def empty(self, *shape, dtype=None):
         return torch.empty(*shape, device=self.device,
                            dtype=self.dt if dtype is None else dtype)
+
+    def tol(self) -> float:
+        """Op-appropriate relative-error tolerance for the active dtype."""
+        if self.dt is torch.float32:
+            return 2e-3
+        if self.dt is torch.bfloat16:
+            return 3e-2   # bf16 has only 8 mantissa bits
+        return 1e-2       # fp16
+
+
+def _fill_util(r: Result, gpu: GpuInfo) -> None:
+    """Populate bw_util / compute_util (% of dense peak) from gbps / tflops."""
+    if not math.isnan(r.gbps):
+        peak = peak_for_metric(gpu, r.dtype, "bw")
+        if peak > 0:
+            r.bw_util = 100.0 * r.gbps / peak
+    if not math.isnan(r.tflops):
+        # w8a8 is int8 math; tag it so the peak lookup picks tf8
+        dn = "int8" if r.op == "w8a8" else r.dtype
+        peak = peak_for_metric(gpu, dn, "tflops")
+        if peak > 0:
+            r.compute_util = 100.0 * r.tflops / peak
+
+
+def gate_correctness(r: Result, ctx: Ctx) -> bool:
+    """Set is_correct/tol/status from r.rel_err BEFORE trusting the speed.
+
+    Returns True if the op passed (or has no reference). A failing op is marked
+    status='INCORRECT' so the report does not present it as a clean speedup.
+    """
+    r.tol = ctx.tol()
+    if math.isnan(r.rel_err):
+        r.is_correct = None     # no reference => cannot gate
+        return True
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct and r.status == "ok":
+        r.status = "INCORRECT"
+    return bool(r.is_correct)
 
 
 # op-category -> list of (shape_label, builder). builder(ctx) -> Result
@@ -359,22 +835,28 @@ def _bench_rmsnorm(ctx: Ctx, rows: int, hidden: int) -> Result:
     def run():
         ks.norm.rms_norm(out, x, w, eps=eps)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    # bytes: read x + write out (+ read w once, negligible) ~ 2 * rows*hidden
-    nbytes = 2 * rows * hidden * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
     # reference
     def ref_rms(t):
         f = t.float()
         return (f * torch.rsqrt(f.pow(2).mean(-1, keepdim=True) + eps)).to(t.dtype) * w
 
+    # correctness FIRST (gate timing): materialize output for the rel_err read.
     ref = ref_rms(x)
     ks.norm.rms_norm(out, x, w, eps=eps)
     torch.cuda.synchronize()
     r.rel_err = rel_err(out, ref)
-    r.ref_us = time_cuda(lambda: ref_rms(x), ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # bytes: read x + write out (+ read w once, negligible) ~ 2 * rows*hidden
+    nbytes = 2 * rows * hidden * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(lambda: ref_rms(x))))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
     return r
 
 
@@ -389,19 +871,23 @@ def _bench_layernorm(ctx: Ctx, rows: int, hidden: int) -> Result:
     def run():
         ks.norm.layer_norm(out, x, w, b, eps=eps)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    nbytes = 2 * rows * hidden * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
     ref = torch.nn.functional.layer_norm(
         x.float(), (hidden,), w.float(), b.float(), eps).to(ctx.dt)
     ks.norm.layer_norm(out, x, w, b, eps=eps)
     torch.cuda.synchronize()
     r.rel_err = rel_err(out, ref)
-    r.ref_us = time_cuda(
-        lambda: torch.nn.functional.layer_norm(x, (hidden,), w, b, eps),
-        ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 2 * rows * hidden * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(
+        lambda: torch.nn.functional.layer_norm(x, (hidden,), w, b, eps))))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
     return r
 
 
@@ -430,18 +916,23 @@ def _bench_swiglu(ctx: Ctx, rows: int, inter: int) -> Result:
     def run():
         ks.activation.swiglu(out, gate, up)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    # read gate + read up + write out = 3 * rows*inter
-    nbytes = 3 * rows * inter * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
     ref = (torch.nn.functional.silu(gate.float()) * up.float()).to(ctx.dt)
     ks.activation.swiglu(out, gate, up)
     torch.cuda.synchronize()
     r.rel_err = rel_err(out, ref)
-    r.ref_us = time_cuda(
-        lambda: torch.nn.functional.silu(gate) * up, ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read gate + read up + write out = 3 * rows*inter
+    nbytes = 3 * rows * inter * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(
+        lambda: torch.nn.functional.silu(gate) * up)))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
     return r
 
 
@@ -484,17 +975,20 @@ def _bench_rope(ctx: Ctx, tokens: int, qh: int, kvh: int, hd: int) -> Result:
         # in-place; restore inputs is not needed for timing (idempotent layout)
         ks.rope.rope_inplace(q, k, cos, sin, tokens, qh, kvh, hd)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    nbytes = 2 * (tokens * qh * hd + tokens * kvh * hd) * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
-    # correctness on a fresh copy
+    # correctness FIRST on a fresh copy
     qc, kc = q0.clone(), k0.clone()
     ref_q = _ref_rope_neox(qc, cos, sin)
     ks.rope.rope_inplace(qc, kc, cos, sin, tokens, qh, kvh, hd)
     torch.cuda.synchronize()
     r.rel_err = rel_err(qc, ref_q)
     r.note = "neox/rotate_half"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 2 * (tokens * qh * hd + tokens * kvh * hd) * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
     return r
 
 
@@ -531,36 +1025,66 @@ def _bench_attn_prefill(ctx: Ctx, b, seq, qh, kvh, hd) -> Result:
         ks.attention.flash_attn(out, q, k, v, b, seq, seq, qh, kvh, hd,
                                 softmax_scale=scale, causal=True)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    # causal attention FLOPs ~ 2 * (QK^T + softmax*V) * 0.5 (causal)
-    # ~ 4 * b * qh * seq^2 * hd  (2 matmuls, factor 2 for MAC), halved for causal
-    flops = 4.0 * b * qh * (seq ** 2) * hd * 0.5
-    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
-
-    # reference: torch SDPA with GQA expansion
-    ref = _ref_sdpa(q, k, v, qh, kvh, causal=True, scale=scale)
+    # correctness FIRST: high-precision fp32 SDPA reference (math backend).
+    ref = _ref_sdpa(q, k, v, qh, kvh, causal=True, scale=scale, fp32=True)
     ks.attention.flash_attn(out, q, k, v, b, seq, seq, qh, kvh, hd,
                             softmax_scale=scale, causal=True)
     torch.cuda.synchronize()
     r.rel_err = rel_err(out, ref)
-    r.ref_us = time_cuda(
-        lambda: _ref_sdpa(q, k, v, qh, kvh, causal=True, scale=scale),
-        ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # causal attention FLOPs ~ 2 * (QK^T + softmax*V) * 0.5 (causal)
+    # ~ 4 * b * qh * seq^2 * hd  (2 matmuls, factor 2 for MAC), halved for causal
+    flops = 4.0 * b * qh * (seq ** 2) * hd * 0.5
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+
+    # baseline timed in the KERNEL's dtype with the flash/efficient SDPA backend
+    # (fair precision + strongest torch path), not fp32-math.
+    r.set_ref_timing(time_op(_sink(
+        lambda: _ref_sdpa(q, k, v, qh, kvh, causal=True, scale=scale,
+                          fp32=False))))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "sdpa(flash/efficient)"
     return r
 
 
-def _ref_sdpa(q, k, v, qh, kvh, causal, scale):
-    # q: [b, s, qh, hd]; k/v: [b, s, kvh, hd] -> [b, h, s, hd]
-    qt = q.transpose(1, 2).float()
-    kt = k.transpose(1, 2).float()
-    vt = v.transpose(1, 2).float()
+def _sdpa_backends():
+    """Return a context manager pinning SDPA to the flash/efficient backends
+    (excluding the slow math fallback), or a no-op CM if unavailable."""
+    import contextlib
+    try:
+        from torch.nn.attention import sdpa_kernel, SDPBackend
+        return sdpa_kernel([SDPBackend.FLASH_ATTENTION,
+                            SDPBackend.EFFICIENT_ATTENTION])
+    except Exception:
+        return contextlib.nullcontext()
+
+
+def _ref_sdpa(q, k, v, qh, kvh, causal, scale, fp32: bool):
+    """torch SDPA reference with GQA expansion.
+
+    fp32=True  -> high-precision math backend, for the correctness baseline.
+    fp32=False -> kernel dtype + flash/efficient backend, for a FAIR timed
+                  baseline (matches the kernel's precision, BP-08).
+    """
+    cast = (lambda t: t.float()) if fp32 else (lambda t: t)
+    qt = cast(q.transpose(1, 2))
+    kt = cast(k.transpose(1, 2))
+    vt = cast(v.transpose(1, 2))
     if kvh != qh:
         rep = qh // kvh
         kt = kt.repeat_interleave(rep, dim=1)
         vt = vt.repeat_interleave(rep, dim=1)
-    o = torch.nn.functional.scaled_dot_product_attention(
-        qt, kt, vt, is_causal=causal, scale=scale)
+    if fp32:
+        o = torch.nn.functional.scaled_dot_product_attention(
+            qt, kt, vt, is_causal=causal, scale=scale)
+    else:
+        with _sdpa_backends():
+            o = torch.nn.functional.scaled_dot_product_attention(
+                qt, kt, vt, is_causal=causal, scale=scale)
     return o.transpose(1, 2).to(q.dtype)
 
 
@@ -584,10 +1108,11 @@ def _bench_attn_decode(ctx: Ctx, num_seqs, ctx_len, qh, kvh, hd, block) -> Resul
             out, q, k_cache, v_cache, block_tables, seq_lens,
             num_seqs, qh, kvh, hd, block, blocks_per_seq, softmax_scale=scale)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
+    r.set_ks_timing(time_op(run))
     # decode is memory-bound: read whole KV cache each step.
     kv_bytes = 2 * num_seqs * kvh * ctx_len * hd * dtype_bytes(ctx.dt)
     r.gbps = kv_bytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
     r.note = "memory-bound (KV read)"
     return r
 
@@ -619,17 +1144,52 @@ def _bench_gemm(ctx: Ctx, m, n, k) -> Result:
     def run():
         ks.gemm.gemm(c, a, b, m=m, n=n, k=k)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    flops = 2.0 * m * n * k
-    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
-
+    # correctness FIRST vs an fp32-accumulated reference.
     ref = (a.float() @ b.float()).to(ctx.dt)
     ks.gemm.gemm(c, a, b, m=m, n=n, k=k)
     torch.cuda.synchronize()
     r.rel_err = rel_err(c, ref)
-    r.ref_us = time_cuda(lambda: a @ b, ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    flops = 2.0 * m * n * k
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+
+    # Baselines at the kernel dtype (TF32 pinned globally): cuBLAS eager `a@b`
+    # and, when available, torch.compile(max-autotune). Headline vs the FASTEST.
+    cublas = time_op(_sink(lambda: a @ b))
+    best, best_name = cublas, "cublas(a@b)"
+    compiled = _maybe_compile_matmul(a, b)
+    if compiled is not None:
+        comp = time_op(_sink(compiled))
+        if comp.median_us < best.median_us:
+            best, best_name = comp, "torch.compile"
+        r.note = (f"cublas={cublas.median_us:.1f}us "
+                  f"compile={comp.median_us:.1f}us")
+    r.set_ref_timing(best)
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = best_name
     return r
+
+
+def _maybe_compile_matmul(a, b):
+    """Return a callable computing a@b via torch.compile(max-autotune), or None
+    if torch.compile is unavailable / fails. Cached across shapes is unsafe
+    (shapes differ), so we compile per call-site lazily and tolerate failure."""
+    if not hasattr(torch, "compile"):
+        return None
+    try:
+        def mm(x, y):
+            return x @ y
+        fn = torch.compile(mm, mode="max-autotune")
+        # trigger compilation once so it is not in the timed window
+        _ = fn(a, b)
+        torch.cuda.synchronize()
+        return lambda: fn(a, b)
+    except Exception:
+        return None
 
 
 for _lbl, _m, _n, _k in _GEMM_SHAPES:
@@ -652,16 +1212,21 @@ def _bench_w8a8(ctx: Ctx, m, n, k) -> Result:
         ks.gemm.gemm_w8a8(out, a, b, a_scale, b_scale, m=m, n=n, k=k,
                           out_dtype=out_dt)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    flops = 2.0 * m * n * k
-    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
-
-    # reference: int32 matmul then per-token x per-channel dequant
-    acc = (a.int() @ b.int()).float()
+    # correctness FIRST. reference: int matmul (done in fp64 — CUDA has no
+    # integer matmul, and fp64 represents these |sum| < 2^53 products exactly)
+    # then dequant.
+    acc = (a.double() @ b.double()).float()
     ref = (acc * a_scale.unsqueeze(1) * b_scale.unsqueeze(0)).to(ctx.dt)
     ks.gemm.gemm_w8a8(out, a, b, a_scale, b_scale, m=m, n=n, k=k, out_dtype=out_dt)
     torch.cuda.synchronize()
     r.rel_err = rel_err(out, ref)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    flops = 2.0 * m * n * k
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)   # int8 -> tf8 peak
     r.note = "int8xint8->acc int32, per-token/per-channel dequant"
     return r
 
@@ -691,13 +1256,14 @@ def _bench_w4a16(ctx: Ctx, m, n, k, group_size=128) -> Result:
                            m=m, n=n, k=k, group_size=group_size)
 
     try:
-        r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
+        r.set_ks_timing(time_op(run))
     except Exception as exc:
         r.status = f"error: {type(exc).__name__}: {exc}"
         return r
     flops = 2.0 * m * n * k
     r.tflops = flops / (r.ks_us * 1e-6) / 1e12
-    r.note = "no portable torch int4 ref; throughput only"
+    _fill_util(r, ctx.gpu)
+    r.note = "no portable torch int4 ref; throughput only (uncorrectness-gated)"
     return r
 
 
@@ -725,9 +1291,7 @@ def _bench_moe_gate(ctx: Ctx, num_tokens, hidden, inter, E, k) -> Result:
         ks.moe.gate_softmax_topk(weights, indices, logits,
                                  num_tokens, E, k, renormalize=True)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-
-    # reference: softmax + topk + renormalize
+    # correctness FIRST. reference: softmax + topk + renormalize
     probs = torch.softmax(logits.float(), dim=-1)
     ref_w, ref_i = torch.topk(probs, k, dim=-1)
     ref_w = ref_w / ref_w.sum(-1, keepdim=True)
@@ -738,6 +1302,10 @@ def _bench_moe_gate(ctx: Ctx, num_tokens, hidden, inter, E, k) -> Result:
     w_sorted = torch.sort(weights.float(), dim=-1, descending=True).values
     rw_sorted = torch.sort(ref_w, dim=-1, descending=True).values
     r.rel_err = rel_err(w_sorted, rw_sorted)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
     r.note = "softmax top-k gating"
     return r
 
@@ -758,13 +1326,31 @@ def _bench_moe_grouped_gemm(ctx: Ctx, num_tokens, hidden, inter, E, k) -> Result
     def run():
         ks.moe.grouped_gemm(c, a, b, offsets, E, total_rows, inter, hidden)
 
+    # correctness FIRST: per-expert torch GEMM over the CSR offsets.
     try:
-        r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
+        ks.moe.grouped_gemm(c, a, b, offsets, E, total_rows, inter, hidden)
+        torch.cuda.synchronize()
+        off = offsets.detach().cpu().tolist()
+        ref = torch.empty_like(c)
+        for e in range(E):
+            lo, hi = off[e], off[e + 1]
+            if hi > lo:
+                ref[lo:hi] = (a[lo:hi].float() @ b[e].float()).to(c.dtype)
+        r.rel_err = rel_err(c, ref)
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    if not gate_correctness(r, ctx):
+        return r
+
+    try:
+        r.set_ks_timing(time_op(run))
     except Exception as exc:
         r.status = f"error: {type(exc).__name__}: {exc}"
         return r
     flops = 2.0 * total_rows * inter * hidden
     r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
     r.note = "grouped GEMM over experts"
     return r
 
@@ -791,17 +1377,23 @@ def _bench_sampling(ctx: Ctx, num_seqs, vocab) -> Result:
     def run():
         ks.sampling.argmax(tokens, logits, num_seqs, vocab)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    nbytes = num_seqs * vocab * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
+    # correctness FIRST
     ref = logits.float().argmax(-1).to(torch.int32)
     ks.sampling.argmax(tokens, logits, num_seqs, vocab)
     torch.cuda.synchronize()
     match = (tokens == ref).float().mean().item()
     r.rel_err = 1.0 - match   # fraction mismatched (0 == perfect)
-    r.ref_us = time_cuda(lambda: logits.argmax(-1), ctx.warmup, ctx.iters)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = num_seqs * vocab * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(lambda: logits.argmax(-1))))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
     r.note = "argmax (greedy); rel_err = mismatch fraction"
     return r
 
@@ -829,22 +1421,27 @@ def _bench_cross_entropy(ctx: Ctx, num_tokens, vocab) -> Result:
         ks.loss.cross_entropy(losses, grad, logits, targets,
                               num_tokens, vocab, ignore_index=-100)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    # read logits + write grad ~ 2 * tokens*vocab
-    nbytes = 2 * num_tokens * vocab * dtype_bytes(ctx.dt)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
+    # correctness FIRST (on the forward loss)
     ref = torch.nn.functional.cross_entropy(
         logits.float(), targets, reduction="none")
     ks.loss.cross_entropy(losses, grad, logits, targets, num_tokens, vocab,
                           ignore_index=-100)
     torch.cuda.synchronize()
     r.rel_err = rel_err(losses, ref)
-    r.ref_us = time_cuda(
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read logits + write grad ~ 2 * tokens*vocab
+    nbytes = 2 * num_tokens * vocab * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(
         lambda: torch.nn.functional.cross_entropy(
-            logits, targets, reduction="none"),
-        ctx.warmup, ctx.iters)
+            logits, targets, reduction="none"))))
     r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager(fwd-only)"
     r.note = "fused fwd+bwd; rel_err on forward loss"
     return r
 
@@ -872,11 +1469,6 @@ def _bench_adamw(ctx: Ctx, n) -> Result:
         ks.optimizer.adamw(param, grad, exp_avg, exp_avg_sq,
                            lr=1e-3, step=1)
 
-    r.ks_us = time_cuda(run, ctx.warmup, ctx.iters)
-    # read+write param (dt) + grad (dt) + 2 fp32 states r/w
-    nbytes = (3 * n * dtype_bytes(ctx.dt)) + (4 * n * 4)
-    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
-
     # reference: a single fused AdamW step on fresh copies.
     p2 = param.detach().clone().float()
     g2 = grad.detach().clone().float()
@@ -894,6 +1486,14 @@ def _bench_adamw(ctx: Ctx, n) -> Result:
     ks.optimizer.adamw(pk, grad, ek, sk, lr=1e-3, step=1)
     torch.cuda.synchronize()
     r.rel_err = rel_err(pk, p2.to(ctx.dt))
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read+write param (dt) + grad (dt) + 2 fp32 states r/w
+    nbytes = (3 * n * dtype_bytes(ctx.dt)) + (4 * n * 4)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
     r.note = "fused AdamW step; memory-bound"
     return r
 
@@ -944,18 +1544,77 @@ def _print_progress(r: Result) -> None:
     if r.status.startswith("error"):
         print(f"  [ERR ] {r.op:<18} {r.shape:<30} {r.status}", file=sys.stderr)
         return
+    if r.status == "INCORRECT":
+        print(f"  [BAD ] {r.op:<18} {r.shape:<30} INCORRECT "
+              f"rel_err={r.rel_err:.2e} > tol={r.tol:.1e} (speed not reported)",
+              file=sys.stderr)
+        return
     perf = ""
     if not math.isnan(r.tflops):
         perf = f"{r.tflops:8.1f} TFLOP/s"
+        if not math.isnan(r.compute_util):
+            perf += f" ({r.compute_util:.0f}% pk)"
     elif not math.isnan(r.gbps):
         perf = f"{r.gbps:8.1f} GB/s"
+        if not math.isnan(r.bw_util):
+            perf += f" ({r.bw_util:.0f}% pk)"
     extra = ""
     if not math.isnan(r.speedup):
         extra += f"  speedup={r.speedup:5.2f}x"
     if not math.isnan(r.rel_err):
         extra += f"  rel_err={r.rel_err:.2e}"
-    print(f"  [ok  ] {r.op:<18} {r.shape:<30} {r.ks_us:9.2f} us  {perf}{extra}",
+    tag = r.method[:1].upper() if r.method else " "
+    print(f"  [ok {tag}] {r.op:<18} {r.shape:<30} "
+          f"{_fmt_lat(r.ks_us, r.ks_min_us):>16} us  {perf}{extra}",
           file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- #
+# Aggregate score (fast_p): joint correctness + speed
+# --------------------------------------------------------------------------- #
+def compute_fast_p(results: List[Result]) -> Dict[str, object]:
+    """fast_p = fraction of ops that are BOTH correct (within tolerance) AND at
+    least p-times the baseline speed. We report fast_1 as the headline (correct
+    AND >= baseline). Also returns correct/incorrect/error counts and the mean
+    speedup over correct-only ops.
+
+    Ops without a reference (is_correct is None) are excluded from the
+    correctness-gated population but counted separately.
+    """
+    # population = ops that actually ran a comparison (have a baseline speedup)
+    comparable = [r for r in results
+                  if r.status not in ("skip",) and not r.status.startswith("error")
+                  and r.is_correct is not None and not math.isnan(r.speedup)]
+    n_error = sum(1 for r in results if r.status.startswith("error"))
+    n_skip = sum(1 for r in results if r.status == "skip")
+    n_correct = sum(1 for r in results if r.is_correct is True)
+    n_incorrect = sum(1 for r in results if r.is_correct is False)
+    n_noref = sum(1 for r in results
+                  if r.is_correct is None and r.status == "ok")
+
+    def fast_p(p: float) -> float:
+        if not comparable:
+            return float("nan")
+        hits = sum(1 for r in comparable
+                   if r.is_correct and r.speedup >= p)
+        return hits / len(comparable)
+
+    correct_speedups = [r.speedup for r in comparable if r.is_correct]
+    mean_correct_speedup = (statistics.mean(correct_speedups)
+                            if correct_speedups else float("nan"))
+
+    return {
+        "fast_0": fast_p(0.0),   # correct at any speed
+        "fast_1": fast_p(1.0),   # correct AND >= baseline (headline)
+        "fast_2": fast_p(2.0),   # correct AND >= 2x baseline
+        "n_comparable": len(comparable),
+        "n_correct": n_correct,
+        "n_incorrect": n_incorrect,
+        "n_error": n_error,
+        "n_skip": n_skip,
+        "n_noref": n_noref,
+        "mean_speedup_correct": mean_correct_speedup,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -967,6 +1626,21 @@ def _fmt(x: float, prec: int = 2) -> str:
     return f"{x:.{prec}f}"
 
 
+def _fmt_lat(med: float, lo: float) -> str:
+    """'median (min)' latency cell in microseconds."""
+    if med is None or (isinstance(med, float) and math.isnan(med)):
+        return "-"
+    if lo is None or (isinstance(lo, float) and math.isnan(lo)):
+        return f"{med:.1f}"
+    return f"{med:.1f} ({lo:.1f})"
+
+
+def _fmt_util(x: float) -> str:
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return "-"
+    return f"{x:.0f}%"
+
+
 def render_markdown(results: List[Result], gpu: GpuInfo, cfg: dict) -> str:
     lines: List[str] = []
     lines.append(f"# kernel-set benchmark — {gpu.name}")
@@ -974,41 +1648,114 @@ def render_markdown(results: List[Result], gpu: GpuInfo, cfg: dict) -> str:
     peaks = _peaks_for(gpu)
     peak_str = ""
     if peaks:
-        peak_str = (f" | peak BW ~{peaks.get('bw', 0):.0f} GB/s"
-                    f" | peak fp16 TC ~{peaks.get('tf16', 0):.0f} TFLOP/s")
+        peak_str = (f" | dense peak BW ~{peaks.get('bw', 0):.0f} GB/s"
+                    f" | dense fp16/bf16 TC ~{peaks.get('tf16', 0):.0f} TFLOP/s")
     lines.append(f"- **GPU**: {gpu.name} (sm_{gpu.sm_arch}, CC {gpu.cc}, "
                  f"{gpu.sm_count} SMs, {gpu.total_mem_gb:.1f} GB){peak_str}")
     lines.append(f"- **detected via**: {gpu.source}")
-    lines.append(f"- **dtype**: {cfg['dtype']} | warmup={cfg['warmup']} "
-                 f"iters={cfg['iters']}")
+
+    # clocks (+ locked?)
+    clk = cfg.get("clocks") or {}
+    lk = cfg.get("clock_lock") or {}
+    clk_str = (f"SM {clk.get('sm_mhz', '?')} MHz, mem {clk.get('mem_mhz', '?')} MHz")
+    if lk.get("requested"):
+        clk_str += (" | locked" if lk.get("locked")
+                    else f" | lock requested but NOT applied ({lk.get('detail', '')})")
+    else:
+        clk_str += " | clocks UNLOCKED (boost/throttle not controlled)"
+    if clk.get("throttle") and clk.get("throttle") not in ("Not Active", "[N/A]"):
+        clk_str += f" | throttle: {clk.get('throttle')}"
+    lines.append(f"- **clocks**: {clk_str}")
+
+    env = cfg.get("env") or {}
+    lines.append(f"- **driver**: {env.get('driver', '?')} | "
+                 f"CUDA {env.get('torch_cuda', '?')} | "
+                 f"cuDNN {env.get('cudnn', '?')} | "
+                 f"power cap {env.get('power_limit_w', '?')} W | "
+                 f"ECC {env.get('ecc', '?')}")
+    tf = cfg.get("tf32") or {}
+    lines.append(f"- **dtype**: {cfg['dtype']} | "
+                 f"TF32 matmul={tf.get('matmul_allow_tf32')} "
+                 f"cudnn={tf.get('cudnn_allow_tf32')} "
+                 f"(fp32_precision={tf.get('float32_matmul_precision')})")
+    lines.append(f"- **timing**: L2-flush={'on' if cfg.get('l2_flush') else 'off'}"
+                 f" | method={'cudagraph (warm-L2, launch-overhead removed)' if cfg.get('cudagraph') else 'cuda-events (flushed)'}"
+                 f" | target-ms={cfg.get('target_ms')}"
+                 f" | iters={cfg.get('iters') if cfg.get('iters') else 'auto'}"
+                 f" | warmup={cfg.get('warmup')}"
+                 f" | L2-flush-buffer={cfg.get('l2_bytes', 0) // (1024 * 1024)} MB")
+    lines.append(f"- **launch overhead included**: "
+                 f"{'no (graph replay)' if cfg.get('cudagraph') else 'yes (single launch / event pair)'}")
     lines.append(f"- **kernel-set**: {cfg.get('ks_version', '?')} "
                  f"(backend {cfg.get('backend', '?')})")
     if cfg.get("torch_version"):
         lines.append(f"- **torch**: {cfg['torch_version']}")
+    if env.get("nvcc"):
+        lines.append(f"- **nvcc**: {env['nvcc']}")
+    if cfg.get("git_commit"):
+        lines.append(f"- **harness commit**: {cfg['git_commit']}")
+    if cfg.get("timestamp"):
+        lines.append(f"- **timestamp**: {cfg['timestamp']}")
     lines.append(f"- **host**: {platform.platform()}")
     lines.append("")
-    lines.append("Latency is the median over the timed iterations (CUDA events). "
-                 "`rel_err` is max relative error vs the PyTorch reference; "
-                 "`speedup` is ref_us / ks_us.")
+
+    # fast_p aggregate (joint correctness + speed)
+    fp = compute_fast_p(results)
+    lines.append(
+        f"**fast_1 = {_fmt(fp['fast_1'] * 100, 0) if not math.isnan(fp['fast_1']) else '-'}%** "
+        f"of comparable ops are BOTH correct AND >= baseline speed "
+        f"(fast_0={_fmt(fp['fast_0'] * 100, 0) if not math.isnan(fp['fast_0']) else '-'}%, "
+        f"fast_2={_fmt(fp['fast_2'] * 100, 0) if not math.isnan(fp['fast_2']) else '-'}%). "
+        f"correct={fp['n_correct']} · incorrect={fp['n_incorrect']} · "
+        f"error={fp['n_error']} · skip={fp['n_skip']} · no-ref={fp['n_noref']}. "
+        f"mean speedup over correct-only = "
+        f"{_fmt(fp['mean_speedup_correct'])}x.")
     lines.append("")
-    lines.append("| op | shape | dtype | ks (us) | ref (us) | GB/s | TFLOP/s | "
-                 "rel_err | speedup | notes |")
-    lines.append("|---|---|---|--:|--:|--:|--:|--:|--:|---|")
+    lines.append("Latency cells show **median (min)** microseconds over the "
+                 "auto-calibrated timed iterations (CUDA events, L2-flushed unless "
+                 "noted). `GB/s`/`TFLOP/s` cells append the achieved value's "
+                 "**% of dense peak** for this SKU+dtype. `rel_err` is gated at the "
+                 "dtype tolerance BEFORE speed is reported; a kernel that fails is "
+                 "marked **INCORRECT**. `speedup` is best_baseline_us / ks_us.")
+    lines.append("")
+    lines.append("| op | shape | dtype | ks us (min) | ref us (min) | "
+                 "GB/s (%pk) | TFLOP/s (%pk) | rel_err | spd | base | iters | m | notes |")
+    lines.append("|---|---|---|--:|--:|--:|--:|--:|--:|---|--:|:-:|---|")
     for r in results:
         if r.status == "skip":
             lines.append(f"| {r.op} | {r.shape} | {r.dtype} | skip | - | - | - "
-                         f"| - | - | {r.note or 'skipped'} |")
+                         f"| - | - | - | - | - | {r.note or 'skipped'} |")
             continue
         if r.status.startswith("error"):
             lines.append(f"| {r.op} | {r.shape} | {r.dtype} | err | - | - | - "
-                         f"| - | - | {r.status} |")
+                         f"| - | - | - | - | - | {r.status} |")
             continue
+        if r.status == "INCORRECT":
+            lines.append(
+                f"| {r.op} | {r.shape} | {r.dtype} | INCORRECT | - | - | - | "
+                f"{r.rel_err:.2e} | - | - | - | - | "
+                f"rel_err > tol={r.tol:.1e}; speed not reported |")
+            continue
+        rel = ("-" if math.isnan(r.rel_err) else f"{r.rel_err:.2e}")
+        gb = _fmt(r.gbps, 1)
+        if not math.isnan(r.gbps) and not math.isnan(r.bw_util):
+            gb = f"{r.gbps:.1f} ({_fmt_util(r.bw_util)})"
+        tf_c = _fmt(r.tflops, 1)
+        if not math.isnan(r.tflops) and not math.isnan(r.compute_util):
+            tf_c = f"{r.tflops:.1f} ({_fmt_util(r.compute_util)})"
         lines.append(
-            f"| {r.op} | {r.shape} | {r.dtype} | {_fmt(r.ks_us)} | "
-            f"{_fmt(r.ref_us)} | {_fmt(r.gbps, 1)} | {_fmt(r.tflops, 1)} | "
-            f"{_fmt(r.rel_err, 2) if math.isnan(r.rel_err) else f'{r.rel_err:.2e}'} | "
+            f"| {r.op} | {r.shape} | {r.dtype} | "
+            f"{_fmt_lat(r.ks_us, r.ks_min_us)} | "
+            f"{_fmt_lat(r.ref_us, r.ref_min_us)} | {gb} | {tf_c} | "
+            f"{rel} | "
             f"{_fmt(r.speedup)}{'x' if not math.isnan(r.speedup) else ''} | "
+            f"{r.baseline or '-'} | {r.n_iters or '-'} | "
+            f"{(r.method[:1].upper() if r.method else '-')} | "
             f"{r.note} |")
+    lines.append("")
+    lines.append("_Legend: m = timing method (E=cuda-events flushed, "
+                 "C=cudagraph replay). %pk = % of dense peak. spd = speedup vs "
+                 "the fastest baseline named in `base`._")
     lines.append("")
     return "\n".join(lines)
 
@@ -1017,8 +1764,9 @@ def render_json(results: List[Result], gpu: GpuInfo, cfg: dict) -> str:
     return json.dumps({
         "gpu": gpu.__dict__,
         "config": cfg,
+        "aggregate": compute_fast_p(results),
         "results": [r.to_dict() for r in results],
-    }, indent=2)
+    }, indent=2, default=str)
 
 
 # --------------------------------------------------------------------------- #
@@ -1035,12 +1783,42 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="element dtype: fp16, bf16, or fp32")
     p.add_argument("--shape", default=None,
                    help="only run shapes whose label contains this substring")
-    p.add_argument("--warmup", type=int, default=10, help="warmup launches")
-    p.add_argument("--iters", type=int, default=50, help="timed launches")
+    p.add_argument("--warmup", type=int, default=10, help="warmup launches (floor)")
+    p.add_argument("--iters", type=int, default=None,
+                   help="fixed timed launches (overrides --target-ms "
+                        "auto-calibration)")
+    p.add_argument("--target-ms", type=float, default=200.0,
+                   help="target measurement budget in ms; iteration count is "
+                        "auto-calibrated to fill it (capped by --max-iters)")
+    p.add_argument("--max-iters", type=int, default=1000,
+                   help="upper bound on auto-calibrated iteration count")
+    # L2 flush (Triton do_bench style); ON by default. --no-l2-flush disables.
+    p.add_argument("--l2-flush", dest="l2_flush", action="store_true",
+                   default=True,
+                   help="zero a >L2 scratch buffer before each timed launch so "
+                        "each iteration reads cold from HBM (default: ON)")
+    p.add_argument("--no-l2-flush", dest="l2_flush", action="store_false",
+                   help="disable the per-iteration L2 flush (warm-cache timing)")
+    p.add_argument("--cudagraph", action="store_true",
+                   help="time via CUDA-graph replay to amortize launch overhead "
+                        "(tiny/launch-bound ops). NOTE: graph replay does NOT "
+                        "flush L2 (warm-cache) — mutually exclusive with the "
+                        "per-iter L2 flush; falls back to events if capture fails")
+    p.add_argument("--lock-clocks", action="store_true",
+                   help="attempt nvidia-smi persistence + lock-gpu-clocks to a "
+                        "sustainable value (no-op if not permitted, e.g. Colab); "
+                        "current clocks are always queried and reported")
+    p.add_argument("--tf32", dest="tf32", action="store_true", default=True,
+                   help="enable TF32 for fp32 matmul/cudnn (default: ON; "
+                        "recorded in the header)")
+    p.add_argument("--no-tf32", dest="tf32", action="store_false",
+                   help="disable TF32 (fp32 GEMMs run at full fp32 precision)")
     p.add_argument("--output", default=None,
                    help="write the report to this file (default: stdout)")
     p.add_argument("--format", default="md", choices=["md", "json"],
                    help="report format")
+    p.add_argument("--timestamp", default=None,
+                   help="optional run timestamp/label to record in the header")
     p.add_argument("--list-ops", action="store_true",
                    help="list op categories + shapes and exit")
     p.add_argument("--gpu-only", action="store_true",
@@ -1087,6 +1865,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               file=sys.stderr)
         return 2
 
+    # diagnostic flags that corrupt timing should not be on while benchmarking
+    if os.environ.get("CUDA_LAUNCH_BLOCKING") == "1":
+        print("WARNING: CUDA_LAUNCH_BLOCKING=1 destroys async overlap and "
+              "corrupts timing; unset it for performance runs.", file=sys.stderr)
+
     # dtype selection + capability guards
     dt = torch_dtype(args.dtype)
     if dt is torch.bfloat16 and not gpu.supports_bf16:
@@ -1099,22 +1882,71 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"ERROR: unknown op(s): {unknown}. Known: {ALL_OPS}", file=sys.stderr)
         return 2
 
+    # ---- fairness: pin TF32 explicitly and record it (BP-08) ----
+    tf32_info = apply_tf32(args.tf32)
+
+    # ---- clock control + reporting (BP-05) ----
+    clock_lock = {"requested": False, "locked": False, "detail": ""}
+    if args.lock_clocks:
+        clock_lock = lock_clocks()
+        if clock_lock.get("locked"):
+            print(f"Locked GPU clocks to ~{clock_lock.get('lock_mhz')} MHz.",
+                  file=sys.stderr)
+        else:
+            print(f"NOTE: clock lock not applied ({clock_lock.get('detail')}); "
+                  "running with whatever clock the GPU chooses.", file=sys.stderr)
+    clocks = query_clocks()
+    env = collect_env()
+
+    # ---- timing config (L2 flush, cudagraph, budget) ----
+    if args.cudagraph and args.l2_flush:
+        # graph replay does not flush L2 (BP-22); they are mutually exclusive
+        # per-iter. cudagraph wins; warn that the numbers are warm-cache.
+        print("NOTE: --cudagraph replays do NOT flush L2; disabling per-iter "
+              "L2 flush for graph timing (numbers are warm-cache, launch-"
+              "overhead-removed).", file=sys.stderr)
+    _TIMING.l2_flush = bool(args.l2_flush and not args.cudagraph)
+    _TIMING.cudagraph = bool(args.cudagraph)
+    _TIMING.target_ms = float(args.target_ms)
+    _TIMING.iters = args.iters
+    _TIMING.warmup = int(args.warmup)
+    _TIMING.max_iters = int(args.max_iters)
+    _TIMING.l2_bytes = query_l2_flush_bytes(gpu)
+
     ctx = Ctx(dt=dt, dtype_name=args.dtype, gpu=gpu,
-              warmup=args.warmup, iters=args.iters)
+              warmup=args.warmup, iters=args.iters or 0)
 
     cfg = {
         "dtype": args.dtype,
         "warmup": args.warmup,
-        "iters": args.iters,
+        "iters": args.iters,            # None => auto
+        "target_ms": args.target_ms,
+        "max_iters": args.max_iters,
+        "l2_flush": _TIMING.l2_flush,
+        "l2_bytes": _TIMING.l2_bytes,
+        "cudagraph": _TIMING.cudagraph,
         "ops": ops,
+        "tf32": tf32_info,
+        "clocks": clocks,
+        "clock_lock": clock_lock,
+        "env": env,
+        "git_commit": git_commit(),
+        "timestamp": args.timestamp or datetime.datetime.now().isoformat(timespec="seconds"),
         "ks_version": ks.version() if _HAVE_KS else "?",
         "backend": ks.backend_name() if _HAVE_KS else "?",
         "torch_version": torch.__version__ if _HAVE_TORCH else None,
     }
 
     print(f"Running {len(ops)} op categories, dtype={args.dtype}, "
-          f"warmup={args.warmup}, iters={args.iters}\n", file=sys.stderr)
-    results = run_benchmarks(ops, ctx, args.shape)
+          f"L2-flush={_TIMING.l2_flush}, cudagraph={_TIMING.cudagraph}, "
+          f"target-ms={args.target_ms}, "
+          f"iters={args.iters if args.iters else 'auto'}\n", file=sys.stderr)
+    try:
+        results = run_benchmarks(ops, ctx, args.shape)
+    finally:
+        if clock_lock.get("locked"):
+            reset_clocks()
+            print("Reset GPU clocks.", file=sys.stderr)
 
     if args.format == "json":
         report = render_json(results, gpu, cfg)
