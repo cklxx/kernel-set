@@ -31,6 +31,7 @@ SKIP_VLLM="${SKIP_VLLM:-0}"            # vLLM is heavy; set 1 to skip (no Marlin
 INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-1}"
 INSTALL_SAGE="${INSTALL_SAGE:-0}"      # sageattention optional (source build)
 INSTALL_MAMBA="${INSTALL_MAMBA:-1}"    # mamba-ssm + causal-conv1d (may build)
+INSTALL_SGL="${INSTALL_SGL:-1}"        # sgl-kernel (SGLang; needs torch + CUDA)
 
 LOG_OK=()       # "name" succeeded import check
 LOG_FAIL=()     # "name: reason"
@@ -215,6 +216,29 @@ else
   else
     skip "vllm (Marlin)" "Marlin needs sm80+; device is sm${SM}"
   fi
+fi
+
+# ----------------------------------------------------------------------------
+# 8b) sgl-kernel — SGLang's fused CUDA kernels (the hard-op alignment target):
+#     MoE gate (topk_softmax / moe_fused_gate), grouped-MoE, rmsnorm /
+#     fused_add_rmsnorm / gemma_rmsnorm, rotary_embedding, silu_and_mul,
+#     fp8/int8 scaled-mm, FA3 attention + FlashMLA, sampling renorm. Needs torch
+#     and a recent CUDA toolkit; prefer the prebuilt wheel. Guarded; continue on
+#     failure. fp8/FlashMLA paths need sm90 but the wheel installs on sm80+.
+# ----------------------------------------------------------------------------
+if [ "$INSTALL_SGL" = "1" ]; then
+  if sm_ge 80; then
+    note "sgl-kernel (SGLang fused kernels; prefer prebuilt wheel; needs torch + recent CUDA)"
+    if ! run "$PIP" install -U sgl-kernel ; then
+      warn "sgl-kernel wheel install failed (needs matching torch/CUDA);"
+      warn "see https://github.com/sgl-project/sglang for per-CUDA wheels. Continuing."
+    fi
+    import_check "sgl-kernel" "import sgl_kernel"
+  else
+    skip "sgl-kernel" "fp8/FlashMLA paths need sm90; device is sm${SM} (wheel may still install on sm80+)"
+  fi
+else
+  skip "sgl-kernel" "INSTALL_SGL=0"
 fi
 
 # ----------------------------------------------------------------------------

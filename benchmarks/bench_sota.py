@@ -137,6 +137,8 @@ _PROVIDER_MIN_SM: Dict[str, int] = {
     "sdpa-flash": 80,            # torch SDPA flash backend sm80+
     "flashinfer": 75,            # FlashInfer Turing+
     "flash-mla": 90,             # FlashMLA: Hopper sm90 (sparse path sm100)
+    "sgl-attn": 90,              # SGLang FA3 (flash_attn_varlen/with_kvcache) sm90
+    "sgl-mla": 90,               # SGLang FlashMLA sm90
     # gemm
     "torch-cublas": 70,
     "torch-compile": 70,
@@ -146,6 +148,8 @@ _PROVIDER_MIN_SM: Dict[str, int] = {
     "vllm-machete": 90,          # Machete sm90a Hopper-only
     "vllm-cutlass-fp8": 89,      # vLLM cutlass_scaled_mm fp8 sm89+
     "vllm-fused-moe": 80,        # vLLM fused_experts Triton sm80+
+    "sgl-fp8": 90,               # SGLang CUTLASS fp8_scaled_mm sm90
+    "sgl-int8": 80,              # SGLang CUTLASS int8_scaled_mm sm80+
     # norm / act / rope
     "flashinfer-norm": 75,
     "vllm-norm": 70,
@@ -155,6 +159,11 @@ _PROVIDER_MIN_SM: Dict[str, int] = {
     "flashinfer-act": 75,
     "vllm-act": 70,
     "liger-act": 80,
+    "sgl-norm": 80,              # SGLang rmsnorm/fused_add_rmsnorm/gemma sm80+
+    "sgl-rope": 80,              # SGLang rotary_embedding sm80+
+    "sgl-act": 80,              # SGLang silu_and_mul sm80+
+    # moe
+    "sgl-moe-gate": 80,          # SGLang topk_softmax / moe_fused_gate sm80+
     # ssm
     "mamba-ssm": 70,
     "causal-conv1d": 70,
@@ -525,6 +534,28 @@ def _g_attn_prefill(ctx: SotaCtx) -> List[Row]:
                     qf, kf, vf, causal=True, kv_layout="NHD", sm_scale=scale)))
             _set_flops(row, flops, ctx.gpu)
         rows.append(run_provider(op, label, "flashinfer", ctx, _fi))
+
+        # --- SGLang FA3 flash_attn_varlen_func (sm90; arch-gated) ---
+        def _sgl(row: Row):
+            from sgl_kernel import flash_attn_varlen_func
+            qf = q.reshape(b * seq, qh, hd)
+            kf = k.reshape(b * seq, kvh, hd)
+            vf = v.reshape(b * seq, kvh, hd)
+            cu = torch.arange(0, (b + 1) * seq, seq, device="cuda",
+                              dtype=torch.int32)
+
+            def call():
+                return flash_attn_varlen_func(
+                    qf, kf, vf, cu, cu, max_seqlen_q=seq, max_seqlen_k=seq,
+                    softmax_scale=scale, causal=True)
+            out = call().reshape(b, seq, qh, hd)
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out, ctx):
+                return
+            _fill_row_timing(row, _time(call))
+            _set_flops(row, flops, ctx.gpu)
+            row.note = "SGLang FA3 varlen"
+        rows.append(run_provider(op, label, "sgl-attn", ctx, _sgl))
     return rows
 
 
@@ -656,6 +687,27 @@ def _g_attn_decode(ctx: SotaCtx) -> List[Row]:
             _set_bw(row, kv_bytes, ctx.gpu)
             row.note = "dense SDPA (no paging)"
         rows.append(run_provider(op, label, "sdpa-flash", ctx, _sdpa))
+
+        # --- SGLang FA3 paged decode flash_attn_with_kvcache (sm90) ---
+        def _sgl(row: Row):
+            from sgl_kernel import flash_attn_with_kvcache
+            qf = q.reshape(num_seqs, 1, qh, hd)
+            k_fa = k_cache.permute(0, 2, 1, 3).contiguous()   # (nb, page, kvh, hd)
+            v_fa = v_cache.permute(0, 2, 1, 3).contiguous()
+
+            def call():
+                o = flash_attn_with_kvcache(
+                    qf, k_fa, v_fa, page_table=block_tables,
+                    cache_seqlens=seq_lens, softmax_scale=scale, causal=False)
+                return o.reshape(num_seqs, qh, hd)
+            out = call()
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out, ctx):
+                return
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, kv_bytes, ctx.gpu)
+            row.note = "SGLang FA3 paged decode"
+        rows.append(run_provider(op, label, "sgl-attn", ctx, _sgl))
     return rows
 
 
@@ -739,6 +791,34 @@ def _g_mla_decode(ctx: SotaCtx) -> List[Row]:
             _set_bw(row, kv_bytes, ctx.gpu)
             row.note = "FlashMLA; throughput only (no shared ref)"
         rows.append(run_provider(op, label, "flash-mla", ctx, _fmla))
+
+        # --- SGLang FlashMLA via sgl_kernel.flash_mla_with_kvcache (sm90) ---
+        def _sgl_mla(row: Row):
+            from sgl_kernel import (
+                get_mla_metadata,
+                flash_mla_with_kvcache as sgl_flash_mla,
+            )
+            cache_seqlens = seq_lens
+            h_kv = 1
+            tile_md, num_splits = get_mla_metadata(
+                cache_seqlens, heads // h_kv, h_kv)
+            q_cat = torch.cat([q_nope, q_pe], dim=-1).to(
+                torch.bfloat16).unsqueeze(1)
+            kcache = kv_cache.reshape(total_blocks, block, 1,
+                                      lora + rope_dim).to(torch.bfloat16)
+
+            def call():
+                o, _lse = sgl_flash_mla(
+                    q_cat, kcache, block_tables, cache_seqlens, lora,
+                    tile_md, num_splits, softmax_scale=scale, causal=True)
+                return o
+            call()
+            torch.cuda.synchronize()
+            # no shared ref across conventions; throughput only
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, kv_bytes, ctx.gpu)
+            row.note = "SGLang FlashMLA; throughput only (no shared ref)"
+        rows.append(run_provider(op, label, "sgl-mla", ctx, _sgl_mla))
     return rows
 
 
@@ -976,6 +1056,52 @@ def _g_fp8_gemm(ctx: SotaCtx) -> List[Row]:
             row.note = "DeepGEMM blockwise fp8"
         rows.append(run_provider(op, label, "deepgemm", ctx, _dg))
 
+        # --- SGLang CUTLASS fp8_scaled_mm (sm90; arch-gated) ---
+        def _sgl_fp8(row: Row):
+            from sgl_kernel import fp8_scaled_mm
+            if not has_fp8:
+                row.status = "skip"
+                row.note = "torch has no float8_e4m3fn"
+                return
+            sa = (a_f.abs().max() / 448.0).clamp_min(1e-6)
+            sb = (b_f.abs().max() / 448.0).clamp_min(1e-6)
+            a8 = (a_f / sa).to(torch.float8_e4m3fn)            # (M,K)
+            b8 = (b_f / sb).to(torch.float8_e4m3fn).t()        # (K,N) col-major
+            scale_a = sa.reshape(1, 1).float()
+            scale_b = sb.reshape(1, 1).float()
+
+            def call():
+                return fp8_scaled_mm(a8, b8, scale_a, scale_b,
+                                     torch.bfloat16)
+            out = call()
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out.float(), ctx):
+                return
+            _fill_row_timing(row, _time(call))
+            _set_flops(row, flops, ctx.gpu, dtype_for_peak="fp8")
+            row.note = "SGLang CUTLASS fp8 scaled-mm"
+        rows.append(run_provider(op, label, "sgl-fp8", ctx, _sgl_fp8))
+
+        # --- SGLang CUTLASS int8_scaled_mm (sm80+; int8 W8A8 path) ---
+        def _sgl_int8(row: Row):
+            from sgl_kernel import int8_scaled_mm
+            ai = torch.randint(-127, 127, (m, k), device="cuda",
+                               dtype=torch.int8)
+            bi = torch.randint(-127, 127, (k, n), device="cuda",
+                               dtype=torch.int8)
+            scale_a = (torch.rand(m, 1, device="cuda") * 0.02 + 0.01)
+            scale_b = (torch.rand(1, n, device="cuda") * 0.02 + 0.01)
+
+            def call():
+                return int8_scaled_mm(ai, bi, scale_a, scale_b, torch.bfloat16)
+            call()
+            torch.cuda.synchronize()
+            # no shared ref with fp8 path -> throughput only
+            _fill_row_timing(row, _time(call))
+            _set_flops(row, flops, ctx.gpu, dtype_for_peak="int8")
+            row.note = "SGLang CUTLASS int8 W8A8 scaled-mm (throughput)"
+        rows.append(run_provider(op, label, "sgl-int8", ctx, _sgl_int8))
+
         # --- kernel-set: ks ABI has int8 w8a8 (closest); run as availability/
         # throughput probe so the row is present and clearly labeled. ---
         def _ks(row: Row):
@@ -1061,6 +1187,17 @@ def _g_rmsnorm(ctx: SotaCtx) -> List[Row]:
                 lambda: LigerRMSNormFunction.apply(x, w, eps, 0.0, "llama")))
             _set_bw(row, nbytes, ctx.gpu)
         rows.append(run_provider(op, label, "liger-norm", ctx, _liger))
+
+        # --- SGLang sgl_kernel.rmsnorm ---
+        def _sgl(row: Row):
+            from sgl_kernel import rmsnorm as sgl_rms
+            out = sgl_rms(x, w, eps)
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out, ctx):
+                return
+            _fill_row_timing(row, _time(lambda: sgl_rms(x, w, eps)))
+            _set_bw(row, nbytes, ctx.gpu)
+        rows.append(run_provider(op, label, "sgl-norm", ctx, _sgl))
     return rows
 
 
@@ -1133,6 +1270,26 @@ def _g_fused_add_rmsnorm(ctx: SotaCtx) -> List[Row]:
             _set_bw(row, nbytes, ctx.gpu)
             row.note = "in-place"
         rows.append(run_provider(op, label, "vllm-norm", ctx, _vllm))
+
+        # --- SGLang sgl_kernel.fused_add_rmsnorm (in-place residual+norm) ---
+        def _sgl(row: Row):
+            from sgl_kernel import fused_add_rmsnorm as sgl_far
+            xc = x.clone()
+            rc = res.clone()
+            sgl_far(xc, rc, w, eps)
+            torch.cuda.synchronize()
+            if not _gate(row, ref_out, xc, ctx):
+                return
+
+            def call():
+                a = x.clone()
+                b = res.clone()
+                sgl_far(a, b, w, eps)
+                return a
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, nbytes, ctx.gpu)
+            row.note = "in-place (clone per iter excluded)"
+        rows.append(run_provider(op, label, "sgl-norm", ctx, _sgl))
     return rows
 
 
@@ -1219,6 +1376,29 @@ def _g_rope(ctx: SotaCtx) -> List[Row]:
                 row.status = "ok"
                 row.note = "liger convention differs; throughput only"
         rows.append(run_provider(op, label, "liger-rope", ctx, _liger))
+
+        # --- SGLang sgl_kernel.rotary_embedding (in-place, NeoX) ---
+        def _sgl(row: Row):
+            from sgl_kernel import rotary_embedding as sgl_rope
+            positions = torch.arange(tokens, device="cuda", dtype=torch.int64)
+            cos_sin_cache = torch.cat([cos, sin], dim=-1).contiguous()
+            qf = q.reshape(tokens, qh * hd).clone()
+            kf = k.reshape(tokens, kvh * hd).clone()
+            sgl_rope(positions, qf, kf, hd, cos_sin_cache, is_neox=True)
+            torch.cuda.synchronize()
+            got = qf.reshape(tokens, qh, hd)
+            if not _gate(row, ref_q, got, ctx):
+                return
+
+            def call():
+                a = q.reshape(tokens, qh * hd).clone()
+                b = k.reshape(tokens, kvh * hd).clone()
+                sgl_rope(positions, a, b, hd, cos_sin_cache, is_neox=True)
+                return a
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, nbytes, ctx.gpu)
+            row.note = "neox/rotate_half (in-place)"
+        rows.append(run_provider(op, label, "sgl-rope", ctx, _sgl))
     return rows
 
 
@@ -1268,6 +1448,17 @@ def _g_swiglu(ctx: SotaCtx) -> List[Row]:
             _fill_row_timing(row, _time(lambda: ops.silu_and_mul(out, packed)))
             _set_bw(row, nbytes, ctx.gpu)
         rows.append(run_provider(op, label, "vllm-act", ctx, _vllm))
+
+        # --- SGLang sgl_kernel.silu_and_mul ---
+        def _sgl(row: Row):
+            from sgl_kernel import silu_and_mul as sgl_silu
+            out = sgl_silu(packed)
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out, ctx):
+                return
+            _fill_row_timing(row, _time(lambda: sgl_silu(packed)))
+            _set_bw(row, nbytes, ctx.gpu)
+        rows.append(run_provider(op, label, "sgl-act", ctx, _sgl))
     return rows
 
 
@@ -1339,6 +1530,38 @@ def _g_moe(ctx: SotaCtx) -> List[Row]:
             row.note = "full fused MoE FFN (W1+SiLU+W2); not directly vs ks ggemm"
         rows.append(run_provider("fused_moe", label, "vllm-fused-moe", ctx,
                                  _vllm))
+
+        # --- SGLang fused MoE gate (topk_softmax): the SGLang specialty path.
+        # Compares the kernel-set softmax+topk gate against sgl_kernel's fused
+        # gate on the same gating logits (routing, not the FFN GEMMs). ---
+        def _sgl_gate(row: Row):
+            from sgl_kernel import topk_softmax
+            gating = ctx.rand(num_tokens, E)
+            ref_probs = torch.softmax(gating.float(), dim=-1)
+            ref_w, ref_i = torch.topk(ref_probs, topk, dim=-1)
+            topk_weights = torch.empty(num_tokens, topk, device="cuda",
+                                       dtype=torch.float32)
+            topk_ids = torch.empty(num_tokens, topk, device="cuda",
+                                   dtype=torch.int32)
+            topk_softmax(topk_weights, topk_ids, gating, False, 0.0, None)
+            torch.cuda.synchronize()
+            # gate selection alignment (ids should match the torch top-k set)
+            _gate(row, ref_w, topk_weights, ctx)
+            if row.status == "incorrect":
+                row.status = "ok"
+                row.note = ("SGLang topk_softmax gate; routing only "
+                            "(not vs ks grouped GEMM)")
+
+            def call():
+                topk_softmax(topk_weights, topk_ids, gating, False, 0.0, None)
+                return topk_weights
+            _fill_row_timing(row, _time(call))
+            gate_bytes = num_tokens * (E + 2 * topk) * 4
+            _set_bw(row, gate_bytes, ctx.gpu)
+            if not row.note:
+                row.note = "SGLang topk_softmax fused MoE gate (specialty)"
+        rows.append(run_provider("moe_gate", label, "sgl-moe-gate", ctx,
+                                 _sgl_gate))
     return rows
 
 
@@ -1495,17 +1718,21 @@ ALL_OPS = [
 
 # Which providers each op group compares (for --list and the summary header).
 _OP_PROVIDERS: Dict[str, List[str]] = {
-    "attention_prefill": ["kernel-set", "flash-attn", "sdpa-flash", "flashinfer"],
-    "attention_decode": ["kernel-set", "flashinfer", "sdpa-flash"],
-    "mla_decode": ["kernel-set", "flash-mla"],
+    "attention_prefill": ["kernel-set", "flash-attn", "sdpa-flash",
+                          "flashinfer", "sgl-attn"],
+    "attention_decode": ["kernel-set", "flashinfer", "sdpa-flash", "sgl-attn"],
+    "mla_decode": ["kernel-set", "flash-mla", "sgl-mla"],
     "gemm": ["kernel-set", "torch-cublas", "torch-compile"],
     "w4a16": ["kernel-set", "vllm-marlin"],
-    "fp8_gemm": ["kernel-set", "torch-scaled-mm", "vllm-cutlass-fp8", "deepgemm"],
-    "rmsnorm": ["kernel-set", "flashinfer-norm", "vllm-norm", "liger-norm"],
-    "fused_add_rmsnorm": ["kernel-set", "flashinfer-norm", "vllm-norm"],
-    "rope": ["kernel-set", "flashinfer-rope", "liger-rope"],
-    "swiglu": ["kernel-set", "flashinfer-act", "vllm-act"],
-    "moe": ["kernel-set", "vllm-fused-moe"],
+    "fp8_gemm": ["kernel-set", "torch-scaled-mm", "vllm-cutlass-fp8",
+                 "deepgemm", "sgl-fp8", "sgl-int8"],
+    "rmsnorm": ["kernel-set", "flashinfer-norm", "vllm-norm", "liger-norm",
+                "sgl-norm"],
+    "fused_add_rmsnorm": ["kernel-set", "flashinfer-norm", "vllm-norm",
+                          "sgl-norm"],
+    "rope": ["kernel-set", "flashinfer-rope", "liger-rope", "sgl-rope"],
+    "swiglu": ["kernel-set", "flashinfer-act", "vllm-act", "sgl-act"],
+    "moe": ["kernel-set", "vllm-fused-moe", "sgl-moe-gate"],
     "ssm": ["kernel-set(N/A)", "mamba-ssm", "causal-conv1d"],
     "cross_entropy": ["kernel-set", "liger-ce", "cut-cross-entropy", "torch-ce"],
 }

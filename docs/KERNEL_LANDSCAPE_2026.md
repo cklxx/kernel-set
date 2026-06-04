@@ -370,16 +370,17 @@ Only libraries with **high / medium confidence** are included. As of **2026-06-0
 - **Baselines:** **no direct C ABI op (cross-GPU comm).** Portable EP all-to-all around the MoE pipeline feeding `ks_moe_grouped_gemm`; alternative to DeepEP/NCCL-EP.
 - **Source:** <https://www.perplexity.ai/hub/blog/efficient-and-portable-mixture-of-experts-communication>
 
-### sgl-kernel (SGLang fused MoE) — `sgl-project/sglang`  ⟶ confidence: **high**, 2026 H1
-- **Version / date:** sgl-kernel 0.3.21 on PyPI (2026-01-15); now in-tree in the sglang monorepo; MoE gate extended to 256 experts (MiMo V2) 2026-06-01.
-- **Ops:** MoE fused gate (softmax/sigmoid top-k), DeepSeek group-limited top-k gating (`moe_fused_gate`, up to 256 experts), fused MoE (gate+permute+grouped GEMM+unpermute), CUTLASS grouped FP8/FP4 MoE, RMSNorm / RoPE / SiLU-mul, FP8/INT8/FP4 quant kernels.
-- **Hardware:** NVIDIA sm80/89/90/100 (+ CPU AVX512/AMX); FlashInfer mxfp8 MoE/GEMM integration.
+### sgl-kernel (SGLang) — `sgl-project/sglang`  ⟶ confidence: **high**, 2026 H1
+- **Status:** **The hard-op alignment target for kernel-set.** sgl-kernel is wired as a first-class provider in the dispatcher (`kernel_set.dispatch`) and the SOTA bench (`benchmarks/bench_sota.py`): kernel-set is benched/aligned against it for the MoE gating + grouped-MoE path (where sgl-kernel is **rank #1**, its specialty), and competitively for sampling, RMSNorm / fused-add-RMSNorm / Gemma-RMSNorm, RoPE, SiLU-mul, FP8/INT8 scaled-mm, and FA3 attention (prefill/decode) + FlashMLA.
+- **Version / date:** sgl-kernel 0.3.21 on PyPI (2026-01-15); now in-tree in the sglang monorepo; MoE gate extended to 256 experts (MiMo V2) 2026-06-01. Vendored at `third_party/sglang/sgl-kernel/`.
+- **Ops:** MoE fused gate (softmax/sigmoid top-k via `topk_softmax`/`topk_sigmoid`), DeepSeek group-limited top-k gating (`moe_fused_gate`, up to 256 experts; `kimi_k2_moe_fused_gate`), `moe_align_block_size`, fused/grouped MoE (CUTLASS grouped FP8/FP4, `fp8_blockwise_scaled_grouped_mm`, `expert_specialization`), `rmsnorm`/`fused_add_rmsnorm`/`gemma_rmsnorm`, `rotary_embedding`, `silu_and_mul`/`gelu_and_mul`, `fp8_scaled_mm`/`fp8_blockwise_scaled_mm`/`int8_scaled_mm`/`bmm_fp8`/`awq_dequantize`, FA3 attention (`flash_attn_varlen_func`/`flash_attn_with_kvcache`), FlashMLA (`flash_mla_with_kvcache`, `get_mla_metadata`, `cutlass_mla_decode`), sampling renorm (`top_k_renorm_prob`/`top_p_renorm_prob`; MUSA build also `top_k_top_p_sampling_from_probs`/`min_p_sampling_from_probs`), speculative verify (`tree_speculative_sampling_target_only`/`verify_tree_greedy`).
+- **Hardware:** NVIDIA sm80/89/90/100 (+ CPU AVX512/AMX, HIP/ROCm); FlashInfer mxfp8 MoE/GEMM integration. FP8 scaled-mm + FlashMLA + FA3 are sm90 paths.
 - **dtypes:** BF16/FP16, FP8 (incl. mxfp8 microscaling), INT8, FP4/NVFP4.
 - **License:** Apache-2.0.
-- **Install:** `pip install sgl-kernel` (or build from sglang/sgl-kernel).
-- **Claimed perf:** production serving kernels; FlashInfer mxfp8 path for higher-accuracy FP8 MoE; dispatcher picks per shape/dtype/arch.
-- **Baselines:** `ks_moe_gate_softmax_topk` + `ks_moe_gate_sigmoid_group_topk` (DeepSeek group-limited); `ks_moe_compute_permutation`/`ks_moe_permute`/`ks_moe_grouped_gemm`/`ks_moe_unpermute` (fused_moe); plus `ks_rms_norm`, `ks_rope`, `ks_gemm_w8a8`/FP8.
-- **Source:** <https://github.com/sgl-project/sglang/blob/main/sgl-kernel/csrc/moe/moe_fused_gate.cu>
+- **Install:** `pip install sgl-kernel` (or build from sglang/sgl-kernel). Added to `benchmarks/install_baselines.sh` (`INSTALL_SGL=1`, guarded; needs torch + a recent CUDA).
+- **Claimed perf:** production serving kernels; `moe_fused_gate` is a single-kernel DeepSeek-V3 biased group-topk gate (best-in-class routing); FlashInfer mxfp8 path for higher-accuracy FP8 MoE; dispatcher picks per shape/dtype/arch.
+- **Baselines:** `ks_moe_gate_softmax_topk` + `ks_moe_gate_sigmoid_group_topk` (DeepSeek group-limited, **rank #1**); `ks_moe_compute_permutation`/`ks_moe_permute`/`ks_moe_grouped_gemm`/`ks_moe_unpermute` (fused_moe); plus `ks_rmsnorm`/`ks_fused_add_rmsnorm`/`ks_gemma_rmsnorm`, `ks_rope`, `ks_silu_and_mul`, `ks_gemm_w8a8`/FP8, `ks_sample`, and the attention/MLA decode ABIs.
+- **Source:** <https://github.com/sgl-project/sglang> (MoE gate: <https://github.com/sgl-project/sglang/blob/main/sgl-kernel/csrc/moe/moe_fused_gate.cu>)
 
 ### vLLM kernels (fused MoE / FP4) — `vllm-project/vllm`  ⟶ confidence: **high**, 2026 H1
 - **Version / date:** main, 2026 H1 (MXFP4 W4A4 CUTLASS MoE SM100 PR #37463; FlashInfer b12x MoE+FP4 GEMM SM120/121 PR #40082); active through 2026-06.

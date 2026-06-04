@@ -61,15 +61,21 @@ __all__ = [
     # public op API (auto-routing)
     "attention_prefill",
     "attention_decode",
+    "mla_decode",
     "gemm",
     "fp8_gemm",
+    "int8_gemm",
     "w4a16",
     "rms_norm",
     "fused_add_rmsnorm",
+    "gemma_rmsnorm",
     "rope",
     "swiglu",
     "cross_entropy",
     "moe",
+    "moe_gate",
+    "moe_group_gate",
+    "sampling",
     # introspection
     "which",
     "which_provider",
@@ -190,6 +196,18 @@ def attention_decode(q, k_cache, v_cache, block_tables, seq_lens, *,
              softmax_scale=softmax_scale, **kw))
 
 
+def mla_decode(q_nope, q_pe, kv_cache, block_tables, seq_lens, *, heads, lora,
+               rope_dim, block_size, max_blocks_per_seq, softmax_scale=None,
+               **kw):
+    """Absorbed-MLA paged decode (DeepSeek-style). Routes to SGLang FlashMLA on
+    sm90, else the kernel-set MLA decode."""
+    return _dispatch(
+        "mla_decode", (q_nope, q_pe, kv_cache, block_tables, seq_lens),
+        dict(heads=heads, lora=lora, rope_dim=rope_dim, block_size=block_size,
+             max_blocks_per_seq=max_blocks_per_seq,
+             softmax_scale=softmax_scale, **kw))
+
+
 def gemm(a, b, **kw):
     """Dense GEMM ``a @ b``. a: ``(M,K)``, b: ``(K,N)``."""
     return _dispatch("gemm", (a, b), kw)
@@ -198,6 +216,13 @@ def gemm(a, b, **kw):
 def fp8_gemm(a8, b8, a_scale, b_scale, *, out_dtype=None, **kw):
     """FP8 (blockwise / scaled) GEMM. a8/b8 fp8; per-tensor or block scales."""
     return _dispatch("fp8_gemm", (a8, b8, a_scale, b_scale),
+                     dict(out_dtype=out_dtype, **kw))
+
+
+def int8_gemm(a8, b8, a_scale, b_scale, *, out_dtype=None, **kw):
+    """INT8 W8A8 scaled GEMM. a8/b8 int8; per-row/col scales. Routes to SGLang
+    int8_scaled_mm, else the kernel-set w8a8 path."""
+    return _dispatch("int8_gemm", (a8, b8, a_scale, b_scale),
                      dict(out_dtype=out_dtype, **kw))
 
 
@@ -215,6 +240,11 @@ def rms_norm(x, w, *, eps=1e-6, **kw):
 def fused_add_rmsnorm(x, residual, w, *, eps=1e-6, **kw):
     """Fused add-RMSNorm. Returns ``(normed, new_residual)``."""
     return _dispatch("fused_add_rmsnorm", (x, residual, w), dict(eps=eps, **kw))
+
+
+def gemma_rmsnorm(x, w, *, eps=1e-6, **kw):
+    """Gemma-style RMSNorm: ``(x / RMS(x)) * (w + 1)``."""
+    return _dispatch("gemma_rmsnorm", (x, w), dict(eps=eps, **kw))
 
 
 def rope(q, k, cos, sin, *, interleaved=False, **kw):
@@ -239,6 +269,29 @@ def moe(*args, **kw):
     ``(hidden, w1, w2, topk_weights, topk_ids)``; the kernel-set fallback takes
     the grouped-GEMM form ``(a, b, expert_offsets, num_experts=, n=, k=)``."""
     return _dispatch("moe", args, kw)
+
+
+def moe_gate(gating_output, *, top_k, renormalize=False, **kw):
+    """MoE softmax + top-k routing gate. SGLang ``topk_softmax`` is rank-1.
+    Returns ``(topk_weights, topk_ids)``."""
+    return _dispatch("moe_gate", (gating_output,),
+                     dict(top_k=top_k, renormalize=renormalize, **kw))
+
+
+def moe_group_gate(gating_output, bias, *, num_expert_group, topk_group, top_k,
+                   **kw):
+    """MoE sigmoid + group-limited top-k gate (DeepSeek-V3 style). SGLang
+    ``moe_fused_gate`` is rank-1. Returns ``(topk_weights, topk_ids)``."""
+    return _dispatch("moe_group_gate", (gating_output, bias),
+                     dict(num_expert_group=num_expert_group,
+                          topk_group=topk_group, top_k=top_k, **kw))
+
+
+def sampling(probs, *, top_k=None, top_p=None, **kw):
+    """Top-k / top-p sampling (logit processing). Routes to FlashInfer / SGLang
+    renorm-by-threshold sampling or the kernel-set fused sampler."""
+    return _dispatch("sampling", (probs,),
+                     dict(top_k=top_k, top_p=top_p, **kw))
 
 
 # --------------------------------------------------------------------------- #

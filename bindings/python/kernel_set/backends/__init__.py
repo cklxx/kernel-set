@@ -22,6 +22,7 @@ from ._registry import (  # noqa: F401
     KERNEL_SET,
     OP_ORDER,
     OPS,
+    SGL_KERNEL,
     Op,
     Provider,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "Op",
     "Provider",
     "KERNEL_SET",
+    "SGL_KERNEL",
     "GPU_SM",
     "gpu_to_sm",
     "detect_sm",

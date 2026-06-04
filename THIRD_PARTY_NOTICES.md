@@ -40,13 +40,16 @@ SPDX id (see its dedicated note).
 | thunderkittens | https://github.com/HazyResearch/ThunderKittens | `34b15f7` | `MIT` | `third_party/megakernel/thunderkittens/LICENSE` |
 | mirage | https://github.com/mirage-project/mirage | `b293bb6` | `Apache-2.0` | `third_party/megakernel/mirage/LICENSE` |
 | hazy-megakernels | https://github.com/HazyResearch/Megakernels | `7309cec` | `MIT` | `third_party/megakernel/hazy-megakernels/LICENSE` |
+| sgl-kernel | https://github.com/sgl-project/sglang | `8e836e7` | `Apache-2.0` | `third_party/sglang/sgl-kernel/LICENSE` |
 
 ## License-specific notes
 
-- **Apache-2.0** libraries (flashinfer, SageAttention, mamba, vllm, marlin, mirage):
-  redistribution must retain the `LICENSE` and, where present, the upstream `NOTICE`
-  file. Both are preserved in-tree (flashinfer and bitsandbytes ship NOTICE files;
-  Apache libs without an upstream NOTICE simply have none to retain).
+- **Apache-2.0** libraries (flashinfer, SageAttention, mamba, vllm, marlin, mirage,
+  sgl-kernel): redistribution must retain the `LICENSE` and, where present, the upstream
+  `NOTICE` file. Both are preserved in-tree (flashinfer and bitsandbytes ship NOTICE
+  files; Apache libs without an upstream NOTICE simply have none to retain). sgl-kernel
+  (SGLang) is vendored sparse as the `sgl-kernel/` subtree of `sgl-project/sglang` and
+  is the hard-op alignment target for kernel-set.
 - **BSD-3-Clause** (flash-attention, cutlass, causal-conv1d) and **BSD-2-Clause**
   (liger-kernel): redistribution must retain the copyright notice and license text
   (preserved in each `LICENSE`); the names of the projects/contributors must not be

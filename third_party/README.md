@@ -10,7 +10,7 @@ does **not** fork or modify their kernels — it only provides thin adapter/wrap
 that exposes them through the kernel-set operator ABI. For license attribution and
 redistribution compliance see [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
-- **Total vendored size:** ~68 MB across **20 libraries** in **10 categories**.
+- **Total vendored size:** ~72 MB across **21 libraries** in **11 categories**.
 - **Cross-references:** the "kernel-set op(s)" column is derived from
   [`benchmarks/baselines.yaml`](../benchmarks/baselines.yaml) (`maps_to:` field) and
   [`docs/MODEL_KERNEL_MAP.md`](../docs/MODEL_KERNEL_MAP.md). (There is no
@@ -104,10 +104,20 @@ redistribution compliance see [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTIC
 
 ---
 
+## sglang (sgl-kernel) — `third_party/sglang/`
+
+| Lib | Language | Upstream | Commit | License | Size | # src | Backs kernel-set op(s) |
+|-----|----------|----------|--------|---------|------|-------|------------------------|
+| **sgl-kernel** | CUDA/C++ (.cu/.cuh/.h/.hpp/.cpp) + Python | [sgl-project/sglang](https://github.com/sgl-project/sglang) | `8e836e7` | Apache-2.0 | 3.9M | 291 | `ks_moe_gate_softmax_topk`, `ks_moe_gate_sigmoid_group_topk`, `ks_moe_compute_permutation`, `ks_moe_grouped_gemm`, `ks_moe_unpermute`, `ks_rmsnorm`, `ks_fused_add_rmsnorm`, `ks_gemma_rmsnorm`, `ks_rope`, `ks_silu_and_mul`, `ks_gemm_w8a8`/FP8, `ks_sample`, `ks_flash_attn`/`ks_flash_attn_varlen`, `ks_paged_attn_decode`, `ks_mla_decode` |
+
+*Notes:* **The hard-op alignment target for kernel-set.** Vendored sparse from `sgl-project/sglang` (the `sgl-kernel/` subtree only); the exact Python API is in `sgl-kernel/python/sgl_kernel/`. sgl-kernel is wired as a first-class provider in `kernel_set.dispatch` and `benchmarks/bench_sota.py` — **rank #1** for the MoE gate ops (`topk_softmax`, `moe_fused_gate`) and grouped-MoE (its specialty), competitive for sampling, RMSNorm/fused-add/Gemma, RoPE, SiLU-mul, FP8/INT8 scaled-mm, and FA3 attention + FlashMLA.
+
+---
+
 ## Tree summary
 
 ```
-third_party/                                       ~68M total, 20 libs, 10 categories
+third_party/                                       ~72M total, 21 libs, 11 categories
 ├── attention/        4.3M+11M+1.2M+404K ≈ 17M     flash-attention, flashinfer, FlashMLA, SageAttention
 ├── gemm/             1.3M+27M           ≈ 28M     DeepGEMM, cutlass
 ├── quant/            64K+472K+724K+380K ≈ 1.6M    marlin, llm-awq, exllamav2, bitsandbytes
@@ -117,7 +127,8 @@ third_party/                                       ~68M total, 20 libs, 10 categ
 ├── triton/           1.1M               ≈ 1.1M    liger-kernel
 ├── tilelang/         5.9M               ≈ 5.9M    tilelang
 ├── training/         184K               ≈ 184K    cut-cross-entropy
-└── megakernel/       2.5M+3.9M+416K     ≈ 6.8M    thunderkittens, mirage, hazy-megakernels
+├── megakernel/       2.5M+3.9M+416K     ≈ 6.8M    thunderkittens, mirage, hazy-megakernels
+└── sglang/           3.9M               ≈ 3.9M    sgl-kernel (hard-op alignment target)
 ```
 
-**LICENSE coverage:** 20/20 libraries have a `LICENSE` file — **none missing**.
+**LICENSE coverage:** 21/21 libraries have a `LICENSE` file — **none missing**.

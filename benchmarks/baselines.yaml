@@ -3538,3 +3538,411 @@ moe_comm_training:
   confidence: high
   notes: Pairs with reshape_and_cache for fp8 KV; scaled_fp8_quant gives dynamic per-token scales for
     fp8 GEMM activations.
+
+# ---------------------------------------------------------------------------
+# sgl-kernel (SGLang) — the hard-op alignment target. Additional aligned
+# baselines beyond the rank-1 picks above: where sgl-kernel is a strong
+# competitive provider (rmsnorm/fused_add_rmsnorm/gemma_rmsnorm, rope,
+# silu_and_mul, fp8/int8 scaled-mm, FA3 attention + FlashMLA, sampling).
+# Source: https://github.com/sgl-project/sglang (sgl-kernel).
+# ---------------------------------------------------------------------------
+sgl_kernel_aligned:
+- name: sgl-kernel — prefill_varlen_fwd
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import flash_attn_varlen_func
+  python_call: from sgl_kernel import flash_attn_varlen_func; flash_attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_k,
+    max_seqlen_q, max_seqlen_k, softmax_scale=None, causal=True, window_size=(-1,-1), softcap=0.0, sinks=None) ->
+    out.
+  maps_to: []
+  ks_op: prefill_varlen_fwd
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp16
+  - bf16
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang vendored FA3 variable-length prefill over cu_seqlens; the hard-op attention alignment target.
+- name: sgl-kernel — prefill_dense_fwd
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import flash_attn_varlen_func
+  python_call: from sgl_kernel import flash_attn_varlen_func; flash_attn_varlen_func(q, k, v, cu_seqlens_q, cu_seqlens_k,
+    max_seqlen_q, max_seqlen_k, softmax_scale=None, causal=False, window_size=(-1,-1), softcap=0.0) -> out. q/k/v
+    (total_tokens, nheads, headdim).
+  maps_to: []
+  ks_op: prefill_dense_fwd
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp16
+  - bf16
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang's vendored FlashAttention-3 (FA3) prefill; production attention in the SGLang serving stack.
+- name: sgl-kernel — decode_paged_attention
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import flash_attn_with_kvcache
+  python_call: from sgl_kernel import flash_attn_with_kvcache; flash_attn_with_kvcache(q, k_cache, v_cache, page_table=...,
+    cache_seqlens=..., softmax_scale=None, causal=False) -> out. Paged KV-cache decode (FA3). k/v cache (num_blocks,
+    page_size, nheads_k, headdim).
+  maps_to: []
+  ks_op: decode_paged_attention
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp16
+  - bf16
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang vendored FA3 paged decode with KV cache; production decode path in SGLang.
+- name: sgl-kernel — mla_decode_paged
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import flash_mla_with_kvcache
+  python_call: from sgl_kernel import get_mla_metadata, flash_mla_with_kvcache; tile_md, num_splits = get_mla_metadata(cache_seqlens,
+    num_heads_q//num_heads_k, num_heads_k); flash_mla_with_kvcache(q, k_cache, block_table, cache_seqlens, head_dim_v,
+    tile_md, num_splits, softmax_scale=None, causal=False) -> (out, lse).
+  maps_to: []
+  ks_op: mla_decode_paged
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - bf16
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang's vendored FlashMLA absorbed-MLA paged decode (DeepSeek-V3); the hard-op MLA alignment target.
+- name: sgl-kernel — fp8_gemm_blockwise
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import fp8_blockwise_scaled_mm
+  python_call: from sgl_kernel import fp8_blockwise_scaled_mm; fp8_blockwise_scaled_mm(mat_a, mat_b, scales_a, scales_b,
+    out_dtype) -> Tensor. mat_a (M,K) fp8, mat_b (K,N) fp8 col-major, blockwise fp32 scales.
+  maps_to:
+  - ks_gemm_w8a8
+  ks_op: fp8_gemm_blockwise
+  bench_category: w8a8
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang CUTLASS blockwise-fp8 GEMM (DeepSeek-V3 fine-grained scaling); Hopper-class throughput; alignment
+    target for kernel-set's blockwise-fp8 path.
+- name: sgl-kernel — fp8_gemm_scaled_mm
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import fp8_scaled_mm
+  python_call: from sgl_kernel import fp8_scaled_mm; fp8_scaled_mm(mat_a, mat_b, scales_a, scales_b, out_dtype,
+    bias=None) -> Tensor. mat_a (M,K) fp8, mat_b (K,N) fp8 col-major, per-tensor/row scales.
+  maps_to:
+  - ks_gemm_w8a8
+  ks_op: fp8_gemm_scaled_mm
+  bench_category: w8a8
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp16
+  - bf16
+  - fp32
+  - fp8
+  benchable: true
+  confidence: high
+  notes: SGLang CUTLASS fp8 scaled-mm with the same scale_a[M]/scale_b[N] structure as kernel-set's ks_gemm_w8a8;
+    alignment target.
+- name: sgl-kernel — int8_gemm_w8a8
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import int8_scaled_mm
+  python_call: from sgl_kernel import int8_scaled_mm; int8_scaled_mm(mat_a, mat_b, scales_a, scales_b, out_dtype,
+    bias=None) -> Tensor. mat_a (M,K) int8, mat_b (K,N) int8, scales_a (M,1)/scales_b (1,N) fp32.
+  maps_to:
+  - ks_gemm_w8a8
+  ks_op: int8_gemm_w8a8
+  bench_category: w8a8
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  - fp32
+  - int8
+  benchable: true
+  confidence: high
+  notes: SGLang CUTLASS int8 W8A8 scaled-mm; direct shape match for ks_gemm_w8a8; alignment target for kernel-set's
+    int8 GEMM.
+- name: sgl-kernel — rmsnorm
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import rmsnorm
+  python_call: from sgl_kernel import rmsnorm; rmsnorm(input, weight, eps=1e-6, out=None, enable_pdl=None) -> Tensor;
+    out=(x/RMS(x))*weight. input (n,d) or (n,h,d), weight (d,).
+  maps_to:
+  - ks_rmsnorm
+  ks_op: rmsnorm
+  bench_category: rmsnorm
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  - fp32
+  benchable: true
+  confidence: high
+  notes: SGLang's production RMSNorm; FlashInfer-derived single-pass fused kernel with optional programmatic dependent
+    launch (PDL) on Hopper; the hard-op alignment target for kernel-set's ks_rmsnorm.
+- name: sgl-kernel — fused_add_rmsnorm
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import fused_add_rmsnorm
+  python_call: 'from sgl_kernel import fused_add_rmsnorm; fused_add_rmsnorm(input, residual, weight, eps=1e-6, enable_pdl=None)
+    -> None. In-place: residual += input; input = rmsnorm(residual)*weight.'
+  maps_to:
+  - ks_fused_add_rmsnorm
+  ks_op: fused_add_rmsnorm
+  bench_category: rmsnorm
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  benchable: true
+  confidence: high
+  notes: SGLang fused residual-add + RMSNorm; single kernel saves an HBM round-trip; the canonical pre-norm transformer
+    block fusion and kernel-set's alignment target.
+- name: sgl-kernel — gemma_rmsnorm
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import gemma_rmsnorm
+  python_call: from sgl_kernel import gemma_rmsnorm; gemma_rmsnorm(input, weight, eps=1e-6, out=None, enable_pdl=None)
+    -> Tensor; out=(x/RMS(x))*(weight+1). Also gemma_fused_add_rmsnorm(input, residual, weight, eps).
+  maps_to:
+  - ks_gemma_rmsnorm
+  ks_op: gemma_rmsnorm
+  bench_category: rmsnorm
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  benchable: true
+  confidence: high
+  notes: SGLang Gemma-style RMSNorm with (weight+1) scale computed in fp32; alignment target for ks_gemma_rmsnorm.
+- name: sgl-kernel — silu_and_mul
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import silu_and_mul
+  python_call: from sgl_kernel import silu_and_mul; silu_and_mul(input, out=None) -> Tensor; computes silu(input[...,:d//2])
+    * input[...,d//2:]. Also gelu_and_mul, gelu_tanh_and_mul.
+  maps_to:
+  - ks_silu_and_mul
+  ks_op: silu_and_mul
+  bench_category: swiglu
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  benchable: true
+  confidence: high
+  notes: SGLang fused SwiGLU activation (128-bit vectorized loads); alignment target for ks_silu_and_mul.
+- name: sgl-kernel — rope
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import rotary_embedding
+  python_call: from sgl_kernel import rotary_embedding; rotary_embedding(positions, query, key, head_size, cos_sin_cache,
+    is_neox=True) -> None (in-place rotates query/key). positions int64 (tokens,); query/key flattened (tokens,
+    heads*head_dim); cos_sin_cache (max_pos, head_dim).
+  maps_to:
+  - ks_rope
+  ks_op: rope
+  bench_category: rope
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp16
+  - bf16
+  benchable: true
+  confidence: high
+  notes: SGLang fused rotary embedding (NeoX + interleaved); in-place over packed q/k; alignment target for ks_rope.
+- name: sgl-kernel — min_p_filter
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import top_p_renorm_prob
+  python_call: from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob; renorm-by-threshold then sample. (min-p
+    sampling is exposed as min_p_sampling_from_probs on the MUSA build; the CUDA path composes renorm primitives.)
+  maps_to: []
+  ks_op: min_p_filter
+  bench_category: sampling
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  benchable: true
+  confidence: high
+  notes: SGLang fused renorm-by-threshold sampling primitives (FlashInfer-derived); min-p realized via the renorm+sample
+    composition.
+- name: sgl-kernel — categorical_sample_from_probs
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import top_p_renorm_prob
+  python_call: 'from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob; combine with categorical sampling.
+    On MUSA: top_p_sampling_from_probs(probs, top_p, indices=None, deterministic=True, generator=None).'
+  maps_to:
+  - ks_sample
+  ks_op: categorical_sample_from_probs
+  bench_category: sampling
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  benchable: true
+  confidence: high
+  notes: SGLang categorical sampling primitives; alignment target for ks_sample.
+- name: sgl-kernel — fused_temp_topk_topp_sample
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import top_k_renorm_prob
+  python_call: 'from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob; top_k_first order: renorm_probs = top_k_renorm_prob(probs,
+    top_k); top_p_renorm_prob(renorm_probs, top_p) then sample. (joint top_k_top_p_sampling_from_probs on the MUSA
+    build.)'
+  maps_to:
+  - ks_sample
+  ks_op: fused_temp_topk_topp_sample
+  bench_category: sampling
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  benchable: true
+  confidence: high
+  notes: SGLang fused temperature/top-k/top-p sampling path used in production serving; alignment target for kernel-set's
+    ks_sample.
+- name: sgl-kernel — topk_topp_renorm_probs
+  lib: sgl-kernel
+  pip_install: pip install sgl-kernel
+  build_from_source: null
+  import_check: from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
+  python_call: from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob; top_k_renorm_prob(probs, top_k) -> Tensor;
+    top_p_renorm_prob(probs, top_p) -> Tensor. Renormalizes probs after top-k / top-p thresholding.
+  maps_to: []
+  ks_op: topk_topp_renorm_probs
+  bench_category: sampling
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  benchable: true
+  confidence: high
+  notes: SGLang fused top-k / top-p renorm-probs kernels (FlashInfer-derived); compose with sampling for top-k/top-p
+    decoding.
