@@ -23,7 +23,11 @@
 // True wherever the FP8 conversion intrinsics are usable: every device pass
 // that targets sm_89+ (KS_HAS_FP8) and the single nvcc host pass (which pulls
 // in <cuda_fp8.h> for size/dispatch logic). Mirrors the guard in dtype.cuh.
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+// Define on every nvcc pass (host + all device arches): the fp8 conversion types
+// are available everywhere via <cuda_fp8.h> (software conversion on pre-sm89), so
+// the kernel symbols must exist for every targeted arch or the .so won't dlopen
+// on A100/T4/V100. (Hardware fp8 tensor-core ops, if any, stay under KS_HAS_FP8.)
+#if defined(KS_HAS_FP8_TYPES)
 #define KS_QUANT_FP8_AVAILABLE 1
 #endif
 

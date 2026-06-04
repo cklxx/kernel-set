@@ -21,12 +21,19 @@
 #  include <cuda_runtime.h>
 #  include <cuda_fp16.h>
 #  include <cuda_bf16.h>
+// FP8 e4m3/e5m2 conversion TYPES come from <cuda_fp8.h> (CUDA 11.8+) and the
+// float<->fp8 conversions run in SOFTWARE where there is no hardware path. Include
+// it on EVERY nvcc pass (host + all device arches) so the fp8 kernel symbols are
+// defined for every targeted arch — otherwise an sm_80-only build leaves fp8
+// kernels undefined and the whole .so fails to dlopen on A100/T4/V100. Gate type
+// availability with KS_HAS_FP8_TYPES; keep KS_HAS_FP8 for the *hardware* fp8
+// tensor-core path (sm_89+).
+#  if defined(__CUDACC__)
+#    include <cuda_fp8.h>
+#    define KS_HAS_FP8_TYPES 1
+#  endif
 #  if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890)
 #    define KS_HAS_FP8 1
-#    include <cuda_fp8.h>
-#  elif !defined(__CUDA_ARCH__) && defined(__CUDACC__)
-// Host pass of nvcc: expose the fp8 types for size/dispatch logic.
-#    include <cuda_fp8.h>
 #  endif
 #endif
 

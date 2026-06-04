@@ -39,7 +39,7 @@ KS_DI __nv_bfloat16 from_float<__nv_bfloat16>(float x) {
   return __float2bfloat16_rn(x);
 }
 
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+#if defined(KS_HAS_FP8_TYPES)
 KS_DI float to_float(__nv_fp8_e4m3 x) { return float(x); }
 KS_DI float to_float(__nv_fp8_e5m2 x) { return float(x); }
 template <>
