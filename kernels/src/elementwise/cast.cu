@@ -48,7 +48,7 @@ KS_DI double cast_in(int64_t x) { return static_cast<double>(x); }
 KS_DI double cast_in(int32_t x) { return static_cast<double>(x); }
 KS_DI double cast_in(int8_t x) { return static_cast<double>(x); }
 KS_DI double cast_in(uint8_t x) { return static_cast<double>(x); }
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+#if defined(KS_HAS_FP8_TYPES)
 KS_DI double cast_in(__nv_fp8_e4m3 x) {
   return static_cast<double>(static_cast<float>(x));
 }
@@ -116,7 +116,7 @@ template <>
 KS_DI int8_t cast_out<int8_t>(double v) { return clamp_to_int<int8_t>(v); }
 template <>
 KS_DI uint8_t cast_out<uint8_t>(double v) { return clamp_to_int<uint8_t>(v); }
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+#if defined(KS_HAS_FP8_TYPES)
 template <>
 KS_DI __nv_fp8_e4m3 cast_out<__nv_fp8_e4m3>(double v) {
   return __nv_fp8_e4m3(static_cast<float>(v));
@@ -183,7 +183,7 @@ inline ks_status_t cast_dispatch_dst(void* out, ks_dtype_t dst_dtype,
     case KS_DTYPE_U8:
       launch_cast<SrcT, uint8_t>(static_cast<uint8_t*>(out), in, n, stream);
       return KS_SUCCESS;
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+#if defined(KS_HAS_FP8_TYPES)
     case KS_DTYPE_F8E4M3:
       launch_cast<SrcT, __nv_fp8_e4m3>(static_cast<__nv_fp8_e4m3*>(out), in, n,
                                        stream);
@@ -284,7 +284,7 @@ ks_status_t ks_cast(void* out, ks_dtype_t dst_dtype, const void* in,
       st = elementwise::cast_dispatch_dst<uint8_t>(
           out, dst_dtype, static_cast<const uint8_t*>(in), n, s);
       break;
-#if defined(KS_HAS_FP8) || (defined(__CUDACC__) && !defined(__CUDA_ARCH__))
+#if defined(KS_HAS_FP8_TYPES)
     case KS_DTYPE_F8E4M3:
       st = elementwise::cast_dispatch_dst<__nv_fp8_e4m3>(
           out, dst_dtype, static_cast<const __nv_fp8_e4m3*>(in), n, s);
