@@ -105,6 +105,9 @@ _PLAN_OP_TO_OPTIMAL = {
     "moe_grouped_gemm": "moe",
     "ssm": "selective_scan",
     "conv1d": "causal_conv1d",
+    "gated_delta": "gated_delta_rule",
+    "linear_attn": "gated_linear_attn",
+    "rwkv_wkv": "rwkv_wkv7",
     "cross_entropy": "cross_entropy",
 }
 

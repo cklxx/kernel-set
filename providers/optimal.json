@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 252,
+    "total": 282,
     "measured": 13,
-    "heuristic": 239
+    "heuristic": 269
   },
   "cells": [
     {
@@ -1079,6 +1079,226 @@
       "source": "heuristic",
       "fallback_chain": [
         "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_delta_rule",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gated_linear_attn",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
         "kernel-set"
       ]
     },
@@ -2547,6 +2767,116 @@
       "source": "heuristic",
       "fallback_chain": [
         "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "rwkv_wkv7",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
         "kernel-set"
       ]
     },

@@ -174,6 +174,9 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "sampling" in table_ops
     assert "selective_scan" in table_ops
     assert "causal_conv1d" in table_ops
+    assert "gated_delta_rule" in table_ops
+    assert "gated_linear_attn" in table_ops
+    assert "rwkv_wkv7" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -257,6 +260,21 @@ def test_heuristic_fill_ssm_and_conv_sm80_plus():
         KERNEL_SET
     assert O.select_optimal("causal_conv1d", 75, "bf16")["provider"] == \
         KERNEL_SET
+
+
+def test_heuristic_fill_linear_attn_sm80_plus():
+    for sm in (80, 86, 89, 90, 100):
+        for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
+            cell = O.select_optimal(op, sm, "bf16")
+            assert cell["provider"] == "flash-linear-attention"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == [
+                "flash-linear-attention", KERNEL_SET]
+            assert O.select_optimal(op, sm, "fp16")["provider"] == \
+                "flash-linear-attention"
+
+    for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
+        assert O.select_optimal(op, 75, "fp16")["provider"] == KERNEL_SET
 
 
 # --------------------------------------------------------------------------- #
@@ -477,6 +495,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "flash-attn": "flash_attn", "sgl-kernel": "sgl_kernel",
         "vllm": "vllm", "torch": "torch", "deep_gemm": "deep_gemm",
         "mamba-ssm": "mamba_ssm", "causal-conv1d": "causal_conv1d",
+        "flash-linear-attention": "fla",
     }
     samples = [
         # L4 (sm89) fp16 measured winners.
@@ -490,6 +509,9 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         ("moe_grouped_gemm", 90, "fp8"),  # heuristic -> deep_gemm
         ("ssm", 80, "bf16"),          # heuristic -> mamba-ssm
         ("conv1d", 80, "fp16"),       # heuristic -> causal-conv1d
+        ("gated_delta", 80, "bf16"),  # heuristic -> flash-linear-attention
+        ("linear_attn", 80, "fp16"),  # heuristic -> flash-linear-attention
+        ("rwkv_wkv", 80, "bf16"),     # heuristic -> flash-linear-attention
     ]
     for plan_op, sm, scheme in samples:
         cell = sel.optimal_cell(plan_op, sm, scheme)
@@ -550,5 +572,8 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
 
     assert sel.optimal_lookup_op("ssm", "bf16") == "selective_scan"
     assert sel.optimal_lookup_op("conv1d", "fp16") == "causal_conv1d"
+    assert sel.optimal_lookup_op("gated_delta", "bf16") == "gated_delta_rule"
+    assert sel.optimal_lookup_op("linear_attn", "fp16") == "gated_linear_attn"
+    assert sel.optimal_lookup_op("rwkv_wkv", "bf16") == "rwkv_wkv7"
     assert sel.optimal_lookup_op("qkv_proj", "mxfp4") == "mxfp4_gemm"
     assert sel.optimal_lookup_op("moe_grouped_gemm", "mxfp4") == "mxfp4_gemm"

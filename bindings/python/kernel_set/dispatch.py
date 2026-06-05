@@ -86,6 +86,9 @@ __all__ = [
     "sampling",
     "selective_scan",
     "causal_conv1d",
+    "gated_delta_rule",
+    "gated_linear_attn",
+    "rwkv_wkv7",
     # introspection
     "which",
     "which_provider",
@@ -377,6 +380,36 @@ def causal_conv1d(out, x, weight, bias=None, *, batch=None, dim=None,
         "causal_conv1d", (out, x, weight),
         dict(bias=bias, batch=batch, dim=dim, seqlen=seqlen, width=width,
              silu=silu, dtype=dtype, stream=stream, **kw))
+
+
+def gated_delta_rule(q, k, v, g, beta, *, batch=None, seqlen=None, heads=None,
+                     k_dim=None, v_dim=None, g_is_vector=0,
+                     use_qk_l2norm=0, scale=0.0, dtype=None, stream=None, **kw):
+    """Gated delta rule / KDA linear attention. Inputs are ``[B, T, H, D]``."""
+    return _dispatch(
+        "gated_delta_rule", (q, k, v, g, beta),
+        dict(batch=batch, seqlen=seqlen, heads=heads, k_dim=k_dim, v_dim=v_dim,
+             g_is_vector=g_is_vector, use_qk_l2norm=use_qk_l2norm, scale=scale,
+             dtype=dtype, stream=stream, **kw))
+
+
+def gated_linear_attn(q, k, v, g=None, head_decay=None, *, batch=None,
+                      seqlen=None, heads=None, k_dim=None, v_dim=None,
+                      gate_mode=0, scale=0.0, dtype=None, stream=None, **kw):
+    """GLA / simple GLA / lightning attention. Inputs are ``[B, T, H, D]``."""
+    return _dispatch(
+        "gated_linear_attn", (q, k, v, g, head_decay),
+        dict(batch=batch, seqlen=seqlen, heads=heads, k_dim=k_dim, v_dim=v_dim,
+             gate_mode=gate_mode, scale=scale, dtype=dtype, stream=stream, **kw))
+
+
+def rwkv_wkv7(r, w, k, v, a, b, *, batch=None, seqlen=None, heads=None,
+              k_dim=None, v_dim=None, scale=0.0, dtype=None, stream=None, **kw):
+    """RWKV-7 WKV linear attention. Inputs are ``[B, T, H, D]``."""
+    return _dispatch(
+        "rwkv_wkv7", (r, w, k, v, a, b),
+        dict(batch=batch, seqlen=seqlen, heads=heads, k_dim=k_dim, v_dim=v_dim,
+             scale=scale, dtype=dtype, stream=stream, **kw))
 
 
 # --------------------------------------------------------------------------- #

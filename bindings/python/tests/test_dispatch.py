@@ -59,6 +59,34 @@ def _mock_available(monkeypatch, available_libs, sm=None):
     monkeypatch.setattr(probe, "detect_sm", lambda: sm)
 
 
+class _FakeTensor:
+    def __init__(self, shape, *, device="cuda:0", dtype="bf16"):
+        self.shape = shape
+        self.ndim = len(shape)
+        self.device = device
+        self.dtype = dtype
+
+
+def _install_fake_fla(monkeypatch, calls):
+    fla = types.ModuleType("fla")
+    ops = types.ModuleType("fla.ops")
+
+    def record(name):
+        def fn(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            return f"{name}_out", "final_state"
+        return fn
+
+    for name in (
+        "chunk_gated_delta_rule", "chunk_kda", "chunk_gla",
+        "chunk_simple_gla", "chunk_lightning_attn", "chunk_rwkv7",
+    ):
+        setattr(ops, name, record(name))
+    fla.ops = ops
+    monkeypatch.setitem(sys.modules, "fla", fla)
+    monkeypatch.setitem(sys.modules, "fla.ops", ops)
+
+
 # --------------------------------------------------------------------------- #
 # Basic structure / introspection.
 # --------------------------------------------------------------------------- #
@@ -436,6 +464,7 @@ COMPUTE_BOUND_OPS = [
     "gemm", "fp8_gemm", "int8_gemm", "w4a16",
     "attention_prefill", "attention_decode", "mla_decode",
     "moe", "selective_scan", "causal_conv1d",
+    "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
 ]
 
 
@@ -469,6 +498,9 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("moe", {"vllm"}, 80, None, "vllm"),
         ("selective_scan", {"mamba_ssm"}, 80, "bf16", "mamba-ssm"),
         ("causal_conv1d", {"causal_conv1d"}, 80, "bf16", "causal-conv1d"),
+        ("gated_delta_rule", {"fla"}, 80, "bf16", "flash-linear-attention"),
+        ("gated_linear_attn", {"fla"}, 80, "fp16", "flash-linear-attention"),
+        ("rwkv_wkv7", {"fla"}, 80, "bf16", "flash-linear-attention"),
     ]
     for op, libs, sm, dtype, expected in cases:
         dispatch.reset_cache()
@@ -589,6 +621,61 @@ def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
     assert dispatch.which("causal_conv1d", dtype="fp32") == KERNEL_SET
 
 
+def test_linear_attn_external_provider_is_sm80_gated(monkeypatch):
+    _mock_available(monkeypatch, available_libs={"fla"}, sm=75)
+    for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
+        assert dispatch.which(op, dtype="fp16") == KERNEL_SET
+
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"fla"}, sm=80)
+    for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
+        assert dispatch.which(op, dtype="fp16") == "flash-linear-attention"
+        assert dispatch.which(op, dtype="bf16") == "flash-linear-attention"
+
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"fla"}, sm=80)
+    for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
+        assert dispatch.which(op, dtype="fp32") == KERNEL_SET
+
+
+def test_linear_attn_public_dispatch_calls_fla_adapters(monkeypatch):
+    calls = []
+    _install_fake_fla(monkeypatch, calls)
+    _mock_available(monkeypatch, available_libs={"fla"}, sm=80)
+
+    q = _FakeTensor((2, 3, 4, 8))
+    k = _FakeTensor((2, 3, 4, 8))
+    v = _FakeTensor((2, 3, 4, 16))
+    g_scalar = _FakeTensor((2, 3, 4))
+    g_vector = _FakeTensor((2, 3, 4, 8))
+    beta = _FakeTensor((2, 3, 4))
+
+    assert dispatch.gated_delta_rule(
+        q, k, v, g_scalar, beta, use_qk_l2norm=1, scale=0.5) == \
+        "chunk_gated_delta_rule_out"
+    assert calls[-1][0] == "chunk_gated_delta_rule"
+    assert calls[-1][2]["use_qk_l2norm_in_kernel"] is True
+    assert calls[-1][2]["scale"] == 0.5
+
+    assert dispatch.gated_delta_rule(q, k, v, g_vector, beta) == \
+        "chunk_kda_out"
+    assert calls[-1][0] == "chunk_kda"
+
+    assert dispatch.gated_linear_attn(q, k, v, g_vector) == "chunk_gla_out"
+    assert calls[-1][0] == "chunk_gla"
+    assert dispatch.gated_linear_attn(q, k, v, g_scalar) == \
+        "chunk_simple_gla_out"
+    assert calls[-1][0] == "chunk_simple_gla"
+    assert dispatch.gated_linear_attn(
+        q, k, v, layer_idx=1, num_layers=4) == "chunk_lightning_attn_out"
+    assert calls[-1][0] == "chunk_lightning_attn"
+
+    assert dispatch.rwkv_wkv7(q, g_vector, k, v, q, k, scale=0.25) == \
+        "chunk_rwkv7_out"
+    assert calls[-1][0] == "chunk_rwkv7"
+    assert calls[-1][2]["scale"] == 0.25
+
+
 def test_no_compute_bound_op_has_unwired_rank1(monkeypatch):
     # Regression for the old call=None gaps (vllm-marlin / vllm gate). For every
     # compute-bound op, the rank-1 (lowest-rank) external provider must have a
@@ -616,6 +703,9 @@ def test_arch_gates_preserved_for_sm90_providers():
     assert gate("mla_decode", "flashinfer") == 80
     assert gate("selective_scan", "mamba-ssm") == 80
     assert gate("causal_conv1d", "causal-conv1d") == 80
+    assert gate("gated_delta_rule", "flash-linear-attention") == 80
+    assert gate("gated_linear_attn", "flash-linear-attention") == 80
+    assert gate("rwkv_wkv7", "flash-linear-attention") == 80
 
 
 # --------------------------------------------------------------------------- #

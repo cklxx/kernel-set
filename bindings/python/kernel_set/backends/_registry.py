@@ -787,6 +787,19 @@ def _copy_result_to_out(out, result):
     raise TypeError("external provider returned a tensor but out is not copyable")
 
 
+def _first_result(result):
+    return result[0] if isinstance(result, (tuple, list)) else result
+
+
+def _fla_scale(scale):
+    if scale is None:
+        return None
+    try:
+        return None if float(scale) == 0.0 else scale
+    except (TypeError, ValueError):
+        return scale
+
+
 def _selective_scan_mamba(out, x, dt, A, B, C, D=None, z=None, dt_bias=None,
                           *, delta_softplus=False, **_):
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
@@ -820,6 +833,134 @@ def _causal_conv1d_ks(out, x, weight, bias=None, *, batch=None, dim=None,
     return ssm.causal_conv1d(
         out, x, weight, bias=bias, batch=batch, dim=dim, seqlen=seqlen,
         width=width, silu=silu, dtype=dtype, stream=stream)
+
+
+def _gated_delta_rule_fla(q, k, v, g, beta, *, g_is_vector=0,
+                          use_qk_l2norm=0, scale=0.0, initial_state=None,
+                          output_final_state=False, state_v_first=False,
+                          cu_seqlens=None, cu_seqlens_cpu=None,
+                          use_beta_sigmoid_in_kernel=False,
+                          allow_neg_eigval=False, **kw):
+    from fla.ops import chunk_gated_delta_rule, chunk_kda
+    is_vector_gate = bool(g_is_vector) or getattr(g, "ndim", 0) == 4
+    fn = chunk_kda if is_vector_gate else chunk_gated_delta_rule
+    result = fn(
+        q, k, v, g, beta, scale=_fla_scale(scale),
+        initial_state=initial_state, output_final_state=output_final_state,
+        use_qk_l2norm_in_kernel=bool(use_qk_l2norm),
+        use_beta_sigmoid_in_kernel=use_beta_sigmoid_in_kernel,
+        allow_neg_eigval=allow_neg_eigval, state_v_first=state_v_first,
+        cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu, **kw)
+    return _first_result(result)
+
+
+def _gated_delta_rule_ks(q, k, v, g, beta, *, batch=None, seqlen=None,
+                         heads=None, k_dim=None, v_dim=None, g_is_vector=0,
+                         use_qk_l2norm=0, scale=0.0, dtype=None, stream=None,
+                         **_):
+    from .. import linear_attn
+    import torch
+    b, t, h, kd = q.shape
+    vd = v.shape[-1]
+    out = torch.empty(b, t, h, vd, device=q.device, dtype=v.dtype)
+    linear_attn.gated_delta_rule(
+        out, q, k, v, g, beta,
+        batch=b if batch is None else batch,
+        seqlen=t if seqlen is None else seqlen,
+        heads=h if heads is None else heads,
+        k_dim=kd if k_dim is None else k_dim,
+        v_dim=vd if v_dim is None else v_dim,
+        g_is_vector=g_is_vector,
+        use_qk_l2norm=use_qk_l2norm,
+        scale=scale,
+        dtype=dtype,
+        stream=stream)
+    return out
+
+
+def _gated_linear_attn_fla(q, k, v, g=None, head_decay=None, *, gate_mode=0,
+                           scale=0.0, initial_state=None,
+                           output_final_state=False, state_v_first=False,
+                           cu_seqlens=None, cu_seqlens_cpu=None,
+                           layer_idx=None, num_layers=None, **_):
+    from fla.ops import chunk_gla, chunk_lightning_attn, chunk_simple_gla
+    if gate_mode in (2, "lightning") or layer_idx is not None or num_layers is not None:
+        if layer_idx is None or num_layers is None:
+            raise ValueError("lightning attention requires layer_idx and num_layers")
+        result = chunk_lightning_attn(
+            q, k, v, layer_idx=layer_idx, num_layers=num_layers,
+            scale=_fla_scale(scale), initial_state=initial_state,
+            output_final_state=output_final_state, cu_seqlens=cu_seqlens)
+    elif (gate_mode in (1, "simple") or g is None or head_decay is not None
+          or getattr(g, "ndim", 0) == 3):
+        result = chunk_simple_gla(
+            q, k, v, g=g, g_gamma=None if g is not None else head_decay,
+            scale=_fla_scale(scale), initial_state=initial_state,
+            output_final_state=output_final_state, state_v_first=state_v_first,
+            cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu)
+    else:
+        result = chunk_gla(
+            q, k, v, g, scale=_fla_scale(scale),
+            initial_state=initial_state, output_final_state=output_final_state,
+            state_v_first=state_v_first, cu_seqlens=cu_seqlens,
+            cu_seqlens_cpu=cu_seqlens_cpu)
+    return _first_result(result)
+
+
+def _gated_linear_attn_ks(q, k, v, g=None, head_decay=None, *, batch=None,
+                          seqlen=None, heads=None, k_dim=None, v_dim=None,
+                          gate_mode=0, scale=0.0, dtype=None, stream=None,
+                          **_):
+    from .. import linear_attn
+    import torch
+    b, t, h, kd = q.shape
+    vd = v.shape[-1]
+    out = torch.empty(b, t, h, vd, device=q.device, dtype=v.dtype)
+    linear_attn.gated_linear_attn(
+        out, q, k, v, g, head_decay,
+        batch=b if batch is None else batch,
+        seqlen=t if seqlen is None else seqlen,
+        heads=h if heads is None else heads,
+        k_dim=kd if k_dim is None else k_dim,
+        v_dim=vd if v_dim is None else v_dim,
+        gate_mode=gate_mode,
+        scale=scale,
+        dtype=dtype,
+        stream=stream)
+    return out
+
+
+def _rwkv_wkv7_fla(r, w, k, v, a, b, *, scale=0.0, initial_state=None,
+                   output_final_state=False, cu_seqlens=None,
+                   cu_seqlens_cpu=None, safe_gate=False, chunk_size=None, **_):
+    from fla.ops import chunk_rwkv7
+    result = chunk_rwkv7(
+        r, w, k, v, a, b, scale=1.0 if _fla_scale(scale) is None else scale,
+        initial_state=initial_state, output_final_state=output_final_state,
+        cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu,
+        safe_gate=safe_gate, chunk_size=chunk_size)
+    return _first_result(result)
+
+
+def _rwkv_wkv7_ks(r, w, k, v, a, b, *, batch=None, seqlen=None, heads=None,
+                  k_dim=None, v_dim=None, scale=0.0, dtype=None, stream=None,
+                  **_):
+    from .. import linear_attn
+    import torch
+    bt, t, h, kd = r.shape
+    vd = v.shape[-1]
+    out = torch.empty(bt, t, h, vd, device=r.device, dtype=v.dtype)
+    linear_attn.rwkv_wkv7(
+        out, r, w, k, v, a, b,
+        batch=bt if batch is None else batch,
+        seqlen=t if seqlen is None else seqlen,
+        heads=h if heads is None else heads,
+        k_dim=kd if k_dim is None else k_dim,
+        v_dim=vd if v_dim is None else v_dim,
+        scale=scale,
+        dtype=dtype,
+        stream=stream)
+    return out
 
 
 def _moe_deepgemm(a, b, expert_offsets, *, num_experts, n, k,
@@ -1288,6 +1429,30 @@ _OPS_RAW: List[Op] = [
                  _causal_conv1d_external, "causal-conv1d fused kernel"),
         _ks_provider(_causal_conv1d_ks, "ks_causal_conv1d",
                      "portable causal depthwise conv1d"),
+    ]),
+    Op("gated_delta_rule", "linear-attn", "ks_gated_delta_rule", [
+        Provider("flash-linear-attention", 1, 80, "fp16, bf16",
+                 "from fla.ops import chunk_gated_delta_rule",
+                 _gated_delta_rule_fla,
+                 "FLA chunk gated delta rule / KDA"),
+        _ks_provider(_gated_delta_rule_ks, "ks_gated_delta_rule",
+                     "portable gated delta rule"),
+    ]),
+    Op("gated_linear_attn", "linear-attn", "ks_gated_linear_attn", [
+        Provider("flash-linear-attention", 1, 80, "fp16, bf16",
+                 "from fla.ops import chunk_gla",
+                 _gated_linear_attn_fla,
+                 "FLA chunk GLA / simple GLA / lightning attention"),
+        _ks_provider(_gated_linear_attn_ks, "ks_gated_linear_attn",
+                     "portable gated linear attention"),
+    ]),
+    Op("rwkv_wkv7", "linear-attn", "ks_rwkv_wkv7", [
+        Provider("flash-linear-attention", 1, 80, "fp16, bf16",
+                 "from fla.ops import chunk_rwkv7",
+                 _rwkv_wkv7_fla,
+                 "FLA chunk RWKV-7 WKV"),
+        _ks_provider(_rwkv_wkv7_ks, "ks_rwkv_wkv7",
+                     "portable RWKV-7 WKV"),
     ]),
 ]
 

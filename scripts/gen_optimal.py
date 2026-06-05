@@ -889,6 +889,30 @@ HEURISTIC = {
             for sm in (80, 86, 89, 90, 100)
             for dtype in ("fp16", "bf16")
         ],
+        # --- Linear attention families (GLA / DeltaNet / RWKV). Flash Linear
+        #     Attention is the external CUDA sm80+ path for fp16/bf16; kernel-set
+        #     remains the terminal fallback and covers lower-SM by omission.
+        *[
+            {"logical_op": "gated_delta_rule", "sm": sm, "dtype": dtype,
+             "provider": "flash-linear-attention",
+             "fallback_chain": ["flash-linear-attention", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
+        *[
+            {"logical_op": "gated_linear_attn", "sm": sm, "dtype": dtype,
+             "provider": "flash-linear-attention",
+             "fallback_chain": ["flash-linear-attention", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
+        *[
+            {"logical_op": "rwkv_wkv7", "sm": sm, "dtype": dtype,
+             "provider": "flash-linear-attention",
+             "fallback_chain": ["flash-linear-attention", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         # --- sampling: fused temp/top-k/top-p over fp32 probs (dtype-agnostic
         #     downstream of the logits). flashinfer leads (sm75+); sgl woven in
         #     (sm80+). ---------------------------------------------------------
