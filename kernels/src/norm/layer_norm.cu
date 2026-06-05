@@ -133,10 +133,24 @@ ks_status_t ks_layer_norm_backward(void* grad_input, void* grad_weight_fp32,
   KS_CHECK_PTR(weight);
   if (rows <= 0 || cols <= 0)
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_layer_norm_backward: shape");
+  if (rows > 2147483647LL)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE, "ks_layer_norm_backward: rows > grid limit");
 
   const dim3 grid(static_cast<unsigned>(rows));
   const dim3 block(norm::kLnBlock);
   auto s = to_stream(stream);
+
+  // grad_weight_fp32 / grad_bias_fp32 are atomicAdd-accumulated across rows ->
+  // zero them first (self-contained; caller need not pre-zero).
+  {
+    ks_status_t z = ks::check(
+        ks::gpuMemsetAsync(grad_weight_fp32, 0, sizeof(float) * cols, s),
+        "ks_layer_norm_backward");
+    if (z != KS_SUCCESS) return z;
+    z = ks::check(ks::gpuMemsetAsync(grad_bias_fp32, 0, sizeof(float) * cols, s),
+                  "ks_layer_norm_backward");
+    if (z != KS_SUCCESS) return z;
+  }
 
   KS_DISPATCH_FLOATING_TYPES(dtype, "ks_layer_norm_backward", {
     norm::layer_norm_backward_kernel<scalar_t><<<grid, block, 0, s>>>(

@@ -102,7 +102,10 @@ KS_GLOBAL void unpermute_inverse_kernel(
       static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (row >= num_rows) return;
   const int32_t pair = sorted_token_ids[row];
-  inverse[pair] = static_cast<int32_t>(row);
+  // Guard against out-of-range / sentinel ids so a malformed permutation cannot
+  // scatter out of bounds. Dropped pairs stay at the -1 sentinel (see launcher).
+  if (pair >= 0 && static_cast<int64_t>(pair) < num_rows)
+    inverse[pair] = static_cast<int32_t>(row);
 }
 
 // One block per output token. Accumulates the weighted sum of the token's top_k
@@ -120,6 +123,7 @@ KS_GLOBAL void unpermute_gather_kernel(
     for (int k = 0; k < top_k; ++k) {
       const int64_t pair = token * top_k + k;
       const int32_t prow = inverse[pair];
+      if (prow < 0) continue;  // dropped/out-of-range pair contributes nothing
       const float w = routing_weights[pair];
       acc += to_float(permuted[static_cast<int64_t>(prow) * hidden + i]) * w;
     }
@@ -243,6 +247,18 @@ ks_status_t ks_moe_unpermute(void* out, const void* permuted,
       static_cast<size_t>(num_rows) * sizeof(int32_t));
   if (me != ks::gpuSuccess)
     KS_RETURN_ERROR(KS_ERROR_OUT_OF_MEMORY, "ks_moe_unpermute: scratch alloc");
+
+  // Sentinel-fill inverse with -1 so any pair never written by a (dropped or
+  // out-of-range) token id is skipped by the gather (contributes 0) instead of
+  // reading uninitialized memory. 0xFF bytes == -1 for int32.
+  {
+    ks::gpuError_t ie = ks::gpuMemsetAsync(
+        inverse, 0xFF, static_cast<size_t>(num_rows) * sizeof(int32_t), s);
+    if (ie != ks::gpuSuccess) {
+      ks::gpuFree(inverse);
+      KS_RETURN_ERROR(KS_ERROR_CUDA, "ks_moe_unpermute: inverse memset");
+    }
+  }
 
   const dim3 inv_block(moe::kPermBlock);
   const dim3 inv_grid(static_cast<unsigned>(

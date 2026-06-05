@@ -127,12 +127,54 @@ KS_DI __nv_fp8_e5m2 cast_out<__nv_fp8_e5m2>(double v) {
 }
 #endif
 
+// Integer<->integer conversions must NOT go through double (it loses precision
+// for |value| > 2^53, e.g. large int64). Clamp using 64-bit integer math: every
+// storage int type's bounds fit in long long, so promote, clamp, narrow.
+template <typename T> struct IsIntStorage { static constexpr bool value = false; };
+template <> struct IsIntStorage<int64_t> { static constexpr bool value = true; };
+template <> struct IsIntStorage<int32_t> { static constexpr bool value = true; };
+template <> struct IsIntStorage<int8_t>  { static constexpr bool value = true; };
+template <> struct IsIntStorage<uint8_t> { static constexpr bool value = true; };
+
+template <typename T> struct IntBound;  // [lo, hi] as long long (all fit)
+template <> struct IntBound<int64_t> {
+  static constexpr long long lo = (-9223372036854775807LL - 1);
+  static constexpr long long hi = 9223372036854775807LL;
+};
+template <> struct IntBound<int32_t> {
+  static constexpr long long lo = -2147483648LL; static constexpr long long hi = 2147483647LL;
+};
+template <> struct IntBound<int8_t> {
+  static constexpr long long lo = -128LL; static constexpr long long hi = 127LL;
+};
+template <> struct IntBound<uint8_t> {
+  static constexpr long long lo = 0LL; static constexpr long long hi = 255LL;
+};
+
+template <typename DstT, typename SrcT>
+KS_DI DstT int_to_int(SrcT v) {
+  long long x = static_cast<long long>(v);            // exact for all our int types
+  if (x < IntBound<DstT>::lo) x = IntBound<DstT>::lo;  // saturating narrow
+  if (x > IntBound<DstT>::hi) x = IntBound<DstT>::hi;
+  return static_cast<DstT>(x);
+}
+
+// Pick the exact integer path when both ends are integers; else go via double.
+template <typename SrcT, typename DstT>
+KS_DI DstT convert(SrcT x) {
+  if constexpr (IsIntStorage<SrcT>::value && IsIntStorage<DstT>::value) {
+    return int_to_int<DstT>(x);
+  } else {
+    return cast_out<DstT>(cast_in(x));
+  }
+}
+
 template <typename SrcT, typename DstT>
 KS_GLOBAL void cast_kernel(DstT* __restrict__ out, const SrcT* __restrict__ in,
                            int64_t n) {
   const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
   for (int64_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
-    out[i] = cast_out<DstT>(cast_in(in[i]));
+    out[i] = convert<SrcT, DstT>(in[i]);
   }
 }
 

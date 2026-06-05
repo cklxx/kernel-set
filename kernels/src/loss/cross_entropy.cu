@@ -140,6 +140,9 @@ ks_status_t ks_cross_entropy(float* losses, void* grad_logits,
   if (label_smoothing < 0.f || label_smoothing >= 1.f)
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT,
                     "ks_cross_entropy: label_smoothing must be in [0,1)");
+  if (num_tokens > 2147483647LL)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_cross_entropy: num_tokens exceeds grid limit");
 
   const dim3 grid(static_cast<unsigned>(num_tokens));
   const dim3 block(loss::kCeBlock);

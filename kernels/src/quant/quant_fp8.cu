@@ -173,6 +173,9 @@ ks_status_t ks_quantize_fp8(void* out, float* scale, const void* input,
   const dim3 block(quant::kBlock);
 
   if (mode == KS_QUANT_PER_TOKEN) {
+    if (rows > 2147483647LL)
+      KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                      "ks_quantize_fp8: rows exceeds grid limit");
     const dim3 grid(static_cast<unsigned>(rows));
     if (fp8_dtype == KS_DTYPE_F8E4M3) {
       auto* o = static_cast<__nv_fp8_e4m3*>(out);
