@@ -245,6 +245,59 @@ HEURISTIC = {
         {"logical_op": "w4a16", "sm": 100, "dtype": "int4",
          "provider": "vllm-machete",
          "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
+        # FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe). sm89 has no fp8 HW provider, so
+        # kernel-set's portable blockwise kernel IS the winner there (chain
+        # collapses to ["kernel-set"]); DeepGEMM wins on Hopper/Blackwell.
+        {"logical_op": "fp8_gemm_blockwise", "sm": 89, "dtype": "fp8",
+         "provider": "kernel-set",
+         "fallback_chain": ["kernel-set"]},
+        {"logical_op": "fp8_gemm_blockwise", "sm": 90, "dtype": "fp8",
+         "provider": "deep_gemm",
+         "fallback_chain": ["deep_gemm", "sgl-kernel", "kernel-set"]},
+        {"logical_op": "fp8_gemm_blockwise", "sm": 100, "dtype": "fp8",
+         "provider": "deep_gemm",
+         "fallback_chain": ["deep_gemm", "sgl-kernel", "kernel-set"]},
+        # Per-token-group (1x128) dynamic fp8 quant. deep_gemm (sm90) only joins
+        # the chain on Hopper+; sm89 chain omits it (min_sm gate).
+        {"logical_op": "per_token_group_quant", "sm": 89, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "sgl-kernel", "kernel-set"]},
+        {"logical_op": "per_token_group_quant", "sm": 90, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "sgl-kernel", "deep_gemm", "kernel-set"]},
+        {"logical_op": "per_token_group_quant", "sm": 100, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "sgl-kernel", "deep_gemm", "kernel-set"]},
+        # NVFP4 GEMM (Blackwell sm100 native fp4). fp4 is feasible only on sm100+
+        # (gpu_caps threshold), so only the Blackwell cell exists; sm120 folds in.
+        {"logical_op": "nvfp4_gemm", "sm": 100, "dtype": "fp4",
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "vllm", "kernel-set"]},
+        # MXFP4 GEMM (OCP microscaling; gpt-oss). Blackwell native.
+        {"logical_op": "mxfp4_gemm", "sm": 100, "dtype": "fp4",
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "vllm", "torchao", "kernel-set"]},
+        # FP8 attention compute. SageAttention (sm80+) wins on Ada; FA3 fp8 on
+        # Hopper/Blackwell (sm90+), where it joins the chain.
+        {"logical_op": "fp8_attention", "sm": 89, "dtype": "fp8",
+         "provider": "sage-attn",
+         "fallback_chain": ["sage-attn", "kernel-set"]},
+        {"logical_op": "fp8_attention", "sm": 90, "dtype": "fp8",
+         "provider": "flash-attn-3",
+         "fallback_chain": ["flash-attn-3", "sage-attn", "kernel-set"]},
+        {"logical_op": "fp8_attention", "sm": 100, "dtype": "fp8",
+         "provider": "flash-attn-3",
+         "fallback_chain": ["flash-attn-3", "sage-attn", "kernel-set"]},
+        # FP8 KV-cache quantize-on-write. vLLM reshape_and_cache_flash fp8.
+        {"logical_op": "fp8_kv_cache", "sm": 89, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "kernel-set"]},
+        {"logical_op": "fp8_kv_cache", "sm": 90, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "kernel-set"]},
+        {"logical_op": "fp8_kv_cache", "sm": 100, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 75, "dtype": "fp16",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "kernel-set"]},
@@ -1009,10 +1062,11 @@ def _sm_to_gpu(sm):
 # documented here (invariant 5: every accepted dtype token appears in >=1
 # feasible cell OR is a documented degradation path).
 _DOCUMENTED_DEGRADATIONS = {
-    # NVFP4/MXFP4: declared a Blackwell (sm100) capability in gpu_caps, but no
-    # runtime adapter is wired for native FP4 yet, so a fp4 request resolves to
-    # the kernel-set portable fallback (source:"fallback") instead of silently
-    # selecting the int4 cell. Promote to real fp4 cells once NVFP4 adapters land.
+    # NVFP4/MXFP4 are now WIRED for the dedicated fp4 ops (nvfp4_gemm/mxfp4_gemm)
+    # on Blackwell (sm100+), so fp4 DOES appear in feasible cells. It stays listed
+    # here because for every OTHER op (and on sm<100) a fp4 request still degrades
+    # to the kernel-set fallback rather than borrowing the int4 cell — invariant 5
+    # is satisfied either way (fp4 is present AND documented as a partial path).
     "fp4",
 }
 

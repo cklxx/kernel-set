@@ -93,3 +93,22 @@ func GemmFP8(out, aFP8, bFP8 unsafe.Pointer, aScale, bScale unsafe.Pointer,
 		C.ks_dtype_t(fp8Dtype), C.ks_dtype_t(outDtype), stream.c()))
 	return statusError(st, "ks_gemm_fp8")
 }
+
+// GemmFP8Blockwise runs an FP8 blockwise GEMM (DeepSeek-V3 recipe): fp8 A [M,K]
+// x fp8 B [K,N] -> outDtype C [M,N] with fine-grained fp32 scales and two-level
+// fp32 accumulation.
+//
+//	aScale: [M, ceil(K/blockK)] fp32 device ptr (per 1 x blockK activation tile)
+//	bScale: [ceil(K/blockK), ceil(N/blockN)] fp32 device ptr (per blockK x blockN block)
+//
+// blockK/blockN are typically 128. Row-major, non-transposed (A row stride K,
+// B row stride N). Wraps ks_gemm_fp8_blockwise.
+func GemmFP8Blockwise(out, aFP8, bFP8 unsafe.Pointer, aScale, bScale unsafe.Pointer,
+	m, n, k int64, blockN, blockK int, fp8Dtype, outDtype Dtype, stream Stream) error {
+	st := Status(C.ks_gemm_fp8_blockwise(out, aFP8, bFP8,
+		(*C.float)(aScale), (*C.float)(bScale),
+		C.int64_t(m), C.int64_t(n), C.int64_t(k),
+		C.int(blockN), C.int(blockK),
+		C.ks_dtype_t(fp8Dtype), C.ks_dtype_t(outDtype), stream.c()))
+	return statusError(st, "ks_gemm_fp8_blockwise")
+}

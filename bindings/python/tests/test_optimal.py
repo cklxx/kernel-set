@@ -270,14 +270,31 @@ def test_infeasible_dtype_never_leaks_into_other_dtype_cell():
     assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
 
 
-def test_fp4_degrades_to_kernel_set_not_int4():
-    # INVARIANT 5: fp4 (NVFP4/MXFP4) has no wired runtime adapter -> a fp4
-    # request resolves to the kernel-set fallback, NOT silently into the int4
-    # cell. w4a16 sm100 HAS an int4 cell; fp4 must not borrow it.
+def test_fp4_does_not_borrow_the_int4_cell():
+    # fp4 (NVFP4/MXFP4) must NEVER nearest-fall into an int4 cell: a fp4 request
+    # on a dense/int4 op resolves to the kernel-set fallback, not w4a16's int4
+    # cell. (fp4 is intentionally absent from _DTYPE_NEAREST.)
     r = O.select_optimal("w4a16", 100, "fp4")
     assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
-    assert not [c for c in O._CELLS.values() if c["dtype"] == "fp4"], \
-        "no fp4 cells should exist in the table"
+    # ...and on a dense-gemm op too.
+    assert O.select_optimal("gemm", 100, "fp4")["provider"] == KERNEL_SET
+
+
+def test_fp4_cells_only_for_dedicated_fp4_ops_on_blackwell():
+    # NVFP4/MXFP4 are now WIRED: fp4 cells exist, but ONLY for the dedicated fp4
+    # ops (nvfp4_gemm / mxfp4_gemm) and ONLY where fp4 is arch-feasible (sm>=100,
+    # the gpu_caps threshold). No other op may carry an fp4 cell, and none below
+    # sm100.
+    fp4_cells = [c for c in O._CELLS.values() if c["dtype"] == "fp4"]
+    assert fp4_cells, "NVFP4/MXFP4 are wired now -> fp4 cells must exist"
+    assert {c["logical_op"] for c in fp4_cells} == {"nvfp4_gemm", "mxfp4_gemm"}
+    assert all(c["sm"] >= 100 for c in fp4_cells), "fp4 is sm100+ only"
+    # The dedicated fp4 op selects its real external winner on Blackwell.
+    r = O.select_optimal("nvfp4_gemm", 100, "fp4")
+    assert r["provider"] == "flashinfer"
+    assert r["fallback_chain"][-1] == KERNEL_SET
+    # On a non-Blackwell arch fp4 is infeasible -> kernel-set fallback.
+    assert O.select_optimal("nvfp4_gemm", 90, "fp4")["provider"] == KERNEL_SET
 
 
 def test_unknown_op_falls_back_to_kernel_set():

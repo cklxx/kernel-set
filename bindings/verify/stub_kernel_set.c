@@ -918,6 +918,22 @@ ks_status_t ks_quantize_fp8(void* out, float* scale, const void* input,
   return KS_SUCCESS;
 }
 
+ks_status_t ks_quantize_fp8_group(void* out, float* scale, const void* input,
+                                  int64_t rows, int64_t cols, int group_size,
+                                  ks_dtype_t in_dtype, ks_dtype_t fp8_dtype,
+                                  ks_stream_t stream) {
+  (void)out;
+  (void)scale;
+  (void)input;
+  (void)rows;
+  (void)cols;
+  (void)group_size;
+  (void)in_dtype;
+  (void)fp8_dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
 ks_status_t ks_dequantize_fp8(void* out, const void* input, const float* scale,
                               int64_t rows, int64_t cols, ks_dtype_t out_dtype,
                               ks_dtype_t fp8_dtype, ks_quant_mode_t mode,
@@ -1166,5 +1182,17 @@ ks_status_t ks_gemm_fp8(void* out, const void* a_fp8, const void* b_fp8,
   (void)out; (void)a_fp8; (void)b_fp8; (void)a_scale; (void)b_scale; (void)m;
   (void)n; (void)k; (void)a_mode; (void)b_mode; (void)fp8_dtype; (void)out_dtype;
   (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_gemm_fp8_blockwise(void* out, const void* a_fp8,
+                                  const void* b_fp8, const float* a_scale,
+                                  const float* b_scale, int64_t m, int64_t n,
+                                  int64_t k, int block_n, int block_k,
+                                  ks_dtype_t fp8_dtype, ks_dtype_t out_dtype,
+                                  ks_stream_t stream) {
+  (void)out; (void)a_fp8; (void)b_fp8; (void)a_scale; (void)b_scale; (void)m;
+  (void)n; (void)k; (void)block_n; (void)block_k; (void)fp8_dtype;
+  (void)out_dtype; (void)stream;
   return KS_SUCCESS;
 }

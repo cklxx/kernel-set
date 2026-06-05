@@ -1753,6 +1753,48 @@ pub fn gemm_fp8(
     })
 }
 
+/// FP8 blockwise GEMM (DeepSeek-V3 recipe): fp8 A/B -> `out_dtype` C with
+/// fine-grained fp32 scales and two-level fp32 accumulation.
+///
+/// `a_scale` is `[M, ceil(K/block_k)]`, `b_scale` is
+/// `[ceil(K/block_k), ceil(N/block_n)]` (both fp32 device pointers).
+/// `block_k`/`block_n` are typically 128. Row-major, non-transposed
+/// (A row stride K, B row stride N).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_fp8_blockwise(
+    out: impl AsDevicePtrMut,
+    a_fp8: impl AsDevicePtr,
+    b_fp8: impl AsDevicePtr,
+    a_scale: impl AsDevicePtr,
+    b_scale: impl AsDevicePtr,
+    m: i64,
+    n: i64,
+    k: i64,
+    block_n: i32,
+    block_k: i32,
+    fp8_dtype: Dtype,
+    out_dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_gemm_fp8_blockwise(
+            out.as_device_ptr_mut(),
+            a_fp8.as_device_ptr(),
+            b_fp8.as_device_ptr(),
+            a_scale.as_device_ptr() as *const f32,
+            b_scale.as_device_ptr() as *const f32,
+            m,
+            n,
+            k,
+            block_n,
+            block_k,
+            fp8_dtype.into(),
+            out_dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
 // ===========================================================================
 // moe.h
 // ===========================================================================
@@ -2098,6 +2140,38 @@ pub fn quantize_fp8(
             in_dtype.into(),
             fp8_dtype.into(),
             mode.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
+/// Per-token-group dynamic FP8 quantization (1 x `group_size` tiles).
+///
+/// `scale` is fp32 `[rows, ceil(cols/group_size)]` (one scale per
+/// (row, col-group)); this is the activation format consumed by
+/// [`gemm_fp8_blockwise`]. `group_size` is typically 128.
+#[allow(clippy::too_many_arguments)]
+pub fn quantize_fp8_group(
+    out: impl AsDevicePtrMut,
+    scale: impl AsDevicePtrMut,
+    input: impl AsDevicePtr,
+    rows: i64,
+    cols: i64,
+    group_size: i32,
+    in_dtype: Dtype,
+    fp8_dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_quantize_fp8_group(
+            out.as_device_ptr_mut(),
+            scale.as_device_ptr_mut() as *mut f32,
+            input.as_device_ptr(),
+            rows,
+            cols,
+            group_size,
+            in_dtype.into(),
+            fp8_dtype.into(),
             stream.as_raw(),
         )
     })

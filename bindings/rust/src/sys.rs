@@ -541,6 +541,22 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_gemm_fp8_blockwise(
+        out: *mut c_void,
+        a_fp8: *const c_void,
+        b_fp8: *const c_void,
+        a_scale: *const f32,
+        b_scale: *const f32,
+        m: i64,
+        n: i64,
+        k: i64,
+        block_n: c_int,
+        block_k: c_int,
+        fp8_dtype: ks_dtype_t,
+        out_dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     // ===== ssm.h ===========================================================
 
     pub fn ks_causal_conv1d(
@@ -743,6 +759,18 @@ extern "C" {
         in_dtype: ks_dtype_t,
         fp8_dtype: ks_dtype_t,
         mode: ks_quant_mode_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_quantize_fp8_group(
+        out: *mut c_void,
+        scale: *mut f32,
+        input: *const c_void,
+        rows: i64,
+        cols: i64,
+        group_size: c_int,
+        in_dtype: ks_dtype_t,
+        fp8_dtype: ks_dtype_t,
         stream: ks_stream_t,
     ) -> ks_status_t;
 

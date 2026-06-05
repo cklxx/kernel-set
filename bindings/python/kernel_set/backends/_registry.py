@@ -65,6 +65,19 @@ def _imp(modpath: str):
     return importlib.import_module(modpath)
 
 
+# External-provider adapters for the newly-wired quant ops (NVFP4/MXFP4 GEMM,
+# per-token-group fp8 quant, fp8 KV-cache, fp8 attention). Import-safe: every
+# adapter does its heavy imports lazily inside the function body.
+from ._quant_ext import (  # noqa: E402
+    _nvfp4_gemm_flashinfer, _nvfp4_gemm_vllm,
+    _mxfp4_gemm_flashinfer, _mxfp4_gemm_vllm, _mxfp4_gemm_torchao,
+    _reshape_and_cache_fp8_vllm,
+    _per_token_group_quant_fp8_vllm, _per_token_group_quant_fp8_sgl,
+    _per_token_group_quant_fp8_deepgemm,
+    _fp8_attention_sage, _fp8_attention_flashinfer,
+)
+
+
 def _scale(head_dim: int, scale: Optional[float]) -> float:
     return float(scale) if scale else 1.0 / math.sqrt(head_dim)
 
@@ -204,6 +217,51 @@ def _fp8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     gemm.gemm(c, a8.to(c.dtype), b8.to(c.dtype).t().contiguous(),
               m=m, n=n, k=k)
     return c
+
+
+def _fp8_gemm_blockwise_ks(a8, b8, a_scale, b_scale, *, block_n=128,
+                           block_k=128, out_dtype=None, **_):
+    # Native blockwise fp8 GEMM (ks_gemm_fp8_blockwise): the portable sm80+
+    # terminal for the DeepSeek-V3 recipe. A is [M,K], B is [K,N] (row-major),
+    # a_scale [M, ceil(K/block_k)], b_scale [ceil(K/block_k), ceil(N/block_n)].
+    from .. import gemm
+    import torch
+    m, k = a8.shape
+    n = b8.shape[1]
+    out = torch.empty(m, n, device="cuda", dtype=out_dtype or torch.bfloat16)
+    gemm.gemm_fp8_blockwise(out, a8, b8, a_scale, b_scale, m=m, n=n, k=k,
+                            block_n=block_n, block_k=block_k)
+    return out
+
+
+def _per_token_group_quant_ks(x, *, group_size=128, fp8_dtype=None, **_):
+    # Native per-token-group fp8 quant (ks_quantize_fp8_group): the activation
+    # format the blockwise fp8 GEMM consumes. Returns (fp8 out, fp32 scale).
+    from .. import quant
+    from ..enums import DType
+    import torch
+    rows, cols = x.shape
+    ngroups = (cols + group_size - 1) // group_size
+    out = torch.empty(rows, cols, device="cuda", dtype=torch.float8_e4m3fn)
+    scale = torch.empty(rows, ngroups, device="cuda", dtype=torch.float32)
+    quant.quantize_fp8_group(out, scale, x, rows=rows, cols=cols,
+                             group_size=group_size,
+                             fp8_dtype=fp8_dtype or DType.F8E4M3)
+    return out, scale
+
+
+def _ks_unsupported(label):
+    """A kernel-set terminal adapter for ops with NO portable ks kernel (fp4,
+    fp8 attention, fp8 KV-cache). It keeps the chain validly terminated at
+    kernel-set for the optimal table, but raises a clear, actionable error if it
+    is ever actually selected (i.e. no external provider is installed). These ops
+    require a Blackwell/Hopper GPU + the relevant library by design."""
+    def _raise(*_a, **_k):
+        raise NotImplementedError(
+            f"{label}: no portable kernel-set implementation. Install a provider "
+            "(FlashInfer / vLLM / DeepGEMM / SGLang / SageAttention) — this op "
+            "dispatches to the external backend on supported GPUs.")
+    return _raise
 
 
 # =========================================================================== #
@@ -967,6 +1025,87 @@ _OPS_RAW: List[Op] = [
                  _w4a16_marlin, "GPTQ/AWQ-Marlin (Ampere+; NVFP4-Marlin sm100)"),
         _ks_provider(_w4a16_ks, "ks_gemm_w4a16",
                      "portable INT4 fallback (correctness only)"),
+    ]),
+    # FP8 BLOCKWISE GEMM (DeepSeek-V3 128x128 weight / 1x128 act recipe). DeepGEMM
+    # is the Hopper/Blackwell reference; kernel-set's ks_gemm_fp8_blockwise is the
+    # portable sm80+ terminal (real blockwise kernel, not a dense cast) so the
+    # recipe is also covered on A100/A800 where there is no fp8 hardware provider.
+    Op("fp8_gemm_blockwise", "gemm-quant", "ks_gemm_fp8_blockwise", [
+        Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 block scales",
+                 "import deep_gemm",
+                 _fp8_gemm_deepgemm,
+                 "DeepGEMM blockwise fp8 NT (Hopper/Blackwell)"),
+        _sgl_provider(2, _fp8_gemm_sgl, min_sm=90, dtypes="fp8 e4m3",
+                      note="SGLang CUTLASS blockwise fp8 grouped/scaled mm"),
+        _ks_provider(_fp8_gemm_blockwise_ks, "ks_gemm_fp8_blockwise",
+                     "portable blockwise fp8 (sm80+, software dequant)"),
+    ]),
+    # Per-token-GROUP (1x128) dynamic fp8 activation quant — the format the
+    # blockwise fp8 GEMM consumes. ks_quantize_fp8_group is the native terminal.
+    Op("per_token_group_quant", "gemm-quant", "ks_quantize_fp8_group", [
+        Provider("vllm", 1, 89, "fp8 e4m3",
+                 "from vllm import _custom_ops",
+                 _per_token_group_quant_fp8_vllm,
+                 "vLLM per-token-group fp8 quant (scaled_fp8_quant group_shape)"),
+        _sgl_provider(2, _per_token_group_quant_fp8_sgl, min_sm=89,
+                      dtypes="fp8 e4m3",
+                      note="SGLang sgl_per_token_group_quant_8bit"),
+        Provider("deep_gemm", 3, 90, "fp8 e4m3",
+                 "import deep_gemm",
+                 _per_token_group_quant_fp8_deepgemm,
+                 "DeepGEMM TMA-aligned per-token cast"),
+        _ks_provider(_per_token_group_quant_ks, "ks_quantize_fp8_group",
+                     "native per-token-group fp8 quant (sm89+)"),
+    ]),
+    # NVFP4 GEMM (Blackwell native 4-bit float: e2m1 + e4m3 1x16 block scale +
+    # fp32 global). No portable ks kernel — Blackwell + FlashInfer/vLLM only.
+    Op("nvfp4_gemm", "gemm-quant", None, [
+        Provider("flashinfer", 1, 100, "fp4 nvfp4 e2m1",
+                 "import flashinfer",
+                 _nvfp4_gemm_flashinfer, "FlashInfer NVFP4 mm_fp4 (Blackwell)"),
+        Provider("vllm", 2, 100, "fp4 nvfp4",
+                 "from vllm import _custom_ops",
+                 _nvfp4_gemm_vllm, "vLLM cutlass_scaled_fp4_mm (Blackwell)"),
+        _ks_provider(_ks_unsupported("nvfp4 GEMM"), "",
+                     "no portable fp4 kernel; needs Blackwell + FlashInfer/vLLM"),
+    ]),
+    # MXFP4 GEMM (OCP microscaling 4-bit: e2m1 + E8M0 block-32 scale). gpt-oss.
+    Op("mxfp4_gemm", "gemm-quant", None, [
+        Provider("flashinfer", 1, 100, "fp4 mxfp4 e2m1",
+                 "import flashinfer",
+                 _mxfp4_gemm_flashinfer, "FlashInfer MXFP4 mm_fp4 (Blackwell)"),
+        Provider("vllm", 2, 80, "fp4 mxfp4",
+                 "from vllm import _custom_ops",
+                 _mxfp4_gemm_vllm, "vLLM Marlin-MXFP4 (sm80+ emulation)"),
+        Provider("torchao", 3, 100, "fp4 mxfp4",
+                 "import torchao",
+                 _mxfp4_gemm_torchao, "torchao MXFP4 inference"),
+        _ks_provider(_ks_unsupported("mxfp4 GEMM"), "",
+                     "no portable fp4 kernel; needs FlashInfer/vLLM/torchao"),
+    ]),
+    # FP8 attention compute (fp8 QK^T/PV, fp32 softmax) — distinct from fp8 KV
+    # store. SageAttention / FlashAttention-3 fp8. ks attention is fp16/bf16 only.
+    Op("fp8_attention", "attention", None, [
+        Provider("sage-attn", 1, 80, "fp8 e4m3, int8 QK",
+                 "import sageattention",
+                 _fp8_attention_sage,
+                 "SageAttention (INT8 QK + FP8 PV, sm80+)"),
+        Provider("flash-attn-3", 2, 90, "fp8 e4m3",
+                 "import flash_attn_interface",
+                 _fp8_attention_flashinfer,
+                 "FlashAttention-3 fp8 (Hopper sm90)"),
+        _ks_provider(_ks_unsupported("fp8 attention"), "",
+                     "ks attention is fp16/bf16; needs FA3 / SageAttention"),
+    ]),
+    # FP8 KV-cache quantize-on-write (reshape_and_cache_flash fp8). 2x KV memory.
+    # ks_reshape_and_cache is dtype-preserving (no quant), so vLLM is the path.
+    Op("fp8_kv_cache", "attention", None, [
+        Provider("vllm", 1, 89, "fp8 e4m3 KV",
+                 "from vllm import _custom_ops",
+                 _reshape_and_cache_fp8_vllm,
+                 "vLLM reshape_and_cache_flash (fp8 KV, quantize-on-write)"),
+        _ks_provider(_ks_unsupported("fp8 KV-cache quant"), "",
+                     "ks_reshape_and_cache is dtype-preserving; needs vLLM"),
     ]),
     Op("rmsnorm", "norm-act-rope", "ks_rmsnorm", [
         Provider("flashinfer", 1, 75, "fp16, bf16",

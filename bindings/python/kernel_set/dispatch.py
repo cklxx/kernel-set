@@ -66,8 +66,14 @@ __all__ = [
     "mla_decode",
     "gemm",
     "fp8_gemm",
+    "fp8_gemm_blockwise",
     "int8_gemm",
     "w4a16",
+    "per_token_group_quant",
+    "nvfp4_gemm",
+    "mxfp4_gemm",
+    "fp8_attention",
+    "fp8_kv_cache",
     "rms_norm",
     "fused_add_rmsnorm",
     "gemma_rmsnorm",
@@ -239,6 +245,53 @@ def w4a16(a, b_packed, scales, zeros, *, group_size=128, **kw):
     """W4A16 GEMM: fp16/bf16 acts x packed int4 weights with group scales."""
     return _dispatch("w4a16", (a, b_packed, scales, zeros),
                      dict(group_size=group_size, **kw))
+
+
+def fp8_gemm_blockwise(a8, b8, a_scale, b_scale, *, block_n=128, block_k=128,
+                       out_dtype=None, **kw):
+    """FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe): 128x128 weight block / 1x128 act
+    tile, two-level fp32 accumulation. Routes to DeepGEMM (Hopper/Blackwell);
+    kernel-set's portable blockwise kernel is the sm80+ fallback."""
+    return _dispatch("fp8_gemm_blockwise", (a8, b8, a_scale, b_scale),
+                     dict(block_n=block_n, block_k=block_k,
+                          out_dtype=out_dtype, **kw))
+
+
+def per_token_group_quant(x, *, group_size=128, **kw):
+    """Per-token-group (1x128) dynamic fp8 activation quant — the format the
+    blockwise fp8 GEMM consumes. Returns ``(fp8_out, fp32_scale)``."""
+    return _dispatch("per_token_group_quant", (x,),
+                     dict(group_size=group_size, **kw))
+
+
+def nvfp4_gemm(a4, b4, a_scale, b_scale, *, alpha=None, out_dtype=None, **kw):
+    """NVFP4 GEMM (Blackwell e2m1 + e4m3 1x16 block scale + fp32 global). Routes
+    to FlashInfer / vLLM cutlass_scaled_fp4_mm (sm100+ only)."""
+    return _dispatch("nvfp4_gemm", (a4, b4, a_scale, b_scale),
+                     dict(alpha=alpha, out_dtype=out_dtype, **kw))
+
+
+def mxfp4_gemm(a4, b4, a_scale, b_scale, *, alpha=None, out_dtype=None, **kw):
+    """MXFP4 GEMM (OCP microscaling e2m1 + E8M0 block-32 scale; gpt-oss). Routes
+    to FlashInfer / vLLM Marlin-MXFP4 / torchao."""
+    return _dispatch("mxfp4_gemm", (a4, b4, a_scale, b_scale),
+                     dict(alpha=alpha, out_dtype=out_dtype, **kw))
+
+
+def fp8_attention(q, k, v, *, causal=True, softmax_scale=None, **kw):
+    """FP8 attention compute (fp8 QK^T/PV, fp32 softmax). Routes to
+    SageAttention / FlashAttention-3 fp8 (no portable ks fp8 attention)."""
+    return _dispatch("fp8_attention", (q, k, v),
+                     dict(causal=causal, softmax_scale=softmax_scale, **kw))
+
+
+def fp8_kv_cache(key, value, key_cache, value_cache, slot_mapping, *,
+                 k_scale=None, v_scale=None, **kw):
+    """FP8 KV-cache quantize-on-write (reshape_and_cache_flash fp8). Routes to
+    vLLM (kernel-set's reshape_and_cache is dtype-preserving, no quant)."""
+    return _dispatch("fp8_kv_cache",
+                     (key, value, key_cache, value_cache, slot_mapping),
+                     dict(k_scale=k_scale, v_scale=v_scale, **kw))
 
 
 def rms_norm(x, w, *, eps=1e-6, **kw):

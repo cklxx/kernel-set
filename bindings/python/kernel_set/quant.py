@@ -15,6 +15,7 @@ from .enums import DType, QuantMode
 
 __all__ = [
     "quantize_fp8",
+    "quantize_fp8_group",
     "dequantize_fp8",
     "quantize_int8",
     "dequantize_int8",
@@ -52,6 +53,34 @@ def quantize_fp8(
             default_stream(stream, input),
         ),
         "ks_quantize_fp8",
+    )
+    return out, scale
+
+
+def quantize_fp8_group(
+    out: TensorLike,
+    scale: TensorLike,
+    input: TensorLike,
+    rows: int,
+    cols: int,
+    group_size: int = 128,
+    in_dtype: Optional[int] = None,
+    fp8_dtype: int = DType.F8E4M3,
+    stream: TensorLike = None,
+):
+    """Per-token-GROUP dynamic FP8 quantization (1 x ``group_size`` tiles): the
+    DeepGEMM blockwise activation format. ``out`` is FP8 ``[rows, cols]``;
+    ``scale`` is fp32 ``[rows, ceil(cols/group_size)]`` (one scale per
+    (row, col-group)). Returns ``(out, scale)``."""
+    dt = infer_dtype(input, in_dtype)
+    check(
+        lib.ks_quantize_fp8_group(
+            ptr(out, name="out"), _f32(scale, name="scale"),
+            ptr(input, name="input"),
+            int(rows), int(cols), int(group_size), dt, int(fp8_dtype),
+            default_stream(stream, input),
+        ),
+        "ks_quantize_fp8_group",
     )
     return out, scale
 

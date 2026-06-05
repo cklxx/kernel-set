@@ -826,6 +826,36 @@ export function gemmFp8(args: {
   );
 }
 
+/**
+ * FP8 blockwise GEMM (DeepSeek-V3 recipe): fp8 A x fp8 B -> outDtype C with
+ * fine-grained fp32 scales and two-level fp32 accumulation. `aScale` is
+ * [M, ceil(K/blockK)] and `bScale` is [ceil(K/blockK), ceil(N/blockN)] fp32
+ * device pointers. `blockK`/`blockN` are typically 128.
+ */
+export function gemmFp8Blockwise(args: {
+  out: DevPtr;
+  aFp8: DevPtr;
+  bFp8: DevPtr;
+  aScale: DevPtr;
+  bScale: DevPtr;
+  m: bigint | number;
+  n: bigint | number;
+  k: bigint | number;
+  blockN: number;
+  blockK: number;
+  fp8Dtype: Dtype;
+  outDtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_gemm_fp8_blockwise(
+      ptr(args.out), ptr(args.aFp8), ptr(args.bFp8), ptr(args.aScale), ptr(args.bScale),
+      args.m, args.n, args.k, args.blockN, args.blockK, args.fp8Dtype, args.outDtype, stream(args.stream),
+    ),
+    'ks_gemm_fp8_blockwise',
+  );
+}
+
 // ===========================================================================
 // ssm.h
 // ===========================================================================
@@ -1178,6 +1208,32 @@ export function quantizeFp8(args: {
       args.inDtype, args.fp8Dtype, args.mode, stream(args.stream),
     ),
     'ks_quantize_fp8',
+  );
+}
+
+/**
+ * Per-token-group dynamic FP8 quantization (1 x `groupSize` tiles). `scale` is
+ * an fp32 device buffer [rows, ceil(cols/groupSize)] (one scale per
+ * (row, col-group)) — the activation format consumed by `gemmFp8Blockwise`.
+ * `groupSize` is typically 128.
+ */
+export function quantizeFp8Group(args: {
+  out: DevPtr;
+  scale: DevPtr;
+  input: DevPtr;
+  rows: bigint | number;
+  cols: bigint | number;
+  groupSize: number;
+  inDtype: Dtype;
+  fp8Dtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_quantize_fp8_group(
+      ptr(args.out), ptr(args.scale), ptr(args.input), args.rows, args.cols,
+      args.groupSize, args.inDtype, args.fp8Dtype, stream(args.stream),
+    ),
+    'ks_quantize_fp8_group',
   );
 }
 

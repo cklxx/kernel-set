@@ -521,6 +521,16 @@ _decl(
         _DTYPE, _DTYPE, _STREAM,           # fp8_dtype, out_dtype, stream
     ],
 )
+_decl(
+    "ks_gemm_fp8_blockwise",
+    [
+        _VP, _VP, _VP,                     # out, a_fp8, b_fp8
+        POINTER(c_float), POINTER(c_float),  # a_scale, b_scale
+        c_int64, c_int64, c_int64,         # m, n, k
+        c_int, c_int,                      # block_n, block_k
+        _DTYPE, _DTYPE, _STREAM,           # fp8_dtype, out_dtype, stream
+    ],
+)
 
 # ---- ssm.h ----------------------------------------------------------------
 
@@ -647,6 +657,14 @@ _decl(
         _VP, POINTER(c_float), _VP,        # out, scale, input
         c_int64, c_int64,                  # rows, cols
         _DTYPE, _DTYPE, c_int, _STREAM,    # in_dtype, fp8_dtype, mode, stream
+    ],
+)
+_decl(
+    "ks_quantize_fp8_group",
+    [
+        _VP, POINTER(c_float), _VP,        # out, scale, input
+        c_int64, c_int64, c_int,           # rows, cols, group_size
+        _DTYPE, _DTYPE, _STREAM,           # in_dtype, fp8_dtype, stream
     ],
 )
 _decl(

@@ -25,6 +25,20 @@ KS_API ks_status_t ks_dequantize_fp8(void* out, const void* input,
                                      ks_dtype_t fp8_dtype, ks_quant_mode_t mode,
                                      ks_stream_t stream);
 
+/* Per-token-GROUP dynamic FP8 quantization (1 x group_size tiles): for each row
+ * and each contiguous group of `group_size` columns, compute the group absmax,
+ * derive an fp8 scale, and emit fp8. This is the activation format the DeepSeek
+ * blockwise FP8 GEMM (ks_gemm_fp8_blockwise / DeepGEMM) consumes (group_size
+ * typically 128).
+ *   out:   [rows, cols] FP8 (e4m3 or e5m2 per `fp8_dtype`)
+ *   scale: [rows, ceil(cols/group_size)] fp32 (one scale per (row, col-group)). */
+KS_API ks_status_t ks_quantize_fp8_group(void* out, float* scale,
+                                         const void* input, int64_t rows,
+                                         int64_t cols, int group_size,
+                                         ks_dtype_t in_dtype,
+                                         ks_dtype_t fp8_dtype,
+                                         ks_stream_t stream);
+
 /* Dynamic INT8 quantization (symmetric). out int8 + scale (per-token/tensor). */
 KS_API ks_status_t ks_quantize_int8(void* out, float* scale, const void* input,
                                     int64_t rows, int64_t cols,

@@ -67,10 +67,11 @@ _DTYPE_ALIASES = {
 # Preference order when the exact dtype is missing for an (op, sm): try the
 # "nearest" compute dtype before giving up to kernel-set. fp16<->bf16 are
 # interchangeable for most kernels; fp8 falls back to bf16; int* to bf16/fp16.
-# NOTE: fp4 (NVFP4/MXFP4) is intentionally ABSENT — there is no wired NVFP4
-# runtime adapter, so an fp4 request must resolve to the kernel-set portable
-# fallback (source:"fallback"), NOT silently into the int4 cell. See
-# docs/OPTIMAL_SELECTION.md ("FP4 is a documented degradation path").
+# NOTE: fp4 (NVFP4/MXFP4) is intentionally ABSENT here. fp4 is now WIRED, but
+# only for the dedicated fp4 ops (nvfp4_gemm / mxfp4_gemm) and only on Blackwell
+# (sm100+). For every OTHER op a fp4 request must resolve to the kernel-set
+# fallback, NOT silently borrow the int4 cell — so fp4 has no nearest-dtype
+# ladder. See docs/OPTIMAL_SELECTION.md / docs/QUANT_OPERATORS.md.
 _DTYPE_NEAREST = {
     "fp16": ["fp16", "bf16", "fp32"],
     "bf16": ["bf16", "fp16", "fp32"],

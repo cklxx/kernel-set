@@ -23,6 +23,7 @@ __all__ = [
     "gemm_w8a8",
     "gemm_w4a16",
     "gemm_fp8",
+    "gemm_fp8_blockwise",
 ]
 
 _F32P = POINTER(c_float)
@@ -273,5 +274,57 @@ def gemm_fp8(
             default_stream(stream, out if not isinstance(out, int) else a_fp8),
         ),
         "ks_gemm_fp8",
+    )
+    return out
+
+
+def gemm_fp8_blockwise(
+    out: TensorLike,
+    a_fp8: TensorLike,
+    b_fp8: TensorLike,
+    a_scale: TensorLike,
+    b_scale: TensorLike,
+    m: int,
+    n: int,
+    k: int,
+    block_n: int = 128,
+    block_k: int = 128,
+    fp8_dtype: int = None,
+    out_dtype: int = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe): fp8 ``A [M,K]`` x fp8 ``B [K,N]``
+    -> ``out_dtype`` ``C [M,N]`` with fine-grained fp32 scales and two-level
+    accumulation::
+
+        a_scale: [M, ceil(K/block_k)]               (1 x block_k act tiles)
+        b_scale: [ceil(K/block_k), ceil(N/block_n)] (block_k x block_n blocks)
+
+    Portable SIMT software-dequant path (runs sm_80+); the hardware fp8-MMA
+    upgrade is DeepGEMM/CUTLASS via ``kernel_set.dispatch.fp8_gemm_blockwise``.
+    ``fp8_dtype`` (``F8E4M3``/``F8E5M2``) is inferred from ``a_fp8`` when omitted;
+    ``out_dtype`` is inferred from a torch ``out`` tensor when omitted.
+    """
+    if fp8_dtype is None:
+        fp8_dtype = infer_dtype(a_fp8, None)
+    if out_dtype is None:
+        from ._tensor import _is_torch_tensor
+
+        if _is_torch_tensor(out):
+            from ._tensor import dtype_to_ks
+
+            out_dtype = dtype_to_ks(out.dtype)
+        else:
+            raise ValueError("out_dtype is required for ks_gemm_fp8_blockwise")
+    check(
+        lib.ks_gemm_fp8_blockwise(
+            ptr(out, name="out"), ptr(a_fp8, name="a_fp8"),
+            ptr(b_fp8, name="b_fp8"),
+            _f32(a_scale, name="a_scale"), _f32(b_scale, name="b_scale"),
+            int(m), int(n), int(k), int(block_n), int(block_k),
+            int(fp8_dtype), int(out_dtype),
+            default_stream(stream, out if not isinstance(out, int) else a_fp8),
+        ),
+        "ks_gemm_fp8_blockwise",
     )
     return out

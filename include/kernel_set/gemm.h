@@ -76,6 +76,27 @@ KS_API ks_status_t ks_gemm_fp8(void* out, const void* a_fp8, const void* b_fp8,
                                ks_dtype_t fp8_dtype, ks_dtype_t out_dtype,
                                ks_stream_t stream);
 
+/* FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe): fp8 A [M,K] x fp8 B [K,N] -> out [M,N]
+ * with fine-grained fp32 scales:
+ *   a_scale: [M, ceil(K/block_k)]               — per 1 x block_k activation tile
+ *                                                 (per-token-group, row-major)
+ *   b_scale: [ceil(K/block_k), ceil(N/block_n)] — per block_k x block_n weight
+ *                                                 block (row-major)
+ * Two-level fp32 accumulation: inner products accumulate in fp32 within each
+ * K-block, then are folded into the output with that block's a_scale*b_scale —
+ * the recipe that fixes FP8 tensor-core accumulation error. block_k/block_n are
+ * typically 128. Portable SIMT software-dequant path (compiles + runs on sm_80+);
+ * the hardware fp8-MMA upgrade is DeepGEMM/CUTLASS via dispatch. Row-major,
+ * non-transposed (A row stride K, B row stride N). */
+KS_API ks_status_t ks_gemm_fp8_blockwise(void* out, const void* a_fp8,
+                                         const void* b_fp8,
+                                         const float* a_scale,
+                                         const float* b_scale, int64_t m,
+                                         int64_t n, int64_t k, int block_n,
+                                         int block_k, ks_dtype_t fp8_dtype,
+                                         ks_dtype_t out_dtype,
+                                         ks_stream_t stream);
+
 KS_END_EXTERN_C
 
 #endif /* KERNEL_SET_GEMM_H_ */

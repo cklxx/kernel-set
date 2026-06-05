@@ -19,6 +19,20 @@ func QuantizeFP8(out, scale, input unsafe.Pointer, rows, cols int64,
 	return statusError(st, "ks_quantize_fp8")
 }
 
+// QuantizeFP8Group does per-token-GROUP dynamic FP8 quantization (1 x groupSize
+// tiles): for each row and each contiguous group of groupSize columns, computes
+// the group absmax, derives an fp8 scale, and emits fp8. This is the activation
+// format the blockwise FP8 GEMM (GemmFP8Blockwise) consumes (groupSize typically
+// 128). scale is a fp32 device pointer [rows, ceil(cols/groupSize)] (one scale
+// per (row, col-group)). Wraps ks_quantize_fp8_group.
+func QuantizeFP8Group(out, scale, input unsafe.Pointer, rows, cols int64,
+	groupSize int, inDtype, fp8Dtype Dtype, stream Stream) error {
+	st := Status(C.ks_quantize_fp8_group(out, (*C.float)(scale), input,
+		C.int64_t(rows), C.int64_t(cols), C.int(groupSize),
+		C.ks_dtype_t(inDtype), C.ks_dtype_t(fp8Dtype), stream.c()))
+	return statusError(st, "ks_quantize_fp8_group")
+}
+
 // DequantizeFP8 dequantizes FP8 input [rows, cols] to outDtype using a fp32
 // scale (per mode). Wraps ks_dequantize_fp8.
 func DequantizeFP8(out, input, scale unsafe.Pointer, rows, cols int64,

@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 218,
+    "total": 232,
     "measured": 13,
-    "heuristic": 205
+    "heuristic": 219
   },
   "cells": [
     {
@@ -626,6 +626,41 @@
       ]
     },
     {
+      "logical_op": "fp8_attention",
+      "sm": 89,
+      "dtype": "fp8",
+      "provider": "sage-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "sage-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_attention",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "flash-attn-3",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn-3",
+        "sage-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_attention",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "flash-attn-3",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn-3",
+        "sage-attn",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "fp8_gemm",
       "sm": 89,
       "dtype": "fp8",
@@ -659,6 +694,73 @@
         "deep_gemm",
         "torch-scaled-mm",
         "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_gemm_blockwise",
+      "sm": 89,
+      "dtype": "fp8",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_gemm_blockwise",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "deep_gemm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "deep_gemm",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_gemm_blockwise",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "deep_gemm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "deep_gemm",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_kv_cache",
+      "sm": 89,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_kv_cache",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp8_kv_cache",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
         "kernel-set"
       ]
     },
@@ -1827,6 +1929,69 @@
       "fallback_chain": [
         "sgl-kernel",
         "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mxfp4_gemm",
+      "sm": 100,
+      "dtype": "fp4",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "vllm",
+        "torchao",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nvfp4_gemm",
+      "sm": 100,
+      "dtype": "fp4",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "per_token_group_quant",
+      "sm": 89,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "per_token_group_quant",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "sgl-kernel",
+        "deep_gemm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "per_token_group_quant",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "sgl-kernel",
+        "deep_gemm",
         "kernel-set"
       ]
     },

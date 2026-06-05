@@ -289,6 +289,9 @@ export const ks_gemm_w4a16 = L.func(
 export const ks_gemm_fp8 = L.func(
   'ks_status_t ks_gemm_fp8(ks_devptr out, ks_devptr a_fp8, ks_devptr b_fp8, ks_devptr a_scale, ks_devptr b_scale, int64 m, int64 n, int64 k, ks_quant_mode_t a_mode, ks_quant_mode_t b_mode, ks_dtype_t fp8_dtype, ks_dtype_t out_dtype, ks_stream_t stream)',
 );
+export const ks_gemm_fp8_blockwise = L.func(
+  'ks_status_t ks_gemm_fp8_blockwise(ks_devptr out, ks_devptr a_fp8, ks_devptr b_fp8, ks_devptr a_scale, ks_devptr b_scale, int64 m, int64 n, int64 k, int block_n, int block_k, ks_dtype_t fp8_dtype, ks_dtype_t out_dtype, ks_stream_t stream)',
+);
 
 /* ============================== ssm.h ================================= */
 
@@ -342,6 +345,9 @@ export const ks_rope_backward = L.func(
 
 export const ks_quantize_fp8 = L.func(
   'ks_status_t ks_quantize_fp8(ks_devptr out, ks_devptr scale, ks_devptr input, int64 rows, int64 cols, ks_dtype_t in_dtype, ks_dtype_t fp8_dtype, ks_quant_mode_t mode, ks_stream_t stream)',
+);
+export const ks_quantize_fp8_group = L.func(
+  'ks_status_t ks_quantize_fp8_group(ks_devptr out, ks_devptr scale, ks_devptr input, int64 rows, int64 cols, int group_size, ks_dtype_t in_dtype, ks_dtype_t fp8_dtype, ks_stream_t stream)',
 );
 export const ks_dequantize_fp8 = L.func(
   'ks_status_t ks_dequantize_fp8(ks_devptr out, ks_devptr input, ks_devptr scale, int64 rows, int64 cols, ks_dtype_t out_dtype, ks_dtype_t fp8_dtype, ks_quant_mode_t mode, ks_stream_t stream)',
