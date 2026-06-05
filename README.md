@@ -91,7 +91,7 @@ benchmarks/           harness + results/{l4,a100}.md     docs/     architecture 
 | [`docs/ROUTING.md`](docs/ROUTING.md) | three-tier routing: static plan → runtime dispatch → C-ABI fallback |
 | [`docs/OPTIMAL_SELECTION.md`](docs/OPTIMAL_SELECTION.md) | per-op optimal provider + adopt-vs-self-develop decision |
 | [`docs/OPERATOR_CATALOG.md`](docs/OPERATOR_CATALOG.md) · [`ATOMIC_OPERATORS.md`](docs/ATOMIC_OPERATORS.md) | 127 logical ops · 476 atomic ops (`sgl.*`/`flashinfer.*`/`vllm.*`) flattened |
-| [`docs/MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 100+ models → kernels (Llama 4, Qwen3, DeepSeek-V3, Kimi-K2, …) |
+| [`docs/MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 157 models → kernels (DeepSeek-V4, GLM-5, Kimi-2.6, Gemma-4, Qwen3.6, Llama 4, … + Mamba/RWKV/diffusion-LLM) |
 | [`docs/KERNEL_LANDSCAPE.md`](docs/KERNEL_LANDSCAPE.md) · [`BENCHMARK_METHODOLOGY.md`](docs/BENCHMARK_METHODOLOGY.md) · [`USAGE.md`](docs/USAGE.md) · [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | landscape · bench methodology · usage · architecture |
 
 ## License
