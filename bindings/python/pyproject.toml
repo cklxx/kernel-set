@@ -30,8 +30,9 @@ torch = ["torch>=2.0"]
 dev = ["pytest>=7", "torch>=2.0"]
 
 [project.urls]
-Homepage = "https://github.com/kernel-set/kernel-set"
-Source = "https://github.com/kernel-set/kernel-set"
+Homepage = "https://github.com/cklxx/kernel-set"
+Source = "https://github.com/cklxx/kernel-set"
+Issues = "https://github.com/cklxx/kernel-set/issues"
 
 [tool.setuptools]
 # Pure-Python package; ship the package dir as-is. No C extension is built.

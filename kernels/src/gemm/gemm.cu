@@ -323,13 +323,21 @@ void launch_gemm(scalar_t* c, const scalar_t* a, const scalar_t* b,
   // strides (the kernel takes int m/n/k/ld*). Anything else — including any
   // transpose or an extent/stride past int range — uses the always-safe int64
   // SIMT path.
+#if KS_ENABLE_WMMA_GEMM
+  // The WMMA fast path is gated behind KS_ENABLE_WMMA_GEMM (off by default), and
+  // the entire launch is #if'd OUT when disabled — not merely runtime-skipped —
+  // for two reasons:
+  //   1. `if constexpr (wmma_supported<scalar_t>())` keeps gemm_wmma_kernel<float>
+  //      from ever being named (nvcuda::wmma has no float fragment), and
+  //   2. naming gemm_wmma_kernel<bf16> instantiates nvcuda::wmma bf16 fragments,
+  //      which DO NOT EXIST below sm_80 — so leaving the launch compiled (even on
+  //      a runtime-dead branch) is a hard compile error on sm_70/sm_75 (T4/V100)
+  //      and breaks a multi-arch / fat-binary build. Compiling it out keeps the
+  //      library portable across sm_70..sm_120 from one source.
   constexpr int64_t kI32Max = 0x7fffffff;
-  // `if constexpr` keeps gemm_wmma_kernel<float> from ever being instantiated:
-  // nvcuda::wmma has no float matrix_a/matrix_b fragment, so naming that
-  // specialization (even on a runtime-dead branch) is a hard compile error.
   if constexpr (wmma_supported<scalar_t>()) {
     const bool use_wmma =
-        KS_ENABLE_WMMA_GEMM && trans_a == 0 && trans_b == 0 && m <= kI32Max &&
+        trans_a == 0 && trans_b == 0 && m <= kI32Max &&
         n <= kI32Max && k <= kI32Max && lda <= kI32Max && ldb <= kI32Max &&
         ldc <= kI32Max;
     if (use_wmma) {
@@ -343,6 +351,7 @@ void launch_gemm(scalar_t* c, const scalar_t* a, const scalar_t* b,
       return;
     }
   }
+#endif  // KS_ENABLE_WMMA_GEMM
   {
     launch_simt<scalar_t>(c, a, b, bias, m, n, k, trans_a, trans_b, lda, ldb,
                           ldc, alpha, beta, act, use_bias_act, s);
