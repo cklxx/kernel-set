@@ -59,9 +59,10 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
   them; kernel-set stays as the correct portable fallback.
 
 > **Verified on real GPUs:** every kernel-set op is correctness-checked on **L4
-> (sm89)**, **A100 (sm80)**, and **RTX PRO 6000 Blackwell (sm120)** —
-> `correct=100, incorrect=0` each (`benchmarks/results/`). Builds + loads across
-> **sm70–sm120** (T4/V100 → Blackwell). HIP/ROCm behind a build flag.
+> (sm89)**, **A100 (sm80)**, **H20 (sm90, Hopper)**, and **RTX PRO 6000 Blackwell
+> (sm120)** — `correct=100, incorrect=0` each (`benchmarks/results/`). Builds +
+> loads across **sm70–sm120** (T4/V100 → Hopper → Blackwell). HIP/ROCm behind a
+> build flag.
 
 ## Try it on a real model
 
