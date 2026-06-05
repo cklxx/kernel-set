@@ -4,10 +4,12 @@
 // Correctness-first O(T) recurrence (the chunked DPLR fast path is the FLA
 // provider). One block per (batch, head); each thread owns one state column vv
 // of S[K,V]. Per step, per head:
-//   S = S (Diag(exp(w_t)) - a_t b_t^T) + v_t k_t^T ;   o_t = (scale * r_t)^T S
-// where the transition acts on the K dimension. For column vv:
+//   S = Diag(exp(w_t)) S + b_t (a_t^T S) + k_t v_t^T ;   o_t = (scale * r_t)^T S
+// matching FLA's fused_recurrent_rwkv7 convention exactly (so the ks fallback and
+// the FLA provider are numerically interchangeable; RWKV-7 passes a = -kk,
+// b = kk * icl). For column vv:
 //   aS = sum_jj a_jj S[jj,vv]                       (using the OLD state)
-//   S[kk,vv] = exp(w_kk) S[kk,vv] - b_kk * aS + k_kk * v_vv
+//   S[kk,vv] = exp(w_kk) S[kk,vv] + b_kk * aS + k_kk * v_vv
 //   o_vv = sum_kk (scale*r_kk) S[kk,vv]
 #include "kernel_set/linear_attn.h"
 #include "common/platform.cuh"
@@ -60,7 +62,7 @@ KS_GLOBAL void rwkv7_kernel(scalar_t* __restrict__ out,
       float o = 0.f;
       for (int kk = 0; kk < K; ++kk) {
         const int64_t idx = static_cast<int64_t>(kk) * V + vv;
-        const float s = sw[kk] * S[idx] - sb[kk] * aS + sk[kk] * vval;
+        const float s = sw[kk] * S[idx] + sb[kk] * aS + sk[kk] * vval;
         S[idx] = s;
         o += sr[kk] * qscale * s;
       }

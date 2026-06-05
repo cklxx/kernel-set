@@ -11,7 +11,7 @@
  * where the transition M_t specializes per variant:
  *   - gated_linear_attn : M_t = Diag(alpha_t)            (diagonal gate only)
  *   - gated_delta_rule  : M_t = Diag(g_t) - beta_t k_t k_t^T   (gate + tied rank-1)
- *   - rwkv_wkv7         : M_t = Diag(w_t) - a_t b_t^T    (free diagonal-plus-rank-1)
+ *   - rwkv_wkv7         : M_t = Diag(exp(w_t)) + b_t a_t^T  (free diagonal-plus-rank-1)
  *
  * kernel-set's strategy: dispatch routes these to the industry-best provider
  * (flash-linear-attention / FLA, Triton, sm80+); these C-ABI kernels are the
@@ -63,7 +63,9 @@ KS_API ks_status_t ks_gated_linear_attn(
     ks_stream_t stream);
 
 /* RWKV-7 "Goose" WKV (free DPLR / generalized delta rule). Per step, per head:
- *     S = S * (Diag(w_t) - a_t b_t^T) + v_t k_t^T ;  o_t = r_t^T S
+ *     S = Diag(exp(w_t)) S + b_t (a_t^T S) + k_t v_t^T ;  o_t = r_t^T S
+ *   (matches FLA fused_recurrent_rwkv7 exactly, so the ks fallback and the FLA
+ *   provider are interchangeable; RWKV-7 supplies a = -kk, b = kk * icl_rate.)
  *   r (receptance = query), w (log-decay -> Diag(exp(w))), k, a, b: [B,T,H,K];
  *   v, out: [B,T,H,V]. All model dtype. scale: query scale (0 => 1.0). */
 KS_API ks_status_t ks_rwkv_wkv7(
