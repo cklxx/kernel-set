@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
-"""Generator for the kernel-set model registry.
+"""YAML mirror regenerator for the kernel-set model registry.
 
-This is the single source of truth for the model catalog. Running it emits two
-mirror files next to it:
+``registry.json`` is the source of truth for the live model catalog. This script
+loads that hand-maintained JSON and regenerates or validates only its
+human-readable YAML mirror:
 
-  * registry.json  — machine-readable; consumed by ksctl / select.py (no deps).
-  * registry.yaml  — human-readable mirror (hand-editing should go through here
-                     by re-running this generator).
+  * registry.json  — source of truth; consumed by ksctl / select.py (no deps).
+  * registry.yaml  — human-readable mirror regenerated from registry.json.
 
 The registry records, per model family (and per notable concrete model), the
 architecture facts and the kernel-set C ABI entry points each logical op maps
 to, with a preferred dtype per op. The selection engine (select.py) layers GPU
 capability rules on top of these facts to pick the *strongest* available kernel.
 
-Run:  python3 models/_gen_registry.py
+The in-code MODELS list below is retained as schema documentation and historical
+scaffold data only. It must never shrink or overwrite the live registry.json.
+
+Run:    python3 models/_gen_registry.py
+Check:  python3 models/_gen_registry.py --check
 """
 
+import argparse
 import json
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # Logical op vocabulary. These are the columns of the model->kernel table.
@@ -839,23 +845,71 @@ def scalar(v):
     return s
 
 
-def main():
+YAML_HEADER = (
+    "# kernel-set model registry (human-readable mirror).\n"
+    "# registry.json is the source of truth; this script regenerates only this "
+    "yaml mirror from it.\n"
+)
+
+
+def render_yaml_registry(registry):
+    return YAML_HEADER + to_yaml(registry)
+
+
+def _model_count(registry):
+    return len(registry.get("models", []))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Regenerate or validate registry.yaml from registry.json.")
+    parser.add_argument(
+        "--check", action="store_true",
+        help="exit 1 if registry.yaml is not byte-for-byte in sync")
+    args = parser.parse_args(argv)
+
     here = os.path.dirname(os.path.abspath(__file__))
     json_path = os.path.join(here, "registry.json")
     yaml_path = os.path.join(here, "registry.yaml")
-    with open(json_path, "w") as f:
-        json.dump(REGISTRY, f, indent=2)
-        f.write("\n")
+
+    with open(json_path) as f:
+        registry = json.load(f)
+
+    disk_count = _model_count(registry)
+    code_count = len(MODELS)
+    rendered_yaml = render_yaml_registry(registry)
+
+    if args.check:
+        try:
+            with open(yaml_path) as f:
+                existing_yaml = f.read()
+        except FileNotFoundError:
+            print(f"{yaml_path} is missing; regenerate with "
+                  "python3 models/_gen_registry.py", file=sys.stderr)
+            return 1
+        if existing_yaml != rendered_yaml:
+            print(f"{yaml_path} is out of sync with {json_path}; regenerate "
+                  "with python3 models/_gen_registry.py", file=sys.stderr)
+            return 1
+        print(f"registry.yaml is in sync with registry.json "
+              f"({disk_count} models).")
+        return 0
+
     with open(yaml_path, "w") as f:
-        f.write("# kernel-set model registry (human-readable mirror).\n")
-        f.write("# SOURCE OF TRUTH IS registry.json — regenerate via "
-                "`python3 models/_gen_registry.py`.\n")
-        f.write(to_yaml(REGISTRY))
-    n_fam = sum(1 for m in MODELS if m["kind"] == "family")
-    n_mod = sum(1 for m in MODELS if m["kind"] == "model")
-    print(f"wrote {json_path} and {yaml_path}: {len(MODELS)} entries "
-          f"({n_fam} families, {n_mod} concrete models)")
+        f.write(rendered_yaml)
+
+    if code_count < disk_count:
+        print(
+            f"NOTICE: registry.json is hand-maintained source of truth "
+            f"({disk_count} models); in-code MODELS has only {code_count}. "
+            "Did not overwrite registry.json.")
+    else:
+        print(
+            f"NOTICE: registry.json is the source of truth ({disk_count} "
+            "models). Did not overwrite registry.json.")
+    print(f"refreshed {yaml_path} from {json_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

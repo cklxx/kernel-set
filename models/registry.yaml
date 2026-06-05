@@ -1,5 +1,5 @@
 # kernel-set model registry (human-readable mirror).
-# SOURCE OF TRUTH IS registry.json — regenerate via `python3 models/_gen_registry.py`.
+# registry.json is the source of truth; this script regenerates only this yaml mirror from it.
 schema_version: 1
 abi_header: include/kernel_set/kernel_set.h
 logical_ops:
