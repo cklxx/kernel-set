@@ -176,10 +176,9 @@
       "logical_op": "attention_prefill",
       "sm": 75,
       "dtype": "fp16",
-      "provider": "torch-sdpa",
+      "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "torch-sdpa",
         "flashinfer",
         "kernel-set"
       ]
@@ -188,10 +187,9 @@
       "logical_op": "attention_prefill",
       "sm": 75,
       "dtype": "fp32",
-      "provider": "torch-sdpa",
+      "provider": "kernel-set",
       "source": "heuristic",
       "fallback_chain": [
-        "torch-sdpa",
         "kernel-set"
       ]
     },
@@ -363,10 +361,9 @@
       "logical_op": "attention_prefill",
       "sm": 90,
       "dtype": "fp8",
-      "provider": "flash-attn",
+      "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "flash-attn",
         "flashinfer",
         "kernel-set"
       ]
@@ -416,10 +413,9 @@
       "logical_op": "attention_prefill",
       "sm": 100,
       "dtype": "fp8",
-      "provider": "flash-attn",
+      "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "flash-attn",
         "flashinfer",
         "kernel-set"
       ]
@@ -1440,10 +1436,9 @@
       "logical_op": "mla_decode",
       "sm": 90,
       "dtype": "fp8",
-      "provider": "sgl-kernel",
+      "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "sgl-kernel",
         "flashinfer",
         "kernel-set"
       ]
@@ -1476,10 +1471,9 @@
       "logical_op": "mla_decode",
       "sm": 100,
       "dtype": "fp8",
-      "provider": "sgl-kernel",
+      "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "sgl-kernel",
         "flashinfer",
         "kernel-set"
       ]

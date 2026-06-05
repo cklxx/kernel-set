@@ -27,6 +27,8 @@ import json
 import os
 from typing import Dict, List, Optional, Tuple
 
+from ._probe import _SM_THRESHOLDS, canonical_sm
+
 KERNEL_SET = "kernel-set"
 
 # Repo layout: bindings/python/kernel_set/backends/optimal.py
@@ -78,16 +80,14 @@ _DTYPE_NEAREST = {
     "int4": ["int4", "bf16", "fp16"],
 }
 
-# Capability-aware dtype gating (min SM per dtype). Mirrors the named
-# ``sm_thresholds`` in models/gpu_caps.json (the single source of truth) so the
-# selector NEVER falls a dtype-infeasible request (fp8 on sm75, bf16 on sm75,
-# fp4 on sm<100) into a different-dtype cell. dtypes absent here (fp16/fp32/
-# int8/int4) have no arch gate.
-_DTYPE_MIN_SM = {
-    "bf16": 80,
-    "tf32": 80,
-    "fp8": 89,
-    "fp4": 100,
+# Capability-aware dtype gating, loaded from models/gpu_caps.json through
+# _probe.py so the pure selector, runtime dispatch, and generator share one
+# source of truth. dtypes absent here (fp16/fp32/int8/int4) have no arch gate.
+_DTYPE_CAP_KEY = {
+    "bf16": "bf16",
+    "tf32": "tf32",
+    "fp8": "fp8",
+    "fp4": "fp4",
 }
 
 
@@ -97,7 +97,8 @@ def _dtype_feasible(sm: Optional[int], req: Optional[str]) -> bool:
     a nearest-dtype cell — it resolves straight to the kernel-set fallback so
     runtime dispatch never gates an installed provider against the original
     (infeasible) dtype."""
-    min_sm = _DTYPE_MIN_SM.get(req)
+    cap = _DTYPE_CAP_KEY.get(req)
+    min_sm = _SM_THRESHOLDS.get(cap) if cap else None
     if min_sm is None or sm is None:
         return True
     return int(sm) >= int(min_sm)
@@ -191,7 +192,7 @@ def select_optimal(logical_op: str, sm, dtype) -> dict:
     req = _normalize_dtype(dtype)
     sm_int: Optional[int] = None
     try:
-        sm_int = int(sm) if sm is not None else None
+        sm_int = canonical_sm(int(sm)) if sm is not None else None
     except (TypeError, ValueError):
         sm_int = None
 

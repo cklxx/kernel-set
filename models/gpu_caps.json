@@ -1,7 +1,12 @@
 {
   "_comment": "Canonical GPU capability + dtype-alias table for kernel-set. SINGLE SOURCE OF TRUTH. Loaded by models/select.py (the static model->kernel planner) and bindings/python/kernel_set/backends/_probe.py (the runtime dispatch arch/dtype gate). Pure data (stdlib json), no python imports across packages. Add a new GPU arch or dtype alias HERE, not in the python modules.",
 
-  "_sm_doc": "sm = compute capability major*10+minor. T4=75, A100=80, A10=86, L4/RTX4090=89, H100/H200/H800=90, Blackwell DC (B200/GB200)=100, consumer Blackwell (RTX50xx)=120.",
+  "_sm_doc": "sm = compute capability major*10+minor. T4=75, A100=80, A10=86, L4/RTX4090=89, H100/H200/H800=90, Blackwell DC (B200/GB200)=100, consumer Blackwell (RTX50xx)=120. The current optimal table folds sm120 into the sm100 Blackwell capability family.",
+
+  "sm_family_aliases": {
+    "_doc": "Raw detected SM -> optimal-table capability-family SM. RTX50/consumer Blackwell reports sm120, but the current provider table keys Blackwell rows as sm100.",
+    "120": 100
+  },
 
   "sm_thresholds": {
     "_doc": "Minimum SM for each capability. Named so the magic numbers live in one place.",
@@ -58,7 +63,7 @@
                "int4": true, "fp4": true, "wgmma": true}
     },
     "rtx5090": {
-      "name": "NVIDIA RTX 5090", "sm": 100, "arch": "Blackwell",
+      "name": "NVIDIA RTX 5090", "sm": 120, "arch": "Blackwell",
       "aliases": ["5090"],
       "caps": {"fp8": true, "bf16": true, "tf32": true, "int8": true,
                "int4": true, "fp4": true, "wgmma": true}

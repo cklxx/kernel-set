@@ -477,6 +477,12 @@ def _gemma_rmsnorm_sgl(x, w, *, eps=1e-6, **_):
     return sk.gemma_rmsnorm(x, w, eps)
 
 
+def _gemma_rmsnorm_flashinfer(x, w, *, eps=1e-6, **_):
+    # flashinfer.norm.gemma_rmsnorm(input, weight, eps=..., out=None) -> out.
+    from flashinfer.norm import gemma_rmsnorm
+    return gemma_rmsnorm(x, w, eps=eps)
+
+
 def _gemma_rmsnorm_ks(x, w, *, eps=1e-6, **_):
     # kernel-set has no gemma-specific wrapper; realize the (weight+1) scale via
     # the portable rms_norm path so the fallback never imports sgl_kernel.
@@ -585,6 +591,17 @@ def _sampling_sgl(probs, *, top_k=None, top_p=None, **_):
     if top_p is not None:
         out = sk.top_p_renorm_prob(out, top_p)
     return out
+
+
+def _sampling_flashinfer(probs, *, top_k=None, top_p=None, **_):
+    fs = _imp("flashinfer.sampling")
+    if top_k is not None and top_p is not None:
+        return fs.top_k_top_p_sampling_from_probs(probs, top_k, top_p)
+    if top_k is not None:
+        return fs.top_k_sampling_from_probs(probs, top_k)
+    if top_p is not None:
+        return fs.top_p_sampling_from_probs(probs, top_p)
+    return fs.sampling_from_probs(probs)
 
 
 def _moe_gate_sgl(gating_output, *, top_k, renormalize=False,
@@ -979,7 +996,7 @@ _OPS_RAW: List[Op] = [
     Op("gemma_rmsnorm", "norm-act-rope", "ks_gemma_rmsnorm", [
         Provider("flashinfer", 1, 75, "fp16, bf16",
                  "from flashinfer.norm import gemma_rmsnorm",
-                 None, "FlashInfer gemma_rmsnorm"),
+                 _gemma_rmsnorm_flashinfer, "FlashInfer gemma_rmsnorm"),
         _sgl_provider(2, _gemma_rmsnorm_sgl,
                       note="SGLang gemma_rmsnorm ((weight+1) scale)"),
         _ks_provider(_gemma_rmsnorm_ks, "ks_gemma_rmsnorm",
@@ -1035,7 +1052,7 @@ _OPS_RAW: List[Op] = [
         _sgl_provider(2, _moe_sgl, min_sm=90, dtypes="fp8 e4m3",
                       note="SGLang CUTLASS grouped FP8 (fp8_blockwise_..._mm)"),
         # Ampere/Ada (no FP8 hw): vLLM Triton fused_experts (bf16/INT4 grouped).
-        Provider("vllm", 3, 80, "bf16, fp16, fp8",
+        Provider("vllm", 3, 80, "bf16, fp16, fp8, int4",
                  "from vllm.model_executor.layers.fused_moe.fused_moe import "
                  "fused_experts",
                  _moe_vllm, "vLLM fused_experts / fused_moe (Triton, sm80+)"),
@@ -1063,7 +1080,7 @@ _OPS_RAW: List[Op] = [
     Op("sampling", "sampling-logitproc", "ks_sample", [
         Provider("flashinfer", 1, 75, "fp32 probs",
                  "import flashinfer",
-                 None, "FlashInfer fused top-k/top-p sampling"),
+                 _sampling_flashinfer, "FlashInfer fused top-k/top-p sampling"),
         _sgl_provider(2, _sampling_sgl, dtypes="fp32 probs",
                       note="SGLang top_k_renorm_prob / top_p_renorm_prob"),
         _ks_provider(_sampling_ks, "ks_sample",
@@ -1103,6 +1120,17 @@ def optimal_order(op: str, sm: Optional[int], dtype) -> "List[Provider]":
         chain = optimal_chain(op, sm, dtype)
     except Exception:
         chain = []
+    if chain == [KERNEL_SET]:
+        return [p for p in providers if p.name == KERNEL_SET]
+    if chain:
+        by_name = {p.name: p for p in providers}
+        ordered = [by_name[name] for name in chain if name in by_name]
+        named = {p.name for p in ordered}
+        extras = [p for p in providers if p.name not in named]
+        extras = sorted(extras, key=lambda p: (p.rank, p.name))
+        if ordered and ordered[-1].name == KERNEL_SET:
+            return ordered[:-1] + extras + ordered[-1:]
+        return ordered + extras
     chain_idx = {name: i for i, name in enumerate(chain)}
     keys: Dict[str, tuple] = {}
     last_seen = -1  # chain index of the last chain member seen in static order

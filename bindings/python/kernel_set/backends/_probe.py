@@ -50,7 +50,7 @@ _GPU_SM_FALLBACK: Dict[str, int] = {
     "l4": 89, "ada": 89, "rtx4090": 89, "4090": 89, "rtx-4090": 89,
     "h100": 90, "h800": 90, "h200": 90, "hopper": 90,
     "b200": 100, "b100": 100, "blackwell": 100, "gb200": 100,
-    "rtx5090": 100, "5090": 100,
+    "rtx5090": 120, "5090": 120,
 }
 
 _DTYPE_ALIASES_FALLBACK = {
@@ -81,6 +81,10 @@ _SM_THRESHOLDS_FALLBACK: Dict[str, int] = {
     "fp4": 100, "wgmma": 90,
 }
 
+_SM_FAMILY_ALIASES_FALLBACK: Dict[int, int] = {
+    120: 100,
+}
+
 # Map a normalized dtype gate token -> the capability key it requires. Tokens
 # absent here (fp16/fp32/int8/int4) have no arch threshold.
 _DTYPE_CAP_KEY: Dict[str, str] = {
@@ -88,10 +92,11 @@ _DTYPE_CAP_KEY: Dict[str, str] = {
 }
 
 
-def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str], Dict[str, int]]:
-    """Build (GPU_SM, _DTYPE_ALIASES, SM_THRESHOLDS) from the canonical JSON if
-    present, else the inlined fallbacks. Never raises (malformed/absent ->
-    fallback)."""
+def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str], Dict[str, int],
+                               Dict[int, int]]:
+    """Build (GPU_SM, _DTYPE_ALIASES, SM_THRESHOLDS, SM_FAMILY_ALIASES) from the
+    canonical JSON if present, else the inlined fallbacks. Never raises
+    (malformed/absent -> fallback)."""
     try:
         with open(_GPU_CAPS_PATH) as f:
             caps = json.load(f)
@@ -104,13 +109,25 @@ def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str], Dict[str, int]]:
                    if not k.startswith("_")}
         thresholds = {k: int(v) for k, v in caps["sm_thresholds"].items()
                       if not k.startswith("_")}
-        return gpu_sm, aliases, thresholds
+        sm_aliases = {int(k): int(v) for k, v in
+                      caps.get("sm_family_aliases", {}).items()
+                      if not k.startswith("_")}
+        return gpu_sm, aliases, thresholds, sm_aliases
     except Exception:
         return (dict(_GPU_SM_FALLBACK), dict(_DTYPE_ALIASES_FALLBACK),
-                dict(_SM_THRESHOLDS_FALLBACK))
+                dict(_SM_THRESHOLDS_FALLBACK),
+                dict(_SM_FAMILY_ALIASES_FALLBACK))
 
 
-GPU_SM, _DTYPE_ALIASES, _SM_THRESHOLDS = _load_canonical()
+GPU_SM, _DTYPE_ALIASES, _SM_THRESHOLDS, SM_FAMILY_ALIASES = _load_canonical()
+
+
+def canonical_sm(sm: Optional[int]) -> Optional[int]:
+    """Map raw compute capability to the optimal-table capability-family SM."""
+    if sm is None:
+        return None
+    sm_int = int(sm)
+    return SM_FAMILY_ALIASES.get(sm_int, sm_int)
 
 
 def gpu_to_sm(gpu: Optional[str]) -> Optional[int]:
@@ -163,8 +180,8 @@ def resolve_sm(gpu: Optional[str]) -> Optional[int]:
     """Resolve the SM to gate against: the explicit ``gpu`` if given, else the
     auto-detected device, else ``None`` (no gate)."""
     if gpu is not None:
-        return gpu_to_sm(gpu)
-    return detect_sm()
+        return canonical_sm(gpu_to_sm(gpu))
+    return canonical_sm(detect_sm())
 
 
 # --------------------------------------------------------------------------- #

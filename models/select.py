@@ -68,6 +68,9 @@ KS_DTYPE = {k: v for k, v in _CAPS["ks_dtype_enum"].items()
 # want the magic numbers by name instead of hardcoding `sm >= 90` etc.
 SM_THRESHOLDS = {k: v for k, v in _CAPS["sm_thresholds"].items()
                  if not k.startswith("_")}
+SM_FAMILY_ALIASES = {int(k): int(v) for k, v in
+                     _CAPS.get("sm_family_aliases", {}).items()
+                     if not k.startswith("_")}
 
 
 class SelectionError(Exception):
@@ -141,20 +144,38 @@ def _load_optimal_table(path=_OPTIMAL_PATH):
 _OPTIMAL_TABLE, _OPTIMAL_DTYPES = _load_optimal_table()
 
 
+def _optimal_table_sm(sm):
+    sm_int = int(sm)
+    return SM_FAMILY_ALIASES.get(sm_int, sm_int)
+
+
+def optimal_lookup_op(plan_op, scheme):
+    """Planner op -> optimal-table op, accounting for quantized GEMM schemes."""
+    if plan_op in DENSE_GEMM_OPS:
+        if scheme == "fp8":
+            return "fp8_gemm"
+        if scheme == "w8a8":
+            return "int8_gemm"
+        if scheme == "w4a16":
+            return "w4a16"
+    return _PLAN_OP_TO_OPTIMAL.get(plan_op)
+
+
 def optimal_cell(plan_op, sm, scheme):
     """Look up the optimal-table cell for a planner (op, sm, scheme), with a
     graceful nearest-dtype fallback. Returns the cell dict or None."""
-    op = _PLAN_OP_TO_OPTIMAL.get(plan_op)
+    op = optimal_lookup_op(plan_op, scheme)
     if op is None:
         return None
     dtype = _SCHEME_TO_DTYPE.get(scheme, scheme)
-    cell = _OPTIMAL_TABLE.get((op, int(sm), dtype))
+    sm_key = _optimal_table_sm(sm)
+    cell = _OPTIMAL_TABLE.get((op, sm_key, dtype))
     if cell is not None:
         return cell
-    avail = _OPTIMAL_DTYPES.get((op, int(sm)), [])
+    avail = _OPTIMAL_DTYPES.get((op, sm_key), [])
     for cand in _DTYPE_NEAREST.get(dtype, [dtype]):
         if cand in avail:
-            return _OPTIMAL_TABLE.get((op, int(sm), cand))
+            return _OPTIMAL_TABLE.get((op, sm_key, cand))
     return None
 
 
@@ -278,6 +299,7 @@ def attn_backend_name(gpu_caps, mla=False, decode=False):
 # Which logical ops are GEMM-shaped (so they honor the weight-quant scheme).
 GEMM_OPS = {"qkv_proj", "o_proj", "mlp_gate_up", "mlp_down", "lm_head",
             "moe_grouped_gemm"}
+DENSE_GEMM_OPS = GEMM_OPS - {"moe_grouped_gemm"}
 # Ops that always stay in the model's activation dtype (norms, rope, act, etc).
 ACT_DTYPE_OPS = {"attn_norm", "ffn_norm", "rope", "mlp_act", "embedding",
                  "attn_prefill", "attn_decode", "attn_backward"}

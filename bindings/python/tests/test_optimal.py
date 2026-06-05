@@ -110,6 +110,49 @@ def test_every_provider_exists_in_registry_for_its_op():
                 f"(known: {sorted(known)})")
 
 
+def test_every_non_kernel_set_chain_entry_is_runtime_selectable():
+    from kernel_set.backends import _probe, _registry
+    providers = {name: {p.name: p for p in op.providers}
+                 for name, op in _registry.OPS.items()}
+    with open(_OPTIMAL_JSON) as f:
+        doc = json.load(f)
+    for c in doc["cells"]:
+        known = providers[c["logical_op"]]
+        for name in [c["provider"]] + c["fallback_chain"]:
+            p = known[name]
+            if name == KERNEL_SET:
+                continue
+            assert p.call is not None, c
+            assert int(c["sm"]) >= p.min_sm, c
+            assert _probe.dtype_arch_ok(c["dtype"], c["sm"]), c
+            assert _probe.dtype_ok(c["dtype"], p.dtypes), c
+
+
+def test_selector_probe_generator_thresholds_agree():
+    import importlib.util
+    from kernel_set.backends import _probe
+
+    gen_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "scripts", "gen_optimal.py")
+    spec = importlib.util.spec_from_file_location("gen_optimal", gen_path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    for key in ("bf16", "tf32", "fp8", "fp4"):
+        assert O._SM_THRESHOLDS[key] == _probe._SM_THRESHOLDS[key]
+        assert gen._SM_THRESHOLDS[key] == _probe._SM_THRESHOLDS[key]
+
+
+def test_sm120_folds_to_sm100_for_selector_and_dispatch():
+    from kernel_set.backends import _probe
+
+    assert _probe.gpu_to_sm("rtx5090") == 120
+    assert dispatch.resolve_sm("rtx5090") == 100
+    assert O.select_optimal("gemm", 120, "bf16") == \
+        O.select_optimal("gemm", 100, "bf16")
+
+
 def test_table_logical_ops_match_dispatch_op_order():
     # INVARIANT 6: the table is Cartesian over the dispatch OP_ORDER — every
     # dispatch op (incl. gemma_rmsnorm + sampling) has >=1 cell, and the table
@@ -346,6 +389,20 @@ def test_dispatch_dtype_arch_gate_blocks_bf16_on_sm75(monkeypatch):
     assert dispatch.which("rmsnorm", dtype="bf16") == KERNEL_SET
 
 
+def test_dispatch_matches_every_table_cell_with_extra_providers_available(
+        monkeypatch):
+    import kernel_set.dispatch as d
+
+    monkeypatch.setattr(d, "can_import", lambda _check: True)
+    with open(_OPTIMAL_JSON) as f:
+        doc = json.load(f)
+    for c in doc["cells"]:
+        dispatch.reset_cache()
+        got = dispatch.which(
+            c["logical_op"], gpu=f"sm{c['sm']}", dtype=c["dtype"])
+        assert got == c["provider"], c
+
+
 # --------------------------------------------------------------------------- #
 # Planner (models/select.py) and runtime dispatch agree on the same optimal
 # provider for a sampled (model/op, gpu, dtype).
@@ -391,8 +448,37 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
                 if p in _LIB_OF}
         dispatch.reset_cache()
         _mock_available(monkeypatch, available_libs=libs, sm=sm)
-        runtime_op = sel._PLAN_OP_TO_OPTIMAL[plan_op]
+        runtime_op = sel.optimal_lookup_op(plan_op, scheme)
         runtime_provider = dispatch.which(runtime_op, dtype=scheme)
 
         assert runtime_provider == planner_provider, (
             plan_op, sm, scheme, planner_provider, runtime_provider)
+
+
+def test_planner_quantized_dense_gemm_annotations_use_quantized_optimal_ops():
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    cases = [
+        ("fp8", "h100", "fp8_gemm"),
+        ("int8", "a100", "int8_gemm"),
+        ("w4a16", "a100", "w4a16"),
+    ]
+    for dtype, gpu, optimal_op in cases:
+        plan = sel.select("llama-3-8b", gpu, dtype)
+        sm = sel._optimal_table_sm(plan["sm"])
+        scheme = plan["resolved_scheme"]
+        entry = plan["ops"]["qkv_proj"]
+        expected = O.select_optimal(
+            optimal_op, sm, sel._SCHEME_TO_DTYPE.get(scheme, scheme))
+        dense = O.select_optimal("gemm", sm, "bf16")
+        assert sel.optimal_lookup_op("qkv_proj", scheme) == optimal_op
+        assert entry["optimal_provider"] == expected["provider"]
+        if expected["provider"] != dense["provider"]:
+            assert entry["optimal_provider"] != dense["provider"]

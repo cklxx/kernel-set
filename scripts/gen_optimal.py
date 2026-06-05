@@ -246,14 +246,14 @@ HEURISTIC = {
          "provider": "vllm-machete",
          "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 75, "dtype": "fp16",
-         "provider": "torch-sdpa",
-         "fallback_chain": ["torch-sdpa", "flashinfer", "kernel-set"]},
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 75, "dtype": "bf16",
          "provider": "torch-sdpa",
          "fallback_chain": ["torch-sdpa", "flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 75, "dtype": "fp32",
-         "provider": "torch-sdpa",
-         "fallback_chain": ["torch-sdpa", "kernel-set"]},
+         "provider": "kernel-set",
+         "fallback_chain": ["kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 80, "dtype": "fp16",
          "provider": "flash-attn",
          "fallback_chain": ["flash-attn", "torch-sdpa", "flashinfer",
@@ -299,8 +299,8 @@ HEURISTIC = {
          "fallback_chain": ["flash-attn", "sgl-kernel", "torch-sdpa",
                             "flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 90, "dtype": "fp8",
-         "provider": "flash-attn",
-         "fallback_chain": ["flash-attn", "flashinfer", "kernel-set"]},
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 90, "dtype": "fp32",
          "provider": "torch-sdpa",
          "fallback_chain": ["torch-sdpa", "kernel-set"]},
@@ -313,8 +313,8 @@ HEURISTIC = {
          "fallback_chain": ["flash-attn-cute", "flash-attn", "sgl-kernel",
                             "torch-sdpa", "flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 100, "dtype": "fp8",
-         "provider": "flash-attn",
-         "fallback_chain": ["flash-attn", "flashinfer", "kernel-set"]},
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "kernel-set"]},
         {"logical_op": "attention_prefill", "sm": 100, "dtype": "fp32",
          "provider": "torch-sdpa",
          "fallback_chain": ["torch-sdpa", "kernel-set"]},
@@ -395,8 +395,8 @@ HEURISTIC = {
          "provider": "sgl-kernel",
          "fallback_chain": ["sgl-kernel", "flashinfer", "kernel-set"]},
         {"logical_op": "mla_decode", "sm": 90, "dtype": "fp8",
-         "provider": "sgl-kernel",
-         "fallback_chain": ["sgl-kernel", "flashinfer", "kernel-set"]},
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "kernel-set"]},
         {"logical_op": "mla_decode", "sm": 100, "dtype": "bf16",
          "provider": "sgl-kernel",
          "fallback_chain": ["sgl-kernel", "flashinfer", "kernel-set"]},
@@ -404,8 +404,8 @@ HEURISTIC = {
          "provider": "sgl-kernel",
          "fallback_chain": ["sgl-kernel", "flashinfer", "kernel-set"]},
         {"logical_op": "mla_decode", "sm": 100, "dtype": "fp8",
-         "provider": "sgl-kernel",
-         "fallback_chain": ["sgl-kernel", "flashinfer", "kernel-set"]},
+         "provider": "flashinfer",
+         "fallback_chain": ["flashinfer", "kernel-set"]},
         {"logical_op": "moe", "sm": 75, "dtype": "fp16",
          "provider": "kernel-set", "fallback_chain": ["kernel-set"]},
         {"logical_op": "moe", "sm": 75, "dtype": "bf16",
@@ -1017,24 +1017,33 @@ _DOCUMENTED_DEGRADATIONS = {
 }
 
 
-def _load_registry_ops():
-    """{logical_op: set(provider names)} from the runtime dispatch registry,
-    used to validate that every provider named by the table actually exists as a
-    runtime provider for its op. Import-safe (the registry's adapters are lazy;
-    importing it pulls in only stdlib + the provider table). Returns ({}, None)
-    if the binding tree is not importable (e.g. a stripped wheel)."""
+def _load_registry_contract():
+    """Runtime registry + probe objects for strong source-tree validation.
+
+    Importing the registry is import-safe: adapters are lazy and no provider
+    libraries are imported. In the source tree the binding package is expected to
+    exist; import failure is fatal so ``--check`` cannot silently skip the
+    strongest invariants. Only a stripped installed-wheel context with no binding
+    tree gets the narrow fallback (None, None, None).
+    """
     import importlib
 
     bindings = os.path.join(REPO_ROOT, "bindings", "python")
+    pkg_dir = os.path.join(bindings, "kernel_set")
+    if not os.path.isdir(pkg_dir):
+        return None, None, None
     if bindings not in sys.path:
         sys.path.insert(0, bindings)
     try:
         reg = importlib.import_module("kernel_set.backends._registry")
-    except Exception:
-        return None, None
-    op_providers = {name: {p.name for p in op.providers}
-                    for name, op in reg.OPS.items()}
-    return op_providers, list(reg.OP_ORDER)
+        probe = importlib.import_module("kernel_set.backends._probe")
+    except Exception as e:
+        raise AssertionError(
+            "source-tree registry/probe import failed; cannot validate "
+            f"optimal.json against runtime dispatch contract: {e}") from e
+    providers = {name: {p.name: p for p in op.providers}
+                 for name, op in reg.OPS.items()}
+    return providers, list(reg.OP_ORDER), probe
 
 
 def _accepted_dtype_tokens():
@@ -1071,9 +1080,11 @@ def validate(cells):
         assert _dtype_feasible(c["sm"], c["dtype"]), \
             f"infeasible dtype cell (dtype unsupported by sm): {c}"
 
-    # Invariant 2: every provider + every fallback_chain entry EXISTS as a
-    # runtime provider for that logical_op in the registry.
-    op_providers, op_order = _load_registry_ops()
+    # Invariant 2: every provider + every fallback_chain entry exists as a
+    # runtime provider for that logical_op in the registry, and every
+    # non-kernel-set entry is actually selectable under the registry's own
+    # callability / arch / dtype gates.
+    op_providers, op_order, probe = _load_registry_contract()
     if op_providers is not None:
         for c in cells:
             op = c["logical_op"]
@@ -1084,6 +1095,20 @@ def validate(cells):
                 assert p in known, (
                     f"provider {p!r} not registered for op {op!r} "
                     f"(known: {sorted(known)}): {c}")
+                provider = known[p]
+                if p == KERNEL_SET:
+                    continue
+                assert provider.call is not None, (
+                    f"provider {p!r} for op {op!r} is not callable: {c}")
+                assert int(c["sm"]) >= int(provider.min_sm), (
+                    f"provider {p!r} for op {op!r} is gated sm"
+                    f"{provider.min_sm}+ but cell is sm{c['sm']}: {c}")
+                assert probe.dtype_arch_ok(c["dtype"], int(c["sm"])), (
+                    f"dtype {c['dtype']!r} is not hardware-feasible on "
+                    f"sm{c['sm']}: {c}")
+                assert probe.dtype_ok(c["dtype"], provider.dtypes), (
+                    f"provider {p!r} for op {op!r} does not support dtype "
+                    f"{c['dtype']!r} (provider dtypes={provider.dtypes!r}): {c}")
 
         # Invariant 6: the table's logical_ops match the dispatch OP_ORDER (it
         # may be a documented superset — measured-only ops with no Op are not

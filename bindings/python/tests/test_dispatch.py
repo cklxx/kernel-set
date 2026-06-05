@@ -232,16 +232,16 @@ def test_sgl_kernel_wins_moe_gate_ops_when_available(monkeypatch):
 def test_deepgemm_wins_moe_grouped_gemm_on_hopper(monkeypatch):
     # On sm90 DeepGEMM grouped FP8 is the rank-1 MoE GEMM (DeepSeek-V3 path).
     _mock_available(monkeypatch, available_libs={"deep_gemm"}, sm=90)
-    assert dispatch.which("moe") == "deep_gemm"
+    assert dispatch.which("moe", dtype="fp8") == "deep_gemm"
     # sgl-kernel grouped GEMM is the rank-2 alignment target on sm90.
     dispatch.reset_cache()
     _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=90)
-    assert dispatch.which("moe") == SGL_KERNEL
+    assert dispatch.which("moe", dtype="fp8") == SGL_KERNEL
     # DeepGEMM + sgl + vllm all present on sm90 -> DeepGEMM (rank 1) wins.
     dispatch.reset_cache()
     _mock_available(
         monkeypatch, available_libs={"deep_gemm", "sgl_kernel", "vllm"}, sm=90)
-    assert dispatch.which("moe") == "deep_gemm"
+    assert dispatch.which("moe", dtype="fp8") == "deep_gemm"
 
 
 def test_vllm_fused_moe_on_ampere(monkeypatch):
@@ -366,7 +366,7 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("w4a16", {"vllm"}, 80, "int4", "vllm-marlin"),
         ("w4a16", {"vllm"}, 90, "int4", "vllm-machete"),
         ("attention_prefill", {"flash_attn"}, 80, "bf16", "flash-attn"),
-        ("attention_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("attention_decode", {"flashinfer"}, 80, "fp16", "flashinfer"),
         ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
         ("mla_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
         ("moe", {"deep_gemm"}, 90, None, "deep_gemm"),
