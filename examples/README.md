@@ -31,6 +31,25 @@ that is expected. See [`../docs/USAGE.md`](../docs/USAGE.md) for the full
 per-language quickstart and [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)
 for the design.
 
+### Real-model eval — [`eval_model.py`](eval_model.py)
+
+Beyond the one-op hello-worlds, this loads a **real HuggingFace model** (Qwen /
+Gemma / Llama / Mistral …), freezes the **AOT plan** (strongest installed kernel
+per op on this GPU+dtype → `plan.json`), hot-swaps the model's `*RMSNorm` and
+gated-MLP through `ks.dispatch`, then checks correctness against the real weights
+and times prefill+decode. It auto-detects SwiGLU vs GeGLU so it stays correct
+across model families.
+
+```sh
+export PYTHONPATH=bindings/python KERNEL_SET_LIB="$PWD/build/libkernel_set.so"
+pip install -U "transformers>=4.44" accelerate torch
+python examples/eval_model.py --model Qwen/Qwen2.5-0.5B-Instruct --dtype bf16
+python examples/eval_model.py --model unsloth/gemma-2-2b-it       # GeGLU path
+python examples/eval_model.py --plan-only                         # just emit plan.json (no GPU)
+```
+
+Measured numbers (L4/sm89): [`../benchmarks/results/real_model_eval.md`](../benchmarks/results/real_model_eval.md).
+
 ### Go environment
 
 cgo needs the headers at compile time and the library at link/run time:

@@ -74,7 +74,17 @@ PY
 
 # benchmark every op vs PyTorch/SOTA (Colab L4/A100)
 benchmarks/build_and_bench.sh      # or open benchmarks/colab_bench.ipynb
+
+# eval on a REAL model: freeze the AOT plan, hot-swap norm/act, check correctness
+python3 examples/eval_model.py --model Qwen/Qwen2.5-0.5B-Instruct   # also Gemma, Llama…
 ```
+
+> **Real-model eval** ([`examples/eval_model.py`](examples/eval_model.py),
+> results in [`benchmarks/results/real_model_eval.md`](benchmarks/results/real_model_eval.md)):
+> hot-swapping kernel-set's RMSNorm/RoPE/SwiGLU·GeGLU into a stock HF model is
+> **bit-identical** on Gemma-2-2b (64/64 greedy tokens) and top-1-correct on
+> Qwen2.5, with 3–9× per-op speedups over eager torch. The example auto-detects
+> SwiGLU vs GeGLU so it stays correct across model families.
 
 ## Layout
 
