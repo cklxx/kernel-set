@@ -21,8 +21,9 @@
    falling back to kernel-set's own kernels for portability.
 
 > **Verified:** every kernel-set op is GPU-checked for correctness on **L4
-> (sm89)** and **A100 (sm80)** (`benchmarks/results/`); the library loads on
-> **sm70–sm90** (T4/V100/A100/L4/H100). HIP/ROCm is wired behind a build flag.
+> (sm89)**, **A100 (sm80)**, and **RTX PRO 6000 Blackwell (sm120)** — `correct=100,
+> incorrect=0` on each (`benchmarks/results/`); the library builds + loads across
+> **sm70–sm120** (T4/V100/A100/L4/H100/Blackwell). HIP/ROCm is wired behind a build flag.
 
 ## The strategy (honest)
 
