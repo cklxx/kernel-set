@@ -92,18 +92,29 @@ provider for the `(sm, dtype)` cell and falls back to kernel-set:
 
 | Logical op | sm80 (Ampere) | sm89 (Ada) | sm90 (Hopper) | sm100 (Blackwell) | Terminal fallback |
 | --- | --- | --- | --- | --- | --- |
-| `fp8_gemm` | — *(no FP8 HW on Ampere)* | torch `_scaled_mm` | deep_gemm (blockwise) | deep_gemm (blockwise) | `ks_gemm_w8a8`* |
-| `int8_gemm` | vLLM CUTLASS | vLLM CUTLASS | vLLM CUTLASS | vLLM Marlin-int8 | `ks_gemm_w8a8` |
-| `w4a16` | vLLM Marlin (GPTQ/AWQ) | vLLM Marlin (GPTQ/AWQ) | vLLM Machete | vLLM Machete | `ks_gemm_w4a16` |
+| `fp8_gemm` | — *(no FP8 HW on Ampere)* | vLLM-CUTLASS / torch `_scaled_mm` / FBGEMM | deep_gemm (blockwise) | deep_gemm (blockwise) | `ks_gemm_w8a8`* |
+| `int8_gemm` | vLLM CUTLASS / GemLite | vLLM CUTLASS / GemLite | vLLM CUTLASS | vLLM Marlin-int8 | `ks_gemm_w8a8` |
+| `w4a16` | unified Marlin / GemLite / torchao-int4 | unified Marlin / GemLite | vLLM Machete | vLLM Machete | `ks_gemm_w4a16` |
+| `w4a8` *(new)* | unified Marlin-QQQ | unified Marlin-QQQ | vLLM Machete | vLLM Machete | `ks` raise |
 
-Chain detail (from `_registry.py`):
+Chain detail (from `_registry.py`, 2026 re-survey wiring):
 
-* **`fp8_gemm`**: deep_gemm (sm90/100 blockwise) → torch-scaled-mm (sm89) →
-  sgl-kernel → kernel-set. There is **no sm80/sm86 cell** (no FP8 tensor cores on
-  Ampere). \*The ks fallback registered for `fp8_gemm` is `ks_gemm_w8a8`.
-* **`int8_gemm`**: vLLM Marlin-int8 (sm100) → vLLM CUTLASS (sm80) → sgl-kernel →
+* **`fp8_gemm`**: deep_gemm (sm90/100 blockwise + masked grouped) → vLLM-CUTLASS
+  `cutlass_scaled_mm` → torch-scaled-mm → FBGEMM rowwise → sgl-kernel →
+  kernel-set. No sm80/sm86 cell (no FP8 tensor cores on Ampere). \*ks fallback is
+  `ks_gemm_w8a8`; the portable `ks_gemm_fp8_blockwise` covers sm80.
+* **`int8_gemm`**: vLLM Marlin-int8 (sm100) → vLLM CUTLASS (sm80) → GemLite →
   kernel-set.
-* **`w4a16`**: vLLM Machete (sm90a) → vLLM Marlin GPTQ/AWQ (sm80) → kernel-set.
+* **`w4a16`**: vLLM Machete (sm90a) → **unified Marlin** GPTQ/AWQ (sm80) → GemLite
+  → torchao-int4 → kernel-set.
+* **`w4a8`** *(new op)*: vLLM Machete (int4 weight + fp8/int8 act, sm90) → unified
+  Marlin-QQQ (sm80) → kernel-set terminal.
+
+> **Marlin is unified.** The vendored 2026 vLLM collapsed `gptq_marlin_gemm`,
+> `fp8_marlin_gemm`, `marlin_qqq_gemm`, `gptq_marlin_24_gemm` into a single
+> `ops.marlin_gemm(..., b_q_type, ...)` selected by scalar type (GPTQ `kU4B8`,
+> AWQ `kU4`, int8 `kS8`, QQQ `kS4`, fp8 `kFE4M3fn`). kernel-set's adapters were
+> updated to call it (the old per-flavor symbols no longer exist).
 
 ### Broader gemm-quant catalog (`providers/registry.json`)
 
@@ -123,10 +134,10 @@ dispatch (see the gap analysis — the unwired ones are the *true holes*):
 | `w4a16_gemm` | vllm (Marlin / GPTQ-Marlin) | via `w4a16` |
 | `awq_gemm` | vllm (awq_marlin) | via `w4a16` (after repack) |
 | `dequantize_int4` | autoawq (`ks_dequantize_int4`) | ks ABI only |
-| `int4_weight_only_gemm_tinygemm` | torchao | **no** |
-| `w4a8_gemm` | vllm (Machete W4A8) | **no** |
-| `nvfp4_gemm` | flashinfer | **no — true hole** |
-| `mxfp4_gemm` | torchao | **no — true hole** |
+| `int4_weight_only_gemm_tinygemm` | torchao | **yes** — torchao-int4 in `w4a16` |
+| `w4a8_gemm` | vllm (Machete W4A8) | **yes** — own `w4a8` op (Machete + Marlin-QQQ) |
+| `nvfp4_gemm` | flashinfer | yes — `nvfp4_gemm` op (sm100) |
+| `mxfp4_gemm` | torchao / gemlite | yes — `mxfp4_gemm` op |
 | `fp4_quantize` | vllm | **no — true hole** |
 | `nf4_fp4_blockwise_quant_linear` | bitsandbytes | **no** |
 | `int8_llm_int8_linear` | bitsandbytes | **no** |
@@ -197,3 +208,38 @@ The landed and newly-wired pieces, in one place:
   `gen_optimal.py --check` gate is green (232 cells); promote any measured
   Blackwell FP4 winners into the `MEASURED` block per
   [`OPTIMAL_SELECTION.md`](OPTIMAL_SELECTION.md).
+
+---
+
+## 4. 2026 re-survey (集百家之长) — expanded provider coverage
+
+A fresh survey of the SOTA quant/kernel landscape (web-verified) drove a provider
+expansion so dispatch always selects best-of-all-libraries per `op × sm × dtype`.
+Landed (commit `b764f57`, 29 dispatch ops, 287 optimal cells):
+
+* **Marlin unified** → `ops.marlin_gemm(b_q_type=…)` (P0 correctness fix; the old
+  `gptq_marlin_gemm`/`fp8_marlin_gemm`/`qqq`/`marlin_24` symbols were removed).
+* **New providers per op** (lazy adapters, `min_sm`/dtype-gated, ks terminal):
+  * fp8: vLLM-CUTLASS `cutlass_scaled_mm`, FBGEMM `f8f8bf16_rowwise`, DeepGEMM
+    masked grouped (`m_grouped_fp8_gemm_nt_masked`).
+  * int4/int8: GemLite (Triton low-bit), torchao-int4 (tinygemm).
+  * MoE: FlashInfer `cutlass_fused_moe`, DeepGEMM grouped.
+  * attention: flash-attn-3 native, FlashMLA native, FlashInfer-trtllm; SageAttn.
+  * norm / cross-entropy: Quack (Hopper sm90).
+  * linear-attn / SSM: FLA `fused_recurrent_*` (decode-optimal), mamba-ssm
+    `selective_state_update`, `causal_conv1d_update`.
+* **New `w4a8` op** — int4 weight + fp8/int8 activation: Machete (sm90) → unified
+  Marlin-QQQ (sm80) → ks terminal. Best W4A8 path Ampere→Hopper.
+* **Linear-attn fallbacks cross-checked vs FLA** (fla 0.5.0, GPU): `gated_delta_rule`
+  1.0e-2, `gated_linear_attn` 2.6e-3, `rwkv_wkv7` 7.4e-3 — the ks fallbacks and the
+  FLA provider are now numerically interchangeable (an rwkv-7 sign bug vs FLA's
+  convention was found and fixed here, `da56dad`).
+
+### Still deferred (documented gaps, need vendoring or a model target)
+
+| Gap | Why deferred | SOTA path if needed |
+| --- | --- | --- |
+| **2:4 structured sparse** | needs vendoring IST-DASLab Sparse-Marlin (legacy `gptq_marlin_24_gemm` removed); dense w4a16/w4a8 higher ROI | vLLM `cutlass_scaled_sparse_mm` (sm90) / Sparse-Marlin (sm80/89) |
+| **BitNet W1.58A8 ternary** | no general PTQ→ternary fused GPU GEMM in mainstream serving; only native-BitNet | BitBLAS (pip) / microsoft/BitNet CUDA (source) |
+| **w8a16-fp8** | niche (sm80/86/89 fp8 ckpts without fp8 MMA); on sm89+ native `fp8_gemm` preferred | unified Marlin `b_q_type=kFE4M3fn` |
+| **fused-linear-CE** | distinct signature (hidden+lm_head, not logits-in); training-only | Liger `LigerFusedLinearCrossEntropy` |
