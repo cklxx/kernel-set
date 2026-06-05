@@ -47,7 +47,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -424,7 +423,7 @@ HEADER = """\
 def render(sections: dict, registry: dict) -> str:
     out = [HEADER.rstrip("\n"), ""]
     out.append("schema_version: 2")
-    out.append(f"generated: '{date.today().isoformat()}'")
+    out.append(f"generated: '{registry.get('generated', '2026-06-05')}'")
     out.append(f"generated_for: {registry.get('generated_for', '2026-H1')}")
     out.append("source_registry: providers/registry.json")
     out.append("catalog_doc: docs/OPERATOR_CATALOG.md")

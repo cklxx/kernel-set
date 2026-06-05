@@ -1158,8 +1158,8 @@ gemm_quant:
   lib: vllm (Marlin / GPTQ-Marlin)
   pip_install: pip install vllm
   build_from_source: null
-  import_check: from vllm import _custom_ops as ops; ops.gptq_marlin_gemm
-  python_call: from vllm import _custom_ops as ops; ops.gptq_marlin_gemm(a, c, b_q_weight, b_bias, b_scales, global_scale, b_zeros, g_idx, perm, workspace, b_q_type, size_m, size_n, size_k, is_k_full=True, use_atomic_add=False, use_fp32_reduce=True, is_zp_float=False). Weights must be pre-repacked via ops.gptq_marlin_repack. b_q_type is a ScalarType (e.g. scalar_types.uint4b8).
+  import_check: from vllm import _custom_ops as ops; ops.marlin_gemm; ops.gptq_marlin_repack; ops.awq_marlin_repack
+  python_call: from vllm import _custom_ops as ops; ops.marlin_gemm(a, c_or_none, b_q_weight, b_bias_or_none, b_scales, a_scales_or_none, global_scale_or_none, b_zeros_or_none, g_idx_or_none, perm_or_none, workspace, b_q_type, size_m, size_n, size_k, is_k_full=True, use_atomic_add=False, use_fp32_reduce=True, is_zp_float=False). Weights must be pre-repacked via ops.gptq_marlin_repack / ops.awq_marlin_repack. b_q_type is a ScalarType (e.g. scalar_types.uint4b8 for GPTQ or scalar_types.uint4 for AWQ).
   maps_to:
   - ks_gemm_w4a16
   ks_op: w4a16_gemm
@@ -1185,7 +1185,7 @@ gemm_quant:
   pip_install: pip install vllm
   build_from_source: null
   import_check: from vllm import _custom_ops as ops; ops.awq_gemm
-  python_call: 'AWQ weights are repacked to Marlin layout (ops.awq_marlin_repack) then served via ops.gptq_marlin_gemm. Raw kernel: from vllm import _custom_ops as ops; ops.awq_gemm(input, qweight, scales, qzeros, split_k_iters).'
+  python_call: 'AWQ weights are repacked to Marlin layout (ops.awq_marlin_repack) then served via ops.marlin_gemm with b_q_type=scalar_types.uint4 and b_zeros. Raw kernel: from vllm import _custom_ops as ops; ops.awq_gemm(input, qweight, scales, qzeros, split_k_iters).'
   maps_to:
   - ks_gemm_w4a16
   ks_op: awq_gemm
