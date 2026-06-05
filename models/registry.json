@@ -16257,6 +16257,2267 @@
         "Bamba-9B-v2",
         "Bamba-9B-v1"
       ]
+    },
+    {
+      "id": "intern-s1-pro",
+      "kind": "model",
+      "family": "InternLM (Shanghai AI Lab)",
+      "arch": {
+        "hidden": 0,
+        "n_layers": 0,
+        "n_heads": 0,
+        "n_kv_heads": 0,
+        "head_dim": 0,
+        "vocab": 0,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 0,
+          "n_experts": 512,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "1t-total",
+          "22b-active",
+          "qwen3-moe-style",
+          "vision-encoder",
+          "scientific-multimodal",
+          "dims-unpublished"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "1T total / 22B active multimodal scientific MoE, released 2026-02-04. 512 experts top-8 confirmed; text backbone is described as Qwen3-MoE-style, so it routes through standard GQA attention plus softmax MoE grouped-GEMM. InternViT vision encoder and multimodal/scientific pretraining are outside the text C-ABI map. Per-layer hidden/heads/vocab/config are not public in the source, so dims are 0. Source: https://arxiv.org/abs/2603.25040",
+      "examples": [
+        "Intern-S1-Pro"
+      ]
+    },
+    {
+      "id": "longcat-flash-lite",
+      "kind": "model",
+      "family": "Meituan LongCat",
+      "arch": {
+        "hidden": 3072,
+        "n_layers": 14,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 128,
+        "vocab": 131072,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": "yarn",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 1024,
+          "n_experts": 256,
+          "top_k": 12,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "mla",
+          "kv-lora-rank-512",
+          "q-lora-rank-1536",
+          "zero-experts-128",
+          "ngram-embedding",
+          "327k-context",
+          "68.5b-total",
+          "2.9-4.5b-active"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "LongCat Flash Lite (model_type=longcat_flash_ngram), released 2026. MLA with kv_lora_rank=512, q_lora_rank=1536, qk_nope=128, qk_rope=64, v_head_dim=128 -> ks_mla_decode. MoE has 256 routed experts top-12 plus 128 zero-computation identity experts; routed experts use standard grouped GEMM, while the zero-expert shortcut is noted but has no separate ABI kernel. N-gram embedding/cache is also noted without inventing a kernel. Source: https://huggingface.co/meituan-longcat/LongCat-Flash-Lite/raw/main/config.json",
+      "examples": [
+        "LongCat-Flash-Lite"
+      ]
+    },
+    {
+      "id": "granite-4.0-h-1b",
+      "kind": "model",
+      "family": "Granite 4.0 Nano (IBM)",
+      "arch": {
+        "hidden": 1536,
+        "n_layers": 40,
+        "n_heads": 12,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 100352,
+        "attention": "GQA",
+        "rope": null,
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 4096
+        },
+        "quant": [
+          "bf16",
+          "w4a16"
+        ],
+        "extras": [
+          "hybrid-mamba2",
+          "36-mamba-4-attn",
+          "ssm",
+          "conv1d",
+          "nope",
+          "mamba-d-state-128",
+          "mamba-heads-48",
+          "chunk-size-256",
+          "mup-scaling",
+          "tie-word-embeddings",
+          "131k-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "1B Granite 4.0 Nano edge model, released 2025-10-28. 40 layers with 36 Mamba-2 SSM layers and 4 NoPE GQA attention layers; dense SwiGLU FFN. SSM path routes to ks_selective_scan / ks_selective_scan_update and ks_causal_conv1d; sparse attention remains standard paged attention with RoPE metadata set to null because position_embedding_type is NoPE. Source: https://huggingface.co/ibm-granite/granite-4.0-h-1b/raw/main/config.json",
+      "examples": [
+        "granite-4.0-h-1b"
+      ]
+    },
+    {
+      "id": "granite-4.0-h-350m",
+      "kind": "model",
+      "family": "Granite 4.0 Nano (IBM)",
+      "arch": {
+        "hidden": 768,
+        "n_layers": 32,
+        "n_heads": 12,
+        "n_kv_heads": 4,
+        "head_dim": 64,
+        "vocab": 100352,
+        "attention": "GQA",
+        "rope": null,
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 2048
+        },
+        "quant": [
+          "bf16",
+          "w4a16"
+        ],
+        "extras": [
+          "hybrid-mamba2",
+          "28-mamba-4-attn",
+          "ssm",
+          "conv1d",
+          "nope",
+          "mamba-d-state-128",
+          "mamba-heads-48",
+          "mamba-d-head-32",
+          "chunk-size-256",
+          "mup-scaling",
+          "32768-context",
+          "edge"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "350M Granite 4.0 Nano edge model, released 2025-10-28. 32 layers with 28 Mamba-2 SSM layers and 4 NoPE GQA attention layers; dense SwiGLU FFN. SSM path routes to ks_selective_scan / ks_selective_scan_update and ks_causal_conv1d. Source: https://huggingface.co/ibm-granite/granite-4.0-h-350m/raw/main/config.json",
+      "examples": [
+        "granite-4.0-h-350m"
+      ]
+    },
+    {
+      "id": "falcon-mamba-7b",
+      "kind": "model",
+      "family": "Falcon Mamba",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 64,
+        "n_heads": 0,
+        "n_kv_heads": 0,
+        "head_dim": 0,
+        "vocab": 65024,
+        "attention": "none",
+        "rope": null,
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "dense",
+          "inter": 8192
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "pure-mamba1",
+          "ssm",
+          "conv1d",
+          "no-attention",
+          "no-kv-cache",
+          "constant-memory",
+          "state-size-16",
+          "d-conv-4",
+          "dt-rank-256",
+          "inner-rmsnorm"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "Falcon Mamba 7B, released 2024-08. Pure Mamba-1 selective SSM with no attention layers, no RoPE, no KV cache, and constant-memory generation; attention prefill/decode/rope ops are intentionally omitted. SSM path routes to ks_selective_scan / ks_selective_scan_update plus ks_causal_conv1d. Source: https://huggingface.co/tiiuae/falcon-mamba-7b/raw/main/config.json",
+      "examples": [
+        "falcon-mamba-7b"
+      ]
+    },
+    {
+      "id": "hy-mt2-30b-a3b",
+      "kind": "model",
+      "family": "Tencent Hunyuan",
+      "arch": {
+        "hidden": 2048,
+        "n_layers": 48,
+        "n_heads": 32,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 120832,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 11158840,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 768,
+          "n_experts": 128,
+          "top_k": 8,
+          "n_shared": 1,
+          "gating": "sigmoid_group"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "translation",
+          "qk-norm",
+          "sigmoid-router",
+          "expert-bias",
+          "aux-loss-free",
+          "262k-context",
+          "30b-total",
+          "3b-active"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_sigmoid_group_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "HY-MT2 30B-A3B translation model (HYV3ForCausalLM), released 2026-05-21. GQA with QK-Norm; MoE has 128 routed experts top-8 plus 1 shared expert, sigmoid router with learned expert bias and routed_scaling=2.826, so it uses the sigmoid-group gate ABI and grouped GEMM. Source: https://huggingface.co/tencent/Hy-MT2-30B-A3B/raw/main/config.json",
+      "examples": [
+        "Hy-MT2-30B-A3B"
+      ]
+    },
+    {
+      "id": "jamba2-3b",
+      "kind": "model",
+      "family": "AI21 Jamba2",
+      "arch": {
+        "hidden": 2560,
+        "n_layers": 28,
+        "n_heads": 20,
+        "n_kv_heads": 1,
+        "head_dim": 128,
+        "vocab": 65536,
+        "attention": "MQA",
+        "rope": null,
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 8192
+        },
+        "quant": [
+          "bf16",
+          "fp8"
+        ],
+        "extras": [
+          "hybrid-ssm-transformer",
+          "mamba1",
+          "ssm",
+          "conv1d",
+          "26-mamba-2-attn",
+          "mqa-attention",
+          "dense-ffn",
+          "262k-context",
+          "on-device"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "AI21 Jamba2 3B, released 2026-01-08. Dense hybrid SSM-Transformer: attn_layer_period=14/offset=7 gives 2 MQA attention layers and 26 Mamba-1 layers. No MoE. SSM path routes to ks_selective_scan / ks_selective_scan_update and ks_causal_conv1d; attention layers use standard paged attention. Source: https://huggingface.co/ai21labs/AI21-Jamba2-3B",
+      "examples": [
+        "AI21-Jamba2-3B"
+      ]
+    },
+    {
+      "id": "rnd1-30b-a3b",
+      "kind": "model",
+      "family": "RND1 (Radical Numerics Diffusion)",
+      "arch": {
+        "hidden": 2048,
+        "n_layers": 48,
+        "n_heads": 32,
+        "n_kv_heads": 4,
+        "head_dim": 128,
+        "vocab": 151936,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 768,
+          "n_experts": 128,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "diffusion-lm",
+          "non-causal-attention",
+          "iterative-denoising",
+          "no-kv-cache",
+          "qwen3-conversion",
+          "256-diffusion-steps",
+          "30b-total",
+          "3b-active"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "RND1-Base-0910, released 2025-10-09. Diffusion MoE converted from a Qwen3 AR backbone: bidirectional non-causal GQA attention and iterative denoising rather than autoregressive decode. Attention ops remain mapped to softmax attention as the mixer; decode requires a diffusion sampling loop outside the current ABI. MoE routes through softmax top-k plus grouped GEMM. Source: https://huggingface.co/radicalnumerics/RND1-Base-0910/raw/main/config.json",
+      "examples": [
+        "RND1-Base-0910"
+      ]
+    },
+    {
+      "id": "longcat-flash-omni-560b-a27b",
+      "kind": "model",
+      "family": "Meituan LongCat",
+      "arch": {
+        "hidden": 6144,
+        "n_layers": 28,
+        "n_heads": 64,
+        "n_kv_heads": 64,
+        "head_dim": 128,
+        "vocab": 131072,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 512,
+          "top_k": 12,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w4a16"
+        ],
+        "extras": [
+          "mla",
+          "kv-lora-rank-512",
+          "q-lora-rank-1536",
+          "zero-experts-256",
+          "omnimodal",
+          "audio",
+          "vision",
+          "560b-total",
+          "27b-active",
+          "128k-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "LongCat Flash Omni 560B-A27B, released 2026. Text backbone uses MLA plus 512 routed experts top-12 and 256 zero-computation identity experts; routed experts use grouped GEMM while the zero-expert shortcut is noted without a separate ABI. Omni-modal audio/vision encoders are outside the text C-ABI map. Source: https://huggingface.co/meituan-longcat/LongCat-Flash-Omni/raw/main/config.json",
+      "examples": [
+        "LongCat-Flash-Omni"
+      ]
+    },
+    {
+      "id": "cola-dlm",
+      "kind": "model",
+      "family": "ByteDance Seed",
+      "arch": {
+        "hidden": 0,
+        "n_layers": 0,
+        "n_heads": 0,
+        "n_kv_heads": 0,
+        "head_dim": 0,
+        "vocab": 100278,
+        "attention": "MHA",
+        "rope": null,
+        "norm": "unknown",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "dense",
+          "inter": 0
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "diffusion-lm",
+          "continuous-latent",
+          "flow-matching",
+          "text-vae",
+          "non-autoregressive",
+          "mutable-kv-cache",
+          "dims-unpublished"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Cola-DLM, released 2026-05. Continuous-latent diffusion language model with ColaDiT prior and ColaTextVAE; non-autoregressive flow-matching generation over continuous text latents. The mixer is still transformer softmax attention, so attention ops remain mapped, but decode requires a diffusion/Text-VAE loop outside the AR decode ABI. Hidden/layer/head/context details are not disclosed. Source: https://huggingface.co/ByteDance-Seed/Cola-DLM",
+      "examples": [
+        "Cola-DLM"
+      ]
+    },
+    {
+      "id": "zamba2-2.7b",
+      "kind": "model",
+      "family": "Zamba2 (Zyphra)",
+      "arch": {
+        "hidden": 2560,
+        "n_layers": 54,
+        "n_heads": 32,
+        "n_kv_heads": 32,
+        "head_dim": 160,
+        "vocab": 32000,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "GeLU",
+          "inter": 10240
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "hybrid-mamba2",
+          "ssm",
+          "conv1d",
+          "shared-attention-blocks-abab",
+          "lora-projectors",
+          "adapter-rank-128",
+          "dense-ffn",
+          "mamba-d-state-64",
+          "chunk-size-256"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_gelu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "Zamba2 2.7B, released 2024-10. Mamba-2 backbone with two weight-shared global attention blocks reused across depth and LoRA adapters per invocation. Shared attention uses MHA and RoPE; Mamba-2 blocks route to ks_selective_scan / ks_selective_scan_update plus ks_causal_conv1d. MLP is GeLU, so the activation maps to ks_gelu. Source: https://huggingface.co/Zyphra/Zamba2-2.7B/raw/main/config.json",
+      "examples": [
+        "Zamba2-2.7B"
+      ]
+    },
+    {
+      "id": "llada-moe-7b-a1b",
+      "kind": "model",
+      "family": "LLaDA-MoE (Inclusion AI / Ant Group)",
+      "arch": {
+        "hidden": 2048,
+        "n_layers": 16,
+        "n_heads": 16,
+        "n_kv_heads": 16,
+        "head_dim": 128,
+        "vocab": 157184,
+        "attention": "MHA",
+        "rope": {
+          "style": "neox",
+          "theta": 50000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 1024,
+          "n_experts": 64,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "diffusion-lm",
+          "masked-diffusion",
+          "bidirectional-attention",
+          "no-kv-cache",
+          "qk-layernorm",
+          "7b-total",
+          "1.4b-active",
+          "8192-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "LLaDA-MoE 7B-A1B, released 2025-09. From-scratch MoE diffusion LM with full bidirectional non-causal MHA and iterative masked-token denoising, not incremental AR decode. Attention ops remain mapped to softmax attention as the mixer; sampling/decode needs a diffusion scheduler outside the ABI. MoE uses 64 experts top-8 with softmax router and grouped GEMM. Source: https://huggingface.co/inclusionAI/LLaDA-MoE-7B-A1B-Base/raw/main/config.json",
+      "examples": [
+        "LLaDA-MoE-7B-A1B-Base"
+      ]
+    },
+    {
+      "id": "jamba2-mini",
+      "kind": "model",
+      "family": "AI21 Jamba2",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 32,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 65536,
+        "attention": "GQA",
+        "rope": null,
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 14336,
+          "n_experts": 16,
+          "top_k": 2,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8",
+          "w8a8"
+        ],
+        "extras": [
+          "hybrid-ssm-transformer",
+          "mamba1",
+          "ssm",
+          "conv1d",
+          "28-mamba-4-attn",
+          "moe-every-other-layer",
+          "attention-mamba-1to7",
+          "52b-total",
+          "12b-active",
+          "262k-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "AI21 Jamba2 Mini, released 2026-01-08. Hybrid SSM-Transformer MoE: attn_layer_period=8/offset=4 gives 4 GQA attention layers and 28 Mamba-1 layers; MoE every other layer with 16 experts top-2. SSM routes to ks_selective_scan / ks_selective_scan_update and ks_causal_conv1d; MoE routes to softmax gate plus grouped GEMM. Source: https://www.ai21.com/blog/introducing-jamba2/",
+      "examples": [
+        "Jamba2-Mini"
+      ]
+    },
+    {
+      "id": "zaya1-8b",
+      "kind": "model",
+      "family": "Zyphra ZAYA1",
+      "arch": {
+        "hidden": 2048,
+        "n_layers": 120,
+        "n_heads": 16,
+        "n_kv_heads": 2,
+        "head_dim": 128,
+        "vocab": 262272,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 4096,
+          "n_experts": 0,
+          "top_k": 0,
+          "n_shared": 0,
+          "gating": "mlp-router"
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "compressed-convolutional-attention",
+          "cca",
+          "kv-compression-8x",
+          "mlp-router",
+          "pid-bias-balance",
+          "learned-residual-scaling",
+          "heterogeneous-layers",
+          "8.4b-total",
+          "760m-active",
+          "expert-count-unpublished"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "ZAYA1 8B, released 2026-05-06. Custom Compressed Convolutional Attention reduces KV cache about 8x; current registry maps it to the standard GQA paged-attention fallback because no CCA ABI exists. Sparse MoE uses an MLP-based router with PID bias balancing; exact expert count/top-k are not surfaced in the public config, so fields are 0 and the ops map uses the nearest real MoE ABI without inventing a router kernel. Source: https://www.zyphra.com/post/zaya1-8b",
+      "examples": [
+        "ZAYA1-base"
+      ]
+    },
+    {
+      "id": "mimo-v2.5-310b-a15b",
+      "kind": "model",
+      "family": "Xiaomi MiMo",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 48,
+        "n_heads": 64,
+        "n_kv_heads": 4,
+        "head_dim": 192,
+        "vocab": 152576,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 256,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "omnimodal",
+          "hybrid-swa-full-attention",
+          "swa-window-128",
+          "fp8-moe",
+          "mtp-3",
+          "vision-encoder",
+          "audio-encoder",
+          "311b-total",
+          "15b-active",
+          "1m-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MiMo V2.5 310B-A15B omnimodal MoE, released 2026-04-23. Uses the MiMo hybrid sliding-window/full-attention recipe and FP8 MoE; hidden/head fields follow the V2-Flash family defaults where the public card omits exact config. Text route uses standard attention fallback and grouped-GEMM MoE; ViT/audio encoders and MTP modules are noted but not separate ABI ops. Source: https://huggingface.co/XiaomiMiMo/MiMo-V2.5",
+      "examples": [
+        "MiMo-V2.5-310B-A15B"
+      ]
+    },
+    {
+      "id": "mimo-v2.5-pro",
+      "kind": "model",
+      "family": "Xiaomi MiMo",
+      "arch": {
+        "hidden": 6144,
+        "n_layers": 70,
+        "n_heads": 128,
+        "n_kv_heads": 8,
+        "head_dim": 192,
+        "vocab": 152576,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000000,
+          "scaling": "partial",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 384,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "hybrid-swa-global-attention",
+          "swa-window-128",
+          "attention-sink-bias",
+          "native-fp8",
+          "mtp-3",
+          "1.02t-total",
+          "42b-active",
+          "1m-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MiMo V2.5 Pro, released 2026-04-22. 70-layer hybrid GQA with interleaved SWA window 128 and global attention, attention-sink bias, native FP8 block quantization, and MoE 384 experts top-8. SWA/global interleave uses the standard paged-attention fallback until a SWA-specific ABI exists; MoE uses softmax gate plus grouped GEMM. Source: https://huggingface.co/XiaomiMiMo/MiMo-V2.5-Pro/raw/main/config.json",
+      "examples": [
+        "MiMo-V2.5-Pro"
+      ]
+    },
+    {
+      "id": "tiny-aya",
+      "kind": "model",
+      "family": "Tiny Aya (Cohere Labs)",
+      "arch": {
+        "hidden": 0,
+        "n_layers": 36,
+        "n_heads": 0,
+        "n_kv_heads": 0,
+        "head_dim": 0,
+        "vocab": 262144,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 10000,
+          "scaling": "swa-only-nope-global",
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre-parallel",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 0
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "parallel-attention-ffn",
+          "swa-global-3to1",
+          "swa-window-4096",
+          "nope-global-layers",
+          "no-qk-norm",
+          "multilingual",
+          "3.35b-total",
+          "on-device",
+          "dims-gated"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "Tiny Aya, released 2026-02-17. Dense multilingual on-device model with parallel attention+FFN blocks and 3:1 sliding-window/global attention; global layers use NoPE while SWA layers use RoPE. Config is gated, so hidden/head/intermediate dims are 0 and norm is inferred from the Command-A-derived family. Standard attention/MLP ABI route is used; a fused parallel-block kernel is not invented. Source: https://cohere.com/blog/cohere-labs-tiny-aya",
+      "examples": [
+        "Tiny-Aya"
+      ]
+    },
+    {
+      "id": "mimo-v2-flash-310b-a3b",
+      "kind": "model",
+      "family": "Xiaomi MiMo",
+      "arch": {
+        "hidden": 4096,
+        "n_layers": 48,
+        "n_heads": 64,
+        "n_kv_heads": 4,
+        "head_dim": 192,
+        "vocab": 152576,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 256,
+          "top_k": 8,
+          "n_shared": 0,
+          "gating": "softmax"
+        },
+        "quant": [
+          "fp8",
+          "bf16"
+        ],
+        "extras": [
+          "hybrid-swa-full-attention",
+          "swa-window-128",
+          "fp8-dynamic",
+          "mtp",
+          "310b-total",
+          "3b-active",
+          "262k-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MiMo V2 Flash 310B-A3B, released 2026-04-20. Hybrid sliding-window/full GQA with sliding_window=128 and FP8 dynamic MoE, 256 routed experts top-8. SWA-specific scheduling is noted but maps to the current paged-attention fallback; MoE uses grouped GEMM. Source: https://huggingface.co/XiaomiMiMo/MiMo-V2-Flash/raw/main/config.json",
+      "examples": [
+        "MiMo-V2-Flash-310B-A3B"
+      ]
+    },
+    {
+      "id": "minicpm5-1b",
+      "kind": "model",
+      "family": "OpenBMB MiniCPM",
+      "arch": {
+        "hidden": 1536,
+        "n_layers": 24,
+        "n_heads": 16,
+        "n_kv_heads": 2,
+        "head_dim": 128,
+        "vocab": 130560,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 5000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 4608
+        },
+        "quant": [
+          "bf16",
+          "w4a16"
+        ],
+        "extras": [
+          "llama-architecture",
+          "on-device",
+          "hybrid-reasoning",
+          "tool-calling",
+          "mcp",
+          "131k-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        }
+      },
+      "notes": "MiniCPM5 1B, released 2026. Standard dense Llama-style GQA architecture with built-in hybrid-reasoning controls, native tool calling, and MCP. No special kernel route beyond dense attention/GEMM defaults. Source: https://huggingface.co/openbmb/MiniCPM5-1B/raw/main/config.json",
+      "examples": [
+        "MiniCPM5-1B"
+      ]
+    },
+    {
+      "id": "apriel-h1-15b-thinker",
+      "kind": "model",
+      "family": "Apriel-H1 (ServiceNow)",
+      "arch": {
+        "hidden": 5120,
+        "n_layers": 50,
+        "n_heads": 32,
+        "n_kv_heads": 8,
+        "head_dim": 128,
+        "vocab": 131072,
+        "attention": "GQA",
+        "rope": {
+          "style": "neox",
+          "theta": 1000000,
+          "scaling": null,
+          "interleaved": 0
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "SwiGLU",
+          "inter": 14336
+        },
+        "quant": [
+          "bf16"
+        ],
+        "extras": [
+          "hybrid-mamba2",
+          "ssm",
+          "conv1d",
+          "hybrid-block-layout",
+          "m2-and-transformer-layers",
+          "d-inner-4096",
+          "d-state-16",
+          "d-conv-4",
+          "dt-rank-320",
+          "chunk-size-128",
+          "65536-context"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_paged_attn_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": null,
+        "moe_grouped_gemm": null,
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
+        }
+      },
+      "notes": "Apriel-H1 15B Thinker SFT, released 2025-11-04. Hybrid per-layer routing with GQA transformer layers and Mamba-2 SSM layers; distillation variants replace attention layers with Mamba-2. SSM layers route to ks_selective_scan / ks_selective_scan_update and ks_causal_conv1d; GQA layers use paged attention. Source: https://huggingface.co/ServiceNow-AI/Apriel-H1-15b-Thinker-SFT/raw/main/config.json",
+      "examples": [
+        "Apriel-H1-15b-Thinker-SFT"
+      ]
+    },
+    {
+      "id": "ling-2.5-1t",
+      "kind": "model",
+      "family": "Ant Ling (inclusionAI)",
+      "arch": {
+        "hidden": 8192,
+        "n_layers": 80,
+        "n_heads": 64,
+        "n_kv_heads": 64,
+        "head_dim": 128,
+        "vocab": 157184,
+        "attention": "MLA",
+        "rope": {
+          "style": "neox",
+          "theta": 6000000,
+          "scaling": "partial",
+          "interleaved": 1
+        },
+        "norm": "rmsnorm",
+        "norm_positions": "pre",
+        "mlp": {
+          "type": "MoE",
+          "inter": 2048,
+          "n_experts": 256,
+          "top_k": 8,
+          "n_shared": 1,
+          "gating": "softmax"
+        },
+        "quant": [
+          "bf16",
+          "fp8"
+        ],
+        "extras": [
+          "hybrid-linear-attention",
+          "lightning-linear",
+          "mla",
+          "linear-attn",
+          "lightning-mla-7to1",
+          "qk-norm",
+          "partial-rope",
+          "yarn-1m",
+          "1t-total",
+          "63b-active"
+        ]
+      },
+      "ops": {
+        "embedding": {
+          "fn": "ks_embedding_lookup",
+          "dtype": "model"
+        },
+        "attn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "rope": {
+          "fn": "ks_rope_gather",
+          "dtype": "model"
+        },
+        "attn_prefill": {
+          "fn": "ks_flash_attn_varlen",
+          "dtype": "model"
+        },
+        "attn_decode": {
+          "fn": "ks_mla_decode",
+          "dtype": "model"
+        },
+        "qkv_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "o_proj": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "ffn_norm": {
+          "fn": "ks_rms_norm_residual",
+          "dtype": "model"
+        },
+        "mlp_gate_up": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "mlp_act": {
+          "fn": "ks_swiglu",
+          "dtype": "model"
+        },
+        "mlp_down": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "moe_gate": {
+          "fn": "ks_moe_gate_softmax_topk",
+          "dtype": "f32"
+        },
+        "moe_grouped_gemm": {
+          "fn": "ks_moe_grouped_gemm",
+          "dtype": "model"
+        },
+        "lm_head": {
+          "fn": "ks_gemm",
+          "dtype": "model"
+        },
+        "sampling": {
+          "fn": "ks_sample",
+          "dtype": "f32"
+        },
+        "linear_attn": {
+          "fn": "ks_gated_linear_attn",
+          "dtype": "model"
+        }
+      },
+      "notes": "Ling 2.5 1T, released 2026-02-16. Bailing hybrid model with 1:7 ratio of MLA to Lightning Linear Attention layers plus sparse MoE 256 experts top-8 and 1 shared expert. MLA routes to ks_mla_decode; Lightning layers route to ks_gated_linear_attn; MoE uses softmax gate plus grouped GEMM. Source: https://huggingface.co/inclusionAI/Ling-2.5-1T/raw/main/config.json",
+      "examples": [
+        "Ling-2.5-1T"
+      ]
     }
   ]
 }

@@ -65,15 +65,10 @@ def cmd_list(args):
             "models": [{"id": m["id"], "family": m["family"]} for m in mods],
         }, indent=2))
         return 0
-    print(f"kernel-set models — {len(reg['models'])} entries "
-          f"({len(fams)} families, {len(mods)} concrete)\n")
-    print("FAMILIES")
-    for m in fams:
-        ex = ", ".join(m["examples"][:3])
-        print(f"  {m['id']:20s} {m['family']:30s} {ex}")
-    print("\nCONCRETE MODELS")
-    for m in mods:
-        print(f"  {m['id']:24s} ({m['family']})")
+    # One registry entry per line keeps `ksctl list | wc -l` equal to the live
+    # registry size. Use `--json` for structured family/model grouping.
+    for m in reg["models"]:
+        print(f"{m['id']:28s} {m['kind']:6s} {m['family']}")
     return 0
 
 
