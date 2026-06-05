@@ -54,10 +54,20 @@
 Every entry point returns `ks_status_t`, takes device pointers + a `ks_stream_t`.
 See [`CONTRACT.md`](CONTRACT.md).
 
+## Install
+
+```bash
+# Precompiled wheel — bundles a fat libkernel_set.so (SASS for sm75/80/86/89/90/100/120,
+# static cudart). Linux x86_64, glibc ≥2.35, NVIDIA driver (CUDA 12.x). torch optional.
+pip install kernel-set            # https://pypi.org/project/kernel-set/
+```
+
+Other platforms / archs (T4..Blackwell or HIP) build from source — see below.
+
 ## Quickstart
 
 ```bash
-# build (CUDA 12.x, CMake ≥3.24) — globs kernels/src/**/*.cu, no per-kernel edits
+# build from source (CUDA 12.x, CMake ≥3.24) — globs kernels/src/**/*.cu, no per-kernel edits
 cmake -B build -DCMAKE_CUDA_ARCHITECTURES=89 && cmake --build build -j   # L4; 80=A100, 90=H100
 export KERNEL_SET_LIB=$PWD/build/libkernel_set.so
 
