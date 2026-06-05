@@ -7,6 +7,8 @@
     "rope",
     "attn_prefill",
     "attn_decode",
+    "conv1d",
+    "ssm",
     "qkv_proj",
     "o_proj",
     "ffn_norm",
@@ -41,7 +43,9 @@
     "sampling": "token sampling / decode head",
     "attn_backward": "attention backward (training)",
     "cross_entropy": "fused (linear) cross-entropy loss (training)",
-    "optimizer": "fused optimizer step (training)"
+    "optimizer": "fused optimizer step (training)",
+    "conv1d": "short causal depthwise conv1d mixer (Mamba/LFM2)",
+    "ssm": "selective state-space scan token-mixer (Mamba selective_scan)"
   },
   "models": [
     {
@@ -8806,6 +8810,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "3B hybrid Mamba-2/transformer (9:1), 128K context. The ~1-in-10 self-attention layers (GQA 8 kv) map to ks_paged_attn_decode; the Mamba-2 majority needs ks_ssm_scan (Wave-2, unmapped) and is NOT covered by the listed decode kernel. Dense SwiGLU FFN (no MoE). Mamba: d_state 256, d_conv 4, expand 2, 128 heads. model_type=granitemoehybrid. Config-verified. (superseded by granite-4.1-30b)",
@@ -8911,6 +8924,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "32B total / 9B active hybrid MoE, 128K validated. 4 attention (GQA 8 kv, NoPE) layers -> ks_paged_attn_decode; 36 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 72-expert top-10 + shared MoE -> ks_moe_grouped_gemm. NoPE (no positional encoding) -> rope op is a no-op for attn layers. Apache 2.0. Config-verified. (superseded by granite-4.1-30b)",
@@ -9015,6 +9037,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "7B total / 1B active hybrid MoE, 128K validated. 4 attention (GQA 4 kv, NoPE) layers -> ks_paged_attn_decode; 36 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 64-expert top-6 + shared MoE; expert hidden 512. NoPE. Apache 2.0. Config-verified. (superseded by granite-4.1-30b)",
@@ -9113,6 +9144,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "12B dense hybrid, 128K context. 62 layers = 6 self-attn (GQA 8 kv) + 28 Mamba-2 + 28 FFN. Attention layers -> ks_paged_attn_decode; the 28 Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). SwiGLU FFN (hidden 20480). Mamba: 8 groups, state 128, head_dim 64. Pretrained 20T tokens FP8. Config-verified.",
@@ -9209,6 +9249,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "9B dense hybrid Mamba-Transformer reasoning model, Minitron-compressed from 12B-v2-Base, 128K context. Attention path -> ks_paged_attn_decode; most attention replaced by Mamba-2 -> needs ks_ssm_scan (Wave-2, unmapped). 9B per-layer dims not separately published -> set 0 (see 12B-base for full dims). Medium confidence.",
@@ -9314,6 +9363,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "30B total / 3B active hybrid MoE, 128K default (up to 1M). hybrid_override_pattern interleaves Mamba-2 / MoE / attention anchors (~17 attn / 17 mamba / 18 moe). GQA(2 kv) anchor-attention -> ks_paged_attn_decode; Mamba-2 layers need ks_ssm_scan (Wave-2, unmapped). 128-expert top-6 + 1 shared MoE. relu2 (squared ReLU) FFN activation -> modeled via ks_swiglu placeholder (Wave-2: ks_relu2 unmapped). NoPE. First Nemotron 3. Config-verified.",
@@ -9421,6 +9479,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "120.6B total / 12.7B active, 1M context. 88-layer stack interleaves LatentMoE + Mamba-2 with a few self-attention global anchors. Sparse GQA(2 kv) anchors -> ks_paged_attn_decode; Mamba-2 needs ks_ssm_scan (Wave-2, unmapped). LatentMoE (512 experts top-22, MoE latent size 1024, shared) -> ks_moe_grouped_gemm + softmax gate (the latent down/up projection is an extra GEMM, Wave-2 ks_latent_moe unmapped). NoPE; NVFP4 pretrained (-> fp8/mxfp4 path); 2 shared-weight MTP layers. 25T tokens. Config-verified.",
@@ -9526,6 +9593,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "~550B total / ~55B active, 1M context (family). Largest Nemotron 3 (Computex 2026). Hybrid Mamba-2 majority + sparse global attention + LatentMoE, NVFP4. Sparse attention -> ks_paged_attn_decode; Mamba-2 needs ks_ssm_scan (Wave-2, unmapped); LatentMoE -> ks_moe_grouped_gemm. Detailed layer/head/expert config not yet in a parsed technical report -> dims set 0, medium confidence.",
@@ -9621,6 +9697,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "56B dense hybrid (no MoE), 8K base context. ~8% of layers are self-attention (GQA 8 kv) evenly dispersed -> ks_paged_attn_decode; the rest alternate Mamba-2 (needs ks_ssm_scan, Wave-2 unmapped) and FFN (squared-ReLU, modeled via ks_swiglu placeholder). Precursor to Nemotron Nano 2 / Nemotron 3. Layer count not enumerated here -> 0. arXiv 2504.03624. Config-verified family-level.",
@@ -9722,6 +9807,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "33.6B hybrid-head, 256K context. Attention (GQA 4 kv) and Mamba-2 (SSM) branches run in PARALLEL per block and are concatenated. The attention branch -> ks_paged_attn_decode; the parallel Mamba-2 branch needs ks_ssm_scan (Wave-2, unmapped) plus a concat/fuse step. Dense SwiGLU (no MoE). RoPE theta=1e11. Mamba: 32 heads, d_state 256, 2 groups. ~18T tokens. arXiv 2507.22448. Config-verified.",
@@ -9825,6 +9919,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "398B total / 94B active SSM-Transformer hybrid, 256K context. 4 blocks of 8 layers, 1:7 attention:Mamba ratio, MoE (16 experts top-2) every other layer. The 1-in-8 attention layers -> ks_paged_attn_decode; the Mamba-1 (SSM/conv1d) majority needs ks_ssm_scan (Wave-2, unmapped). MoE -> ks_moe_grouped_gemm. ExpertsInt8. config.json gated on HF -> dims set 0, medium confidence. Jamba Mini 1.7 is the smaller sibling.",
@@ -10247,6 +10350,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "7B hybrid: Mamba-2 backbone interleaved with TWO weight-shared attention blocks alternated ABAB (LoRA projectors per block, embedding concat into attention input). The shared attention blocks -> ks_paged_attn_decode; the Mamba-2 backbone needs ks_ssm_scan (Wave-2, unmapped). Dense GLU/SwiGLU (no MoE). config.json gated -> dims set 0, medium confidence.",
@@ -10442,6 +10554,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "1.5B hybrid-HEAD: standard attention heads and Mamba SSM heads run in PARALLEL within the same layer (>50% of compute is SSM). The attention heads (mostly sliding-window + 3 full layers, cross-layer KV sharing) -> ks_paged_attn_decode; the parallel Mamba SSM heads need ks_ssm_scan (Wave-2, unmapped). 128 learnable meta-tokens prepended. Dense FFN. arXiv 2411.13676. Per-layer dims partial -> set 0, high-confidence on the architecture.",
@@ -10490,18 +10611,6 @@
           "fn": "ks_rms_norm_residual",
           "dtype": "model"
         },
-        "rope": {
-          "fn": "ks_rope_gather",
-          "dtype": "model"
-        },
-        "attn_prefill": {
-          "fn": "ks_flash_attn_varlen",
-          "dtype": "model"
-        },
-        "attn_decode": {
-          "fn": "ks_paged_attn_decode",
-          "dtype": "model"
-        },
         "qkv_proj": {
           "fn": "ks_gemm",
           "dtype": "model"
@@ -10535,6 +10644,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "7B pure Mamba-2 state-space code model \u2014 NO attention layers at all. The whole sequence mixer is Mamba-2 selective scan -> needs ks_ssm_scan (Wave-2, unmapped); attn_* / rope / qkv / o_proj ops are placeholders and NOT load-bearing. Linear-time inference, constant memory, 256K tested. Apache 2.0. Dims not enumerated here -> 0. Medium confidence.",
@@ -12189,6 +12307,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "7B reasoning model (AIME 2025 83.1%), 256K context. Hybrid Transformer + Mamba-2: the attention branch -> ks_paged_attn_decode; the parallel Mamba-2 (SSM) branch needs ks_selective_scan + ks_causal_conv1d (now exist; not wired into a decode slot here) plus a concat/fuse step. Dense SwiGLU (no MoE). GRPO RL training. Per-field config (layers/hidden/heads/kv_heads/inter/vocab) not captured -> set 0; op-map TEMPLATED from the Falcon-H1 hybrid convention. Newer reasoning sibling of falcon-h1-34b. Mostly open. Medium confidence / dims partial.",
@@ -12237,18 +12364,6 @@
           "fn": "ks_rms_norm_residual",
           "dtype": "model"
         },
-        "rope": {
-          "fn": "ks_rope_gather",
-          "dtype": "model"
-        },
-        "attn_prefill": {
-          "fn": "ks_flash_attn_varlen",
-          "dtype": "model"
-        },
-        "attn_decode": {
-          "fn": "ks_paged_attn_decode",
-          "dtype": "model"
-        },
         "qkv_proj": {
           "fn": "ks_gemm",
           "dtype": "model"
@@ -12282,6 +12397,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "ICLR-2026 research architecture (arXiv 2603.15569), tested up to ~1.5B+ scale. Pure state-space model \u2014 NO attention: complex-valued state update, MIMO formulation, improved SSM discretization recurrence. The whole sequence mixer is a selective scan -> needs ks_selective_scan (+ ks_causal_conv1d) (now exist; not yet wired into the decode op slot); the attn_* / rope / qkv / o_proj op slots are placeholders and NOT load-bearing. Inference-efficiency focused (vs Mamba-2's training-speed focus); MIMO variant +1.8pp avg downstream at 1.5B, comparable perplexity at half the state size. Method/architecture release, not a single packaged frontier LLM. Supersedes Mamba-2. Dims not enumerated -> 0. Medium confidence.",
@@ -14700,6 +14824,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "~31B total / ~3B active (30B-A3B), 128K context. Distinct MULTIMODAL omni variant (model_type=NemotronH_Nano_Omni_Reasoning_V3, NemotronHForCausalLM backbone) vs the text-only nemotron-3-nano. Hybrid Mamba2-Transformer MoE: hybrid_override_pattern interleaves Mamba2 SSM layers (M, 64 heads x 64 dim; need ks_ssm_scan / ks_causal_conv1d, Wave-2 unmapped), MoE FFN layers (E, 128 routed top-6 + 1 shared, moe_intermediate_size=1856 -> ks_moe_grouped_gemm), and a few GQA self-attention layers (*, 32 q / 2 kv -> ks_paged_attn_decode). Adds CRADIO/InternVL-style ViT (vit_hidden 1280) for image/video + Parakeet speech encoder (24-layer) for audio. No RoPE in SSM path. BF16/FP8/NVFP4. NVIDIA Open Model Agreement. Config-verified.",
@@ -15648,6 +15781,10 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "8.3B total / 1.5B active, 32K context. MoE member of LFM2 family. NOVEL ARCH (gated short-conv + sparse GQA hybrid; not Mamba/SSM, not full attention) absent from registry. Hybrid backbone: 18 double-gated short-range LIV convolution blocks (need ks_causal_conv1d-style gated-conv kernel, Wave-2 unmapped) + 6 GQA attention blocks -> ks_paged_attn_decode. Sparse MoE FFN with multiplicative gates -> ks_moe_grouped_gemm. RoPE in GQA blocks. 12T train tokens, mixed BF16/FP8. LFM Open License v1.0. arXiv:2511.23404. hidden/heads not in card -> dims partial.",
@@ -15745,6 +15882,10 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "2.6B representative dense LFM2 model (family 350M/700M/1.2B/2.6B), 32K context. NOVEL ARCH (gated-convolution + GQA hybrid) absent from registry. Hybrid: gated short-range LIV convolution blocks (need ks_causal_conv1d-style kernel, Wave-2 unmapped) + a small number of GQA blocks (~10 conv + 6 attn standard LFM2 layout) -> ks_paged_attn_decode. Dense SwiGLU-style gated MLP (no MoE). On-device focused, up to 2x faster CPU prefill/decode. LFM Open License. arXiv:2511.23404. Exact conv:attn block counts for 2.6B not individually confirmed -> medium confidence; dims partial.",
@@ -16038,6 +16179,15 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "ssm": {
+          "fn": "ks_selective_scan",
+          "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "conv1d": {
+          "fn": "ks_causal_conv1d",
+          "dtype": "model"
         }
       },
       "notes": "9.78B IBM open Mamba2/Transformer hybrid, 4K context (v2). Hybrid: majority Mamba-2 state-space layers (need ks_ssm_scan / ks_causal_conv1d, Wave-2 unmapped) with a small number of interleaved full GQA layers (32 heads / 8 KV) -> ks_paged_attn_decode. SwiGLU (Mamba2-standard). ~2-2.5x throughput vs comparable transformers in vLLM; matches Llama-3.1-8B with ~5x less data. Apache 2.0. Distinct lineage from Granite 4.0 and the generic Mamba-3 entry. Exact Mamba2:attention ratio and vocab not in card -> dims partial.",
