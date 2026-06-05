@@ -53,6 +53,7 @@ from .backends import (
     Provider,
     arch_ok,
     can_import,
+    dtype_arch_ok,
     dtype_ok,
     optimal_order,
     resolve_sm,
@@ -102,10 +103,17 @@ def reset_cache() -> None:
 
 
 def _is_selectable(p: Provider, sm: Optional[int], dtype) -> bool:
-    """A provider is selectable if it imports, meets the arch gate, and supports
-    the dtype. The kernel-set fallback is always selectable."""
+    """A provider is selectable if it imports, meets the arch gate, supports the
+    dtype, AND the dtype is feasible on this SM at all. The kernel-set fallback
+    is always selectable."""
     if p.name == KERNEL_SET:
         return True
+    # Capability-aware dtype gate FIRST: even if the provider's min_sm is low and
+    # its dtype string lists fp8/bf16/fp4, the hardware must actually support
+    # that dtype (fp8>=sm89, bf16>=sm80, fp4>=sm100). This stops e.g. FlashInfer
+    # (min_sm=75) being selected for fp8 on sm75.
+    if not dtype_arch_ok(dtype, sm):
+        return False
     if not arch_ok(p.min_sm, sm):
         return False
     if not dtype_ok(dtype, p.dtypes):

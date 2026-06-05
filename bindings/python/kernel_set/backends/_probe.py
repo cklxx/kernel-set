@@ -71,9 +71,27 @@ _GPU_CAPS_PATH = os.path.join(
     "..", "..", "..", "..", "models", "gpu_caps.json")
 
 
-def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str]]:
-    """Build (GPU_SM, _DTYPE_ALIASES) from the canonical JSON if present, else
-    the inlined fallbacks. Never raises (a malformed/absent file -> fallback)."""
+# Minimum SM each dtype-CAPABILITY needs (named ``sm_thresholds`` in
+# gpu_caps.json). Used by ``dtype_arch_ok`` so a provider whose ``min_sm`` is
+# below a dtype's threshold (e.g. FlashInfer min_sm=75 with dtype "fp16, bf16,
+# fp8") is STILL not selectable for that dtype on an SM that lacks it (fp8 on
+# sm75). Inlined fallback kept identical to the JSON for wheel installs.
+_SM_THRESHOLDS_FALLBACK: Dict[str, int] = {
+    "fp8": 89, "bf16": 80, "tf32": 80, "int8": 75, "int4": 75,
+    "fp4": 100, "wgmma": 90,
+}
+
+# Map a normalized dtype gate token -> the capability key it requires. Tokens
+# absent here (fp16/fp32/int8/int4) have no arch threshold.
+_DTYPE_CAP_KEY: Dict[str, str] = {
+    "bf16": "bf16", "fp8": "fp8", "fp4": "fp4",
+}
+
+
+def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str], Dict[str, int]]:
+    """Build (GPU_SM, _DTYPE_ALIASES, SM_THRESHOLDS) from the canonical JSON if
+    present, else the inlined fallbacks. Never raises (malformed/absent ->
+    fallback)."""
     try:
         with open(_GPU_CAPS_PATH) as f:
             caps = json.load(f)
@@ -84,12 +102,15 @@ def _load_canonical() -> Tuple[Dict[str, int], Dict[str, str]]:
                 gpu_sm[alias] = g["sm"]
         aliases = {k: v for k, v in caps["probe_dtype_aliases"].items()
                    if not k.startswith("_")}
-        return gpu_sm, aliases
+        thresholds = {k: int(v) for k, v in caps["sm_thresholds"].items()
+                      if not k.startswith("_")}
+        return gpu_sm, aliases, thresholds
     except Exception:
-        return dict(_GPU_SM_FALLBACK), dict(_DTYPE_ALIASES_FALLBACK)
+        return (dict(_GPU_SM_FALLBACK), dict(_DTYPE_ALIASES_FALLBACK),
+                dict(_SM_THRESHOLDS_FALLBACK))
 
 
-GPU_SM, _DTYPE_ALIASES = _load_canonical()
+GPU_SM, _DTYPE_ALIASES, _SM_THRESHOLDS = _load_canonical()
 
 
 def gpu_to_sm(gpu: Optional[str]) -> Optional[int]:
@@ -238,3 +259,20 @@ def arch_ok(min_sm: int, sm: Optional[int]) -> bool:
     if sm is None:
         return True
     return sm >= min_sm
+
+
+def dtype_arch_ok(requested, sm: Optional[int]) -> bool:
+    """Capability-aware dtype gate: does ``sm`` actually support the requested
+    *dtype itself* (independent of any provider's ``min_sm``)? fp8 needs sm89+,
+    bf16/tf32 need sm80+, fp4 needs sm100+. A provider's ``dtypes`` string +
+    low ``min_sm`` is NOT sufficient — e.g. FlashInfer (min_sm=75, dtypes "...,
+    fp8") must NOT be selectable for fp8 on sm75 because the *hardware* has no
+    fp8 Tensor Cores. When the SM is unknown (``None``) we cannot prove the gate
+    fails, so we don't gate (the import/arch probes remain the signal)."""
+    req = normalize_dtype(requested)
+    if req is None or sm is None:
+        return True
+    cap = _DTYPE_CAP_KEY.get(req)
+    if cap is None:
+        return True
+    return int(sm) >= int(_SM_THRESHOLDS.get(cap, 0))

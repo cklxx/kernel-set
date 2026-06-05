@@ -341,6 +341,25 @@ def _rope_vllm(q, k, cos, sin, *, interleaved=False, **_):
     return qf.reshape(tokens, qh, hd), kf.reshape(tokens, kvh, hd)
 
 
+def _rope_liger(q, k, cos, sin, *, interleaved=False, **_):
+    # Liger Triton RoPE (LigerRopeFunction). It wants q (b, n_qh, s, d),
+    # k (b, n_kvh, s, d) and full-width cos/sin (1, s, d); our ergonomic layout
+    # is (tokens, heads, head_dim) with half-width cos/sin (tokens, head_dim/2).
+    # Mirror the bench_sota.py adapter: add a batch dim, transpose to heads-major,
+    # double the cos/sin to full width, then map the result back.
+    import torch
+    from liger_kernel.ops.rope import LigerRopeFunction
+    tokens, qh, hd = q.shape
+    kvh = k.shape[1]
+    qb = q.unsqueeze(0).transpose(1, 2)   # (1, qh, s, d)
+    kb = k.unsqueeze(0).transpose(1, 2)   # (1, kvh, s, d)
+    cos_full = torch.cat([cos, cos], dim=-1).unsqueeze(0)  # (1, s, d)
+    sin_full = torch.cat([sin, sin], dim=-1).unsqueeze(0)
+    q_rot, k_rot = LigerRopeFunction.apply(qb, kb, cos_full, sin_full)
+    return (q_rot.transpose(1, 2).reshape(tokens, qh, hd),
+            k_rot.transpose(1, 2).reshape(tokens, kvh, hd))
+
+
 def _rope_ks(q, k, cos, sin, *, interleaved=False, **_):
     from .. import rope
     tokens, qh, hd = q.shape
@@ -975,6 +994,9 @@ _OPS_RAW: List[Op] = [
         Provider("vllm", 3, 70, "fp16, bf16, fp32",
                  "from vllm import _custom_ops",
                  _rope_vllm, "vLLM rotary_embedding"),
+        Provider("liger", 4, 80, "fp16, bf16, fp32",
+                 "from liger_kernel.ops.rope import LigerRopeFunction",
+                 _rope_liger, "Liger Triton RoPE"),
         _ks_provider(_rope_ks, "ks_rope"),
     ]),
     Op("swiglu", "norm-act-rope", "ks_silu_and_mul", [

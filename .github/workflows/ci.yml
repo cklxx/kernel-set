@@ -36,15 +36,25 @@ jobs:
       - name: baselines.yaml in sync with registry
         run: python scripts/gen_baselines.py --check
 
-      - name: ksctl smoke (list / plan / table / backends)
+      - name: optimal.json in sync + invariants hold
+        # gen_optimal.py --check regenerates the table (running validate(), which
+        # enforces: provider==chain[0]; no arch/dtype-infeasible cells; every
+        # provider exists in the runtime registry for its op; table ops == the
+        # dispatch OP_ORDER; every accepted dtype has a cell or is a documented
+        # degradation) and fails on any drift or invariant violation.
+        run: python scripts/gen_optimal.py --check
+
+      - name: ksctl smoke (list / plan / table / backends / optimal)
         run: |
           python models/ksctl list > /dev/null
           python models/ksctl plan --model deepseek-v3 --gpu a100 --dtype bf16 > /dev/null
+          python models/ksctl plan --model llama-3-8b --gpu t4 --dtype bf16 > /dev/null
           python models/ksctl backends --gpu h100 > /dev/null
           python models/ksctl table --gpu l4 > /dev/null
+          python models/ksctl optimal --sm 89 > /dev/null
 
-      - name: Dispatch unit tests
-        run: PYTHONPATH=bindings/python python -m pytest bindings/python/tests/test_dispatch.py -q
+      - name: Dispatch + optimal-selection unit tests
+        run: PYTHONPATH=bindings/python python -m pytest bindings/python/tests/test_dispatch.py bindings/python/tests/test_optimal.py -q
 
       - name: Benchmark harnesses parse + list
         run: |

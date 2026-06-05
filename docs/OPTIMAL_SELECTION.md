@@ -36,9 +36,29 @@ The fill rule, in one line:
 Every cell's `fallback_chain` ends in `kernel-set`, so dispatch never dead-ends:
 on a fully-provisioned host the optimal external kernel runs; on a bare host
 (offline / Colab / a Rust or Go embedding with no PyTorch) the same call still
-works via the portable kernel-set C ABI.
+works via the portable kernel-set C ABI. And every cell satisfies
+`provider == fallback_chain[0]` (the winner literally leads its own chain).
 
-Current table: **189 cells — 13 measured, 176 heuristic.** Regenerate + verify:
+### Design invariants (enforced by `gen_optimal.py --check`)
+
+`scripts/gen_optimal.py` runs `validate()` on every build, so the CI
+`gen_optimal.py --check` gate fails on any violation:
+
+1. **`provider == fallback_chain[0]`** for every cell. A measured `kernel-set`
+   winner therefore emits chain `["kernel-set"]` (it cannot sit non-terminally
+   in a chain that must end in `kernel-set`).
+2. **Every `provider` + every `fallback_chain` entry exists** as a runtime
+   provider for that `logical_op` in `backends/_registry.py` (so the measured
+   RoPE winner `liger` is backed by a real Liger RoPE adapter).
+3. **No arch/dtype-infeasible cell** — `bf16`/`tf32` < sm80, `fp8` < sm89,
+   `fp4` < sm100 are omitted, derived from `models/gpu_caps.json` (no sm75/bf16
+   rows).
+5. **Every dtype token `optimal.py` accepts** appears in ≥1 feasible cell **or**
+   is a documented degradation (`fp4` → kernel-set, see below).
+6. **The table's `logical_op` set == the dispatch `OP_ORDER`** — the table is
+   truly Cartesian over every dispatch op (incl. `gemma_rmsnorm` + `sampling`).
+
+Current table: **218 cells — 13 measured, 205 heuristic.** Regenerate + verify:
 
 ```bash
 python3 scripts/gen_optimal.py           # write providers/optimal.json
@@ -53,6 +73,13 @@ python3 models/ksctl optimal --sm 89      # render the matrix ([M]/[h] markers)
 `select_optimal(logical_op, sm, dtype)` is an **O(1) lookup** over the Cartesian
 table with a graceful degradation ladder:
 
+0. **capability gate** — if the requested dtype is *arch-infeasible* for this SM
+   (`fp8` < sm89, `bf16` < sm80, `fp4` < sm100), return the kernel-set fallback
+   **immediately**. The selector never nearest-dtype-falls an infeasible request
+   into a *different-dtype* cell (which would let dispatch gate an installed
+   provider against the original, infeasible dtype). The runtime probe enforces
+   the mirror rule (`_probe.dtype_arch_ok`): an installed FlashInfer (min_sm 75,
+   dtypes "…, fp8") is **not** selectable for `fp8` on sm75.
 1. **exact cell** `(op, sm, dtype)` — measured winner if present, else heuristic;
 2. **nearest feasible dtype** for that `(op, sm)` — e.g. an fp16 request resolves
    to the bf16 cell when only bf16 exists;
@@ -106,20 +133,31 @@ Two things the measurements teach us:
   installed, the heuristic chain still lists it ahead of ks in the
   `fallback_chain`, so dispatch prefers it when available.
 
-For measured **kernel-set** winners the `provider` is `kernel-set` but the
-`fallback_chain` still lists the external providers ahead of the `kernel-set`
-terminal (e.g. `rmsnorm` sm80 → `[flashinfer, sgl-kernel, vllm, liger,
-kernel-set]`): the *measured* winner on the benched host was ks, but if a faster
-external provider is installed it is still preferred at runtime.
+For measured **kernel-set** winners the cell's `provider` is `kernel-set` **and**
+its `fallback_chain` is exactly `["kernel-set"]` (e.g. `rmsnorm` sm80 bf16): the
+invariant `provider == fallback_chain[0]` means the measured winner literally
+leads its own chain, and `kernel-set` — the terminal fallback — can only appear
+once, at the end. This is the fix for the review's HIGH bug, where the old
+generator recorded `provider: kernel-set` but left a *different* provider at
+`fallback_chain[0]`, so runtime dispatch (which consumes the chain) ignored the
+measured winner. The `rope` sm89 fp16 measured winner is **liger**, now backed by
+a real `liger` RoPE provider in `backends/_registry.py` (it previously named a
+provider that did not exist for `rope`, so dispatch silently dropped it).
 
 ---
 
 ## The heuristic matrix (fill cells)
 
-The remaining 176 cells are the curated baseline — what dispatch selects when no
+The remaining 205 cells are the curated baseline — what dispatch selects when no
 measurement exists for that `(op, sm, dtype)`. **sm90 (H100) and sm100
 (Blackwell) are entirely heuristic, pending H100/B200 benchmarks.** Likewise
 sm75 (T4), sm86 (A10), and the unbenched dtypes on sm80/sm89.
+
+The table is **Cartesian over the full dispatch `OP_ORDER`** (invariant 6): in
+addition to the ops shown below it also fills `gemma_rmsnorm` (flashinfer/sgl on
+fp16/bf16, kernel-set on fp32), `sampling` (flashinfer/sgl over fp32 probs), and
+every feasible `cross_entropy` `(sm, dtype)` cell (liger on sm80+, torch on
+sm75).
 
 Rank-1 per op × arch (the `[h]` cells; `→ ks` = falls back to kernel-set):
 
@@ -148,15 +186,35 @@ to `[M]`.
 
 ### Arch/dtype-infeasible cells are omitted
 
-The Cartesian table deliberately **omits** cells that cannot exist:
+The Cartesian table deliberately **omits** cells that cannot exist, gated by the
+named `sm_thresholds` in `models/gpu_caps.json` (the single source of truth):
 
+* **bf16/tf32** are absent on **sm75** (no bf16 Tensor Cores on Turing) — so
+  `ksctl optimal --sm 75 --dtype bf16` advertises nothing, matching the planner,
+  which degrades `--gpu t4 --dtype bf16` to fp16;
 * **fp8** is absent on sm75/sm80/sm86 (no FP8 Tensor Cores pre-Ada);
+* **fp4** (NVFP4/MXFP4) is absent below sm100;
 * **fp32** flash attention has no flash path (only the `torch-sdpa` fallback);
 * `int8_gemm`/`w4a16` exist only for their respective integer dtypes;
 * `fp8_gemm` has no sm75/sm80/sm86 cell at all.
 
-A request for an omitted cell resolves via nearest-dtype, then the `kernel-set`
-terminal — never an error.
+A request for a *feasible* dtype with no exact cell resolves via nearest-dtype,
+then the `kernel-set` terminal. A request for an **arch-infeasible** dtype
+(`fp8`/`bf16`/`fp4` below its SM floor) resolves **straight to `kernel-set`**
+(`source: "fallback"`) — never nearest-dtype-borrowing a different-dtype cell, and
+never an error.
+
+### FP4 / NVFP4 is a documented degradation path
+
+`gpu_caps.json` declares `fp4` a Blackwell (sm100) capability, and `optimal.py`
+accepts the `fp4`/`nvfp4`/`mxfp4` aliases, but **no runtime NVFP4 adapter is
+wired yet**. So `fp4` is a *documented degradation* (`_DOCUMENTED_DEGRADATIONS`
+in the generator): there are **zero `fp4` cells**, and `select_optimal(op, 100,
+"fp4")` returns the `kernel-set` fallback (`source: "fallback"`) rather than
+silently selecting the `int4` cell. Invariant 5 keeps this honest — `fp4` is the
+only accepted token without a cell, and it is explicitly listed as a degradation.
+When real NVFP4 adapters land, add sm100 `fp4` cells (provider names matching the
+adapters) and drop `fp4` from the degradation set.
 
 ---
 
@@ -170,10 +228,16 @@ terminal — never an error.
 * **CI gate:** `python3 scripts/gen_optimal.py --check` fails the build if the
   checked-in `providers/optimal.json` drifts from a regen.
 * **Tests:** [`tests/test_optimal.py`](../bindings/python/tests/test_optimal.py)
-  asserts the measured overrides, arch gating (fp8 omitted on sm75), the
-  nearest-dtype + kernel-set fallback ladder, and that the runtime dispatcher
-  actually consults the table (the sm89-fp16 `liger`/`flashinfer` overrides flow
-  through `dispatch.which`). The full dispatch contract is in
+  asserts the measured overrides, the design invariants (`provider == chain[0]`
+  for all cells; no arch/dtype-infeasible cells; every provider exists in the
+  registry for its op; table ops == `OP_ORDER`), the capability-aware dtype gate
+  (`select_optimal` returns kernel-set for fp8@sm75 and bf16@sm75; `fp4` degrades
+  to kernel-set, not int4; the runtime `dtype_arch_ok` blocks an installed
+  FlashInfer for fp8 on sm75), the nearest-dtype + kernel-set fallback ladder,
+  that the runtime dispatcher consults the table (the sm89-fp16
+  `liger`/`flashinfer` overrides flow through `dispatch.which`), and that the
+  planner (`models/select.py`) and dispatch agree on sampled cells. The full
+  dispatch contract is in
   [`tests/test_dispatch.py`](../bindings/python/tests/test_dispatch.py).
 
 ---
@@ -208,7 +272,7 @@ don't reinvent**:
 
 | | |
 |---|---|
-| Table | `providers/optimal.json` (189 cells: 13 measured, 176 heuristic) |
+| Table | `providers/optimal.json` (218 cells: 13 measured, 205 heuristic) |
 | Generator | `scripts/gen_optimal.py` (stdlib; `--check` CI gate) |
 | Selector | `backends/optimal.py` `select_optimal(op, sm, dtype)` — O(1) lookup |
 | Dispatch | `backends/_registry.py optimal_order(...)` orders providers from the table |

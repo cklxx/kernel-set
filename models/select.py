@@ -111,12 +111,14 @@ _SCHEME_TO_DTYPE = {
 }
 
 # dtype-preference ladder for a graceful nearest-dtype lookup (mirrors the
-# binding-side selector so the planner and runtime agree).
+# binding-side selector so the planner and runtime agree). fp4 is intentionally
+# absent (no NVFP4 cell / runtime adapter): an fp4 scheme has no optimal-table
+# annotation rather than silently borrowing the int4 cell. In practice the
+# planner degrades mxfp4 -> fp8/bf16 in resolve_compute_dtype before this lookup.
 _DTYPE_NEAREST = {
     "fp16": ["fp16", "bf16", "fp32"], "bf16": ["bf16", "fp16", "fp32"],
     "fp32": ["fp32", "bf16", "fp16"], "fp8": ["fp8", "bf16", "fp16"],
     "int8": ["int8", "bf16", "fp16"], "int4": ["int4", "bf16", "fp16"],
-    "fp4": ["fp4", "int4", "bf16", "fp16"],
 }
 
 

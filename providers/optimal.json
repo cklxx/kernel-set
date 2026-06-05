@@ -4,22 +4,11 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 189,
+    "total": 218,
     "measured": 13,
-    "heuristic": 176
+    "heuristic": 205
   },
   "cells": [
-    {
-      "logical_op": "attention_decode",
-      "sm": 75,
-      "dtype": "bf16",
-      "provider": "flashinfer",
-      "source": "heuristic",
-      "fallback_chain": [
-        "flashinfer",
-        "kernel-set"
-      ]
-    },
     {
       "logical_op": "attention_decode",
       "sm": 75,
@@ -38,7 +27,6 @@
       "provider": "kernel-set",
       "source": "measured",
       "fallback_chain": [
-        "flashinfer",
         "kernel-set"
       ],
       "metric": "4455.4 us",
@@ -180,18 +168,6 @@
       "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
-        "flashinfer",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "attention_prefill",
-      "sm": 75,
-      "dtype": "bf16",
-      "provider": "torch-sdpa",
-      "source": "heuristic",
-      "fallback_chain": [
-        "torch-sdpa",
         "flashinfer",
         "kernel-set"
       ]
@@ -450,6 +426,28 @@
     },
     {
       "logical_op": "cross_entropy",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
       "sm": 80,
       "dtype": "bf16",
       "provider": "kernel-set",
@@ -460,6 +458,78 @@
       "metric": "1271.8 us",
       "gpu": "a100",
       "source_file": "benchmarks/results/a100.md"
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
     },
     {
       "logical_op": "cross_entropy",
@@ -474,6 +544,90 @@
       "metric": "1386.5 us",
       "gpu": "l4",
       "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "cross_entropy",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "liger",
+      "source": "heuristic",
+      "fallback_chain": [
+        "liger",
+        "torch",
+        "kernel-set"
+      ]
     },
     {
       "logical_op": "fp8_gemm",
@@ -515,18 +669,6 @@
     {
       "logical_op": "fused_add_rmsnorm",
       "sm": 75,
-      "dtype": "bf16",
-      "provider": "flashinfer",
-      "source": "heuristic",
-      "fallback_chain": [
-        "flashinfer",
-        "vllm",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "fused_add_rmsnorm",
-      "sm": 75,
       "dtype": "fp16",
       "provider": "flashinfer",
       "source": "heuristic",
@@ -641,9 +783,6 @@
       "provider": "kernel-set",
       "source": "measured",
       "fallback_chain": [
-        "flashinfer",
-        "sgl-kernel",
-        "vllm",
         "kernel-set"
       ],
       "metric": "614.4 us",
@@ -732,17 +871,6 @@
       "source": "heuristic",
       "fallback_chain": [
         "vllm",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "gemm",
-      "sm": 75,
-      "dtype": "bf16",
-      "provider": "torch",
-      "source": "heuristic",
-      "fallback_chain": [
-        "torch",
         "kernel-set"
       ]
     },
@@ -937,6 +1065,197 @@
       ]
     },
     {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "gemma_rmsnorm",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "kernel-set",
+      "source": "heuristic",
+      "fallback_chain": [
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "int8_gemm",
       "sm": 75,
       "dtype": "int8",
@@ -1009,16 +1328,6 @@
     {
       "logical_op": "mla_decode",
       "sm": 75,
-      "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "heuristic",
-      "fallback_chain": [
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "mla_decode",
-      "sm": 75,
       "dtype": "fp16",
       "provider": "kernel-set",
       "source": "heuristic",
@@ -1172,16 +1481,6 @@
       "fallback_chain": [
         "sgl-kernel",
         "flashinfer",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "moe",
-      "sm": 75,
-      "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "heuristic",
-      "fallback_chain": [
         "kernel-set"
       ]
     },
@@ -1533,18 +1832,6 @@
       "source": "heuristic",
       "fallback_chain": [
         "sgl-kernel",
-        "vllm",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "rmsnorm",
-      "sm": 75,
-      "dtype": "bf16",
-      "provider": "flashinfer",
-      "source": "heuristic",
-      "fallback_chain": [
-        "flashinfer",
         "vllm",
         "kernel-set"
       ]
@@ -1579,10 +1866,6 @@
       "provider": "kernel-set",
       "source": "measured",
       "fallback_chain": [
-        "flashinfer",
-        "sgl-kernel",
-        "vllm",
-        "liger",
         "kernel-set"
       ],
       "metric": "115.7 us",
@@ -1781,18 +2064,6 @@
     {
       "logical_op": "rope",
       "sm": 75,
-      "dtype": "bf16",
-      "provider": "flashinfer",
-      "source": "heuristic",
-      "fallback_chain": [
-        "flashinfer",
-        "vllm",
-        "kernel-set"
-      ]
-    },
-    {
-      "logical_op": "rope",
-      "sm": 75,
       "dtype": "fp16",
       "provider": "flashinfer",
       "source": "heuristic",
@@ -1820,9 +2091,6 @@
       "provider": "kernel-set",
       "source": "measured",
       "fallback_chain": [
-        "flashinfer",
-        "sgl-kernel",
-        "vllm",
         "kernel-set"
       ],
       "metric": "119.8 us",
@@ -1839,6 +2107,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1863,6 +2132,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1876,6 +2146,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1900,6 +2171,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1941,6 +2213,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1954,6 +2227,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1978,6 +2252,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -1991,6 +2266,7 @@
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
       ]
     },
@@ -2006,14 +2282,73 @@
       ]
     },
     {
-      "logical_op": "swiglu",
+      "logical_op": "sampling",
       "sm": 75,
-      "dtype": "bf16",
+      "dtype": "fp32",
       "provider": "flashinfer",
       "source": "heuristic",
       "fallback_chain": [
         "flashinfer",
-        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sampling",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sampling",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sampling",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sampling",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sampling",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
         "kernel-set"
       ]
     },
@@ -2047,10 +2382,6 @@
       "provider": "kernel-set",
       "source": "measured",
       "fallback_chain": [
-        "flashinfer",
-        "sgl-kernel",
-        "vllm",
-        "liger",
         "kernel-set"
       ],
       "metric": "269.3 us",

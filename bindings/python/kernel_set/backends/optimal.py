@@ -65,6 +65,10 @@ _DTYPE_ALIASES = {
 # Preference order when the exact dtype is missing for an (op, sm): try the
 # "nearest" compute dtype before giving up to kernel-set. fp16<->bf16 are
 # interchangeable for most kernels; fp8 falls back to bf16; int* to bf16/fp16.
+# NOTE: fp4 (NVFP4/MXFP4) is intentionally ABSENT — there is no wired NVFP4
+# runtime adapter, so an fp4 request must resolve to the kernel-set portable
+# fallback (source:"fallback"), NOT silently into the int4 cell. See
+# docs/OPTIMAL_SELECTION.md ("FP4 is a documented degradation path").
 _DTYPE_NEAREST = {
     "fp16": ["fp16", "bf16", "fp32"],
     "bf16": ["bf16", "fp16", "fp32"],
@@ -72,8 +76,31 @@ _DTYPE_NEAREST = {
     "fp8": ["fp8", "bf16", "fp16"],
     "int8": ["int8", "bf16", "fp16"],
     "int4": ["int4", "bf16", "fp16"],
-    "fp4": ["fp4", "int4", "bf16", "fp16"],
 }
+
+# Capability-aware dtype gating (min SM per dtype). Mirrors the named
+# ``sm_thresholds`` in models/gpu_caps.json (the single source of truth) so the
+# selector NEVER falls a dtype-infeasible request (fp8 on sm75, bf16 on sm75,
+# fp4 on sm<100) into a different-dtype cell. dtypes absent here (fp16/fp32/
+# int8/int4) have no arch gate.
+_DTYPE_MIN_SM = {
+    "bf16": 80,
+    "tf32": 80,
+    "fp8": 89,
+    "fp4": 100,
+}
+
+
+def _dtype_feasible(sm: Optional[int], req: Optional[str]) -> bool:
+    """Is the requested (normalized) dtype supported by ``sm``? An infeasible
+    request (e.g. fp8 on sm75, bf16 on sm75, fp4 on sm<100) must NOT be served by
+    a nearest-dtype cell — it resolves straight to the kernel-set fallback so
+    runtime dispatch never gates an installed provider against the original
+    (infeasible) dtype."""
+    min_sm = _DTYPE_MIN_SM.get(req)
+    if min_sm is None or sm is None:
+        return True
+    return int(sm) >= int(min_sm)
 
 
 def _normalize_op(logical_op: str) -> str:
@@ -144,6 +171,12 @@ def select_optimal(logical_op: str, sm, dtype) -> dict:
 
     Graceful fallback ladder:
 
+    0. **capability gate** — if the requested dtype is arch-infeasible for this
+       ``sm`` (fp8 on sm<89, bf16 on sm<80, fp4 on sm<100), return the kernel-set
+       fallback IMMEDIATELY. We never nearest-dtype-fall an infeasible request
+       into a different-dtype cell (which would let dispatch gate an installed
+       provider against the original, infeasible dtype — the HIGH bug from the
+       review).
     1. **exact cell** ``(op, sm, dtype)`` — measured winner if one exists, else
        the heuristic baseline;
     2. **nearest feasible dtype** for that ``(op, sm)`` — e.g. an fp16 request on
@@ -161,6 +194,11 @@ def select_optimal(logical_op: str, sm, dtype) -> dict:
         sm_int = int(sm) if sm is not None else None
     except (TypeError, ValueError):
         sm_int = None
+
+    # 0) capability gate: an arch-infeasible dtype goes straight to kernel-set.
+    if sm_int is not None and req is not None and \
+            not _dtype_feasible(sm_int, req):
+        return _ks_cell(op, sm_int, dtype)
 
     if sm_int is not None and req is not None:
         # 1) exact cell.

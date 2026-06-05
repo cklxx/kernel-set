@@ -59,10 +59,9 @@ def test_every_cell_is_well_formed():
         # chain terminates in kernel-set, exactly once.
         assert c["fallback_chain"][-1] == KERNEL_SET, c
         assert c["fallback_chain"].count(KERNEL_SET) == 1, c
-        # the named provider leads the chain UNLESS it is kernel-set itself
-        # (a measured ks-winner keeps the heuristic chain order, ks terminal).
-        if c["provider"] != KERNEL_SET:
-            assert c["fallback_chain"][0] == c["provider"], c
+        # INVARIANT 1: the named provider ALWAYS leads its chain (a measured
+        # kernel-set winner emits chain ["kernel-set"], so this holds for ks too).
+        assert c["fallback_chain"][0] == c["provider"], c
         # measured cells carry provenance.
         if c["source"] == "measured":
             assert c.get("metric"), c
@@ -76,6 +75,57 @@ def test_no_fp8_or_infeasible_dtype_on_sm75():
     for c in doc["cells"]:
         if c["sm"] == 75:
             assert c["dtype"] != "fp8", f"fp8 must be omitted on sm75: {c}"
+
+
+def test_no_infeasible_sm_dtype_cells():
+    # INVARIANT 3: no cell may carry a dtype its SM cannot run (bf16<80,
+    # tf32<80, fp8<89, fp4<100), per the gpu_caps thresholds. sm75/bf16 rows
+    # in particular must be absent.
+    min_sm = {"bf16": 80, "tf32": 80, "fp8": 89, "fp4": 100}
+    with open(_OPTIMAL_JSON) as f:
+        doc = json.load(f)
+    for c in doc["cells"]:
+        floor = min_sm.get(c["dtype"])
+        if floor is not None:
+            assert c["sm"] >= floor, f"infeasible dtype cell: {c}"
+    # No sm75 bf16 anywhere.
+    assert not [c for c in doc["cells"]
+                if c["sm"] == 75 and c["dtype"] == "bf16"]
+
+
+def test_every_provider_exists_in_registry_for_its_op():
+    # INVARIANT 2: every provider + every fallback_chain entry must be a real
+    # runtime provider for that logical_op in the dispatch registry.
+    from kernel_set.backends import _registry
+    op_providers = {name: {p.name for p in op.providers}
+                    for name, op in _registry.OPS.items()}
+    with open(_OPTIMAL_JSON) as f:
+        doc = json.load(f)
+    for c in doc["cells"]:
+        known = op_providers.get(c["logical_op"])
+        assert known is not None, f"op not in registry: {c}"
+        for p in [c["provider"]] + c["fallback_chain"]:
+            assert p in known, (
+                f"provider {p!r} not registered for {c['logical_op']!r} "
+                f"(known: {sorted(known)})")
+
+
+def test_table_logical_ops_match_dispatch_op_order():
+    # INVARIANT 6: the table is Cartesian over the dispatch OP_ORDER — every
+    # dispatch op (incl. gemma_rmsnorm + sampling) has >=1 cell, and the table
+    # names no op outside OP_ORDER.
+    from kernel_set.backends import _registry
+    with open(_OPTIMAL_JSON) as f:
+        doc = json.load(f)
+    table_ops = {c["logical_op"] for c in doc["cells"]}
+    order = set(_registry.OP_ORDER)
+    assert order - table_ops == set(), (
+        f"dispatch ops missing from optimal.json: {order - table_ops}")
+    assert table_ops - order == set(), (
+        f"optimal.json ops not in OP_ORDER: {table_ops - order}")
+    # The two ops the review flagged as missing are now present.
+    assert "gemma_rmsnorm" in table_ops
+    assert "sampling" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -99,9 +149,9 @@ def test_measured_winner_rmsnorm_sm80_is_kernel_set():
     r = O.select_optimal("norm.rmsnorm", 80, "bf16")
     assert r["provider"] == KERNEL_SET
     assert r["source"] == "measured"
-    # ks-winner keeps the heuristic chain order, terminating in kernel-set.
-    assert r["fallback_chain"][-1] == KERNEL_SET
-    assert r["fallback_chain"][0] == "flashinfer"
+    # A measured kernel-set winner emits chain ["kernel-set"] so the invariant
+    # provider == chain[0] holds (it cannot sit non-terminally in the chain).
+    assert r["fallback_chain"] == [KERNEL_SET]
 
 
 def test_measured_winner_rmsnorm_sm89_is_liger():
@@ -163,6 +213,28 @@ def test_fp8_on_sm75_falls_back_to_kernel_set():
     assert r["provider"] == KERNEL_SET
     assert r["source"] == "fallback"
     assert r["fallback_chain"] == [KERNEL_SET]
+
+
+def test_infeasible_dtype_never_leaks_into_other_dtype_cell():
+    # INVARIANT 4: an arch-infeasible dtype request must resolve to kernel-set
+    # IMMEDIATELY, never nearest-dtype-fall into a different-dtype cell (which
+    # would let dispatch gate an installed provider against the infeasible dtype).
+    # attention_prefill sm75 HAS an fp16 cell; an fp8 request must NOT borrow it.
+    r = O.select_optimal("attention_prefill", 75, "fp8")
+    assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
+    # bf16 on sm75 (rmsnorm has an fp16 cell) must also go straight to ks.
+    r = O.select_optimal("rmsnorm", 75, "bf16")
+    assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
+
+
+def test_fp4_degrades_to_kernel_set_not_int4():
+    # INVARIANT 5: fp4 (NVFP4/MXFP4) has no wired runtime adapter -> a fp4
+    # request resolves to the kernel-set fallback, NOT silently into the int4
+    # cell. w4a16 sm100 HAS an int4 cell; fp4 must not borrow it.
+    r = O.select_optimal("w4a16", 100, "fp4")
+    assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
+    assert not [c for c in O._CELLS.values() if c["dtype"] == "fp4"], \
+        "no fp4 cells should exist in the table"
 
 
 def test_unknown_op_falls_back_to_kernel_set():
@@ -254,3 +326,73 @@ def test_dispatch_falls_back_to_ks_when_measured_winner_absent(monkeypatch):
     # Measured winner (liger) not installed, nothing else either -> kernel-set.
     _mock_available(monkeypatch, available_libs=set(), sm=89)
     assert dispatch.which("rmsnorm", dtype="fp16") == KERNEL_SET
+
+
+def test_dispatch_dtype_arch_gate_blocks_fp8_on_sm75(monkeypatch):
+    # INVARIANT 4 (runtime): FlashInfer is min_sm=75 with dtypes "fp16, bf16,
+    # fp8", but sm75 hardware has no fp8 Tensor Cores. Even with flashinfer
+    # installed, an fp8 request on sm75 must NOT select flashinfer -> kernel-set.
+    _mock_available(monkeypatch, available_libs={"flashinfer"}, sm=75)
+    assert dispatch.which("attention_decode", dtype="fp8") == KERNEL_SET
+    # fp16 on sm75 is feasible -> flashinfer is selected normally.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"flashinfer"}, sm=75)
+    assert dispatch.which("attention_decode", dtype="fp16") == "flashinfer"
+
+
+def test_dispatch_dtype_arch_gate_blocks_bf16_on_sm75(monkeypatch):
+    # bf16 needs sm80; on sm75 even an installed provider is gated out -> ks.
+    _mock_available(monkeypatch, available_libs={"flashinfer", "vllm"}, sm=75)
+    assert dispatch.which("rmsnorm", dtype="bf16") == KERNEL_SET
+
+
+# --------------------------------------------------------------------------- #
+# Planner (models/select.py) and runtime dispatch agree on the same optimal
+# provider for a sampled (model/op, gpu, dtype).
+# --------------------------------------------------------------------------- #
+def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    # (plan_op, gpu, sm, dtype) sampled across archs/dtypes. The installed-lib
+    # set is the cell's own chain (minus the kernel-set terminal) — the
+    # apples-to-apples host the table's chain describes — so the planner's
+    # named optimal_provider must equal dispatch's runtime choice.
+    _LIB_OF = {
+        "flashinfer": "flashinfer", "liger": "liger_kernel",
+        "flash-attn": "flash_attn", "sgl-kernel": "sgl_kernel",
+        "vllm": "vllm", "torch": "torch", "deep_gemm": "deep_gemm",
+    }
+    samples = [
+        # L4 (sm89) fp16 measured winners.
+        ("attn_norm", 89, "fp16"),    # measured -> liger
+        ("rope", 89, "fp16"),         # measured -> liger
+        ("attn_prefill", 89, "fp16"),  # measured -> flashinfer
+        # A100 (sm80) bf16: measured kernel-set winner (chain == [kernel-set]).
+        ("attn_norm", 80, "bf16"),
+        # Heuristic fills (no measurement).
+        ("rope", 90, "bf16"),         # heuristic -> flashinfer
+        ("moe_grouped_gemm", 90, "fp8"),  # heuristic -> deep_gemm
+    ]
+    for plan_op, sm, scheme in samples:
+        cell = sel.optimal_cell(plan_op, sm, scheme)
+        assert cell is not None, (plan_op, sm, scheme)
+        planner_provider = cell["provider"]
+
+        # Install exactly the chain providers the cell names (the host the table
+        # describes), so planner and dispatch are compared apples-to-apples.
+        libs = {_LIB_OF[p] for p in cell["fallback_chain"]
+                if p in _LIB_OF}
+        dispatch.reset_cache()
+        _mock_available(monkeypatch, available_libs=libs, sm=sm)
+        runtime_op = sel._PLAN_OP_TO_OPTIMAL[plan_op]
+        runtime_provider = dispatch.which(runtime_op, dtype=scheme)
+
+        assert runtime_provider == planner_provider, (
+            plan_op, sm, scheme, planner_provider, runtime_provider)
