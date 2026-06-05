@@ -109,7 +109,10 @@ _PLAN_OP_TO_OPTIMAL = {
     "linear_attn": "gated_linear_attn",
     "rwkv_wkv": "rwkv_wkv7",
     "w4a8": "w4a8",
-    "cross_entropy": "cross_entropy",
+    "w8a16_fp8": "w8a16_fp8",
+    "cross_entropy": "fused_linear_ce",
+    "fused_linear_ce": "fused_linear_ce",
+    "fused_linear_cross_entropy": "fused_linear_ce",
 }
 
 # Planner scheme token -> optimal-table dtype key.
@@ -117,6 +120,7 @@ _SCHEME_TO_DTYPE = {
     "bf16": "bf16", "fp16": "fp16", "fp32": "fp32", "tf32": "fp32",
     "fp8": "fp8", "fp8_e5m2": "fp8",
     "w8a8": "int8", "w4a16": "int4", "w4a8": "int4",
+    "w8a16_fp8": "bf16",
     "mxfp4": "fp4",
 }
 
@@ -161,6 +165,8 @@ def optimal_lookup_op(plan_op, scheme):
     if plan_op in GEMM_OPS and scheme == "mxfp4":
         return "mxfp4_gemm"
     if plan_op in DENSE_GEMM_OPS:
+        if scheme == "w8a16_fp8":
+            return "w8a16_fp8"
         if scheme == "w4a8":
             return "w4a8"
         if scheme == "fp8":

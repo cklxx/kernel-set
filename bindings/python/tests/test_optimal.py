@@ -178,6 +178,8 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "gated_linear_attn" in table_ops
     assert "rwkv_wkv7" in table_ops
     assert "w4a8" in table_ops
+    assert "w8a16_fp8" in table_ops
+    assert "fused_linear_ce" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -289,6 +291,30 @@ def test_heuristic_fill_w4a8_sm80_plus():
         assert cell["fallback_chain"] == [
             "vllm-machete", "vllm-marlin", KERNEL_SET]
     assert O.select_optimal("w4a8", 75, "int4")["provider"] == KERNEL_SET
+
+
+def test_heuristic_fill_w8a16_fp8_sm80_plus():
+    for sm in (80, 86, 89, 90, 100):
+        for dtype in ("fp16", "bf16"):
+            cell = O.select_optimal("w8a16_fp8", sm, dtype)
+            assert cell["provider"] == "vllm-fp8-marlin"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == ["vllm-fp8-marlin", KERNEL_SET]
+    assert O.select_optimal("w8a16_fp8", 75, "fp16")["provider"] == \
+        KERNEL_SET
+    # fp8 is activation dtype here; sm80 cannot run fp8 activation TC paths.
+    assert O.select_optimal("w8a16_fp8", 80, "fp8")["provider"] == KERNEL_SET
+
+
+def test_heuristic_fill_fused_linear_ce_sm80_plus():
+    for sm in (80, 86, 89, 90, 100):
+        for dtype in ("fp16", "bf16", "fp32"):
+            cell = O.select_optimal("fused_linear_ce", sm, dtype)
+            assert cell["provider"] == "liger"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == ["liger", KERNEL_SET]
+    assert O.select_optimal("fused_linear_ce", 75, "fp16")["provider"] == \
+        KERNEL_SET
 
 
 # --------------------------------------------------------------------------- #
@@ -510,6 +536,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "vllm": "vllm", "torch": "torch", "deep_gemm": "deep_gemm",
         "mamba-ssm": "mamba_ssm", "causal-conv1d": "causal_conv1d",
         "flash-linear-attention": "fla",
+        "vllm-fp8-marlin": "vllm",
     }
     samples = [
         # L4 (sm89) fp16 measured winners.
@@ -526,6 +553,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         ("gated_delta", 80, "bf16"),  # heuristic -> flash-linear-attention
         ("linear_attn", 80, "fp16"),  # heuristic -> flash-linear-attention
         ("rwkv_wkv", 80, "bf16"),     # heuristic -> flash-linear-attention
+        ("cross_entropy", 80, "bf16"),  # heuristic -> fused_linear_ce / liger
     ]
     for plan_op, sm, scheme in samples:
         cell = sel.optimal_cell(plan_op, sm, scheme)
@@ -591,5 +619,9 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
     assert sel.optimal_lookup_op("rwkv_wkv", "bf16") == "rwkv_wkv7"
     assert sel.optimal_lookup_op("w4a8", "bf16") == "w4a8"
     assert sel.optimal_lookup_op("qkv_proj", "w4a8") == "w4a8"
+    assert sel.optimal_lookup_op("qkv_proj", "w8a16_fp8") == "w8a16_fp8"
+    assert sel.optimal_lookup_op("cross_entropy", "bf16") == "fused_linear_ce"
+    assert sel.optimal_lookup_op("fused_linear_cross_entropy", "bf16") == \
+        "fused_linear_ce"
     assert sel.optimal_lookup_op("qkv_proj", "mxfp4") == "mxfp4_gemm"
     assert sel.optimal_lookup_op("moe_grouped_gemm", "mxfp4") == "mxfp4_gemm"

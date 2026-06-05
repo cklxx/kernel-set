@@ -70,6 +70,7 @@ __all__ = [
     "int8_gemm",
     "w4a16",
     "w4a8",
+    "w8a16_fp8",
     "per_token_group_quant",
     "nvfp4_gemm",
     "mxfp4_gemm",
@@ -81,6 +82,7 @@ __all__ = [
     "rope",
     "swiglu",
     "cross_entropy",
+    "fused_linear_ce",
     "moe",
     "moe_gate",
     "moe_group_gate",
@@ -262,6 +264,19 @@ def w4a8(a8, b_packed, b_scales, a_scales=None, *, global_scale=None,
              out_dtype=out_dtype, **kw))
 
 
+def w8a16_fp8(a, b_packed, b_scales, *, global_scale=None, out_dtype=None,
+              **kw):
+    """FP8 weight-only Marlin GEMM: fp16/bf16 acts x fp8-e4m3 weights.
+
+    This is distinct from ``fp8_gemm`` (native FP8 tensor-core W8A8) and from
+    ``int8_gemm``. It targets FP8 checkpoints on sm80/86/89 paths where the
+    activation compute dtype remains fp16/bf16.
+    """
+    return _dispatch(
+        "w8a16_fp8", (a, b_packed, b_scales),
+        dict(global_scale=global_scale, out_dtype=out_dtype, **kw))
+
+
 def fp8_gemm_blockwise(a8, b8, a_scale, b_scale, *, block_n=128, block_k=128,
                        out_dtype=None, **kw):
     """FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe): 128x128 weight block / 1x128 act
@@ -339,6 +354,16 @@ def cross_entropy(logits, targets, *, ignore_index=-100, **kw):
     """Cross-entropy. Returns per-token loss (reduction='none')."""
     return _dispatch("cross_entropy", (logits, targets),
                      dict(ignore_index=ignore_index, **kw))
+
+
+def fused_linear_ce(hidden, lm_head_weight, targets, *, bias=None,
+                    ce_weight=None, ignore_index=-100,
+                    label_smoothing=0.0, reduction="mean", **kw):
+    """Fused LM-head linear + cross-entropy without materializing logits."""
+    return _dispatch(
+        "fused_linear_ce", (hidden, lm_head_weight, targets),
+        dict(bias=bias, ce_weight=ce_weight, ignore_index=ignore_index,
+             label_smoothing=label_smoothing, reduction=reduction, **kw))
 
 
 def moe(*args, **kw):

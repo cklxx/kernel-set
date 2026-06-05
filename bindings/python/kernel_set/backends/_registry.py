@@ -400,6 +400,28 @@ def _w4a8_marlin(a8, b_packed, b_scales, a_scales=None, *, global_scale=None,
         size_m, size_n, size_k, True, False, False, False)
 
 
+def _w8a16_fp8_marlin(a, b_packed, b_scales, *, global_scale=None,
+                      workspace=None, size_m=None, size_n=None, size_k=None,
+                      g_idx=None, perm=None, bias=None, use_fp32_reduce=False,
+                      **_):
+    # Unified Marlin FP8 weight-only: fp16/bf16 activations with fp8-e4m3
+    # weights dequantized in software. On sm89+ the native fp8_gemm op is
+    # preferred for true FP8 tensor-core GEMM; this op covers the sm80/86/89
+    # no-fp8-TC / FP8-checkpoint niche without overloading int8_gemm.
+    from vllm import _custom_ops as ops
+    m, k = a.shape
+    size_m = size_m or m
+    size_k = size_k or k
+    size_n = size_n or (b_scales.shape[-1] if b_scales is not None
+                        else b_packed.shape[1])
+    if workspace is None:
+        workspace = _marlin_workspace(size_n, a.device)
+    return ops.marlin_gemm(
+        a, None, b_packed, bias, b_scales, None, global_scale,
+        None, g_idx, perm, workspace, _vllm_scalar_type("float8_e4m3fn"),
+        size_m, size_n, size_k, True, False, use_fp32_reduce, False)
+
+
 def _w4a16_ks(a, b_packed, scales, zeros, *, group_size=128, **_):
     from .. import gemm
     import torch
@@ -597,6 +619,54 @@ def _ce_ks(logits, targets, *, ignore_index=-100, **_):
     grad = torch.empty_like(logits)
     loss.cross_entropy(losses, grad, logits, targets, num_tokens, vocab,
                        ignore_index=ignore_index)
+    return losses
+
+
+def _fused_linear_ce_liger(hidden, lm_head_weight, targets, *, bias=None,
+                           ce_weight=None, ignore_index=-100,
+                           lse_square_scale=0.0, label_smoothing=0.0,
+                           reduction="mean", softcap=None,
+                           return_z_loss=False, accum_dtype=None,
+                           use_token_scaling=False,
+                           return_token_accuracy=False,
+                           return_predicted_tokens=False, **_):
+    from liger_kernel.ops.fused_linear_cross_entropy import (
+        LigerFusedLinearCrossEntropyFunction,
+    )
+    out = LigerFusedLinearCrossEntropyFunction.apply(
+        hidden, lm_head_weight, targets, bias, ce_weight, ignore_index,
+        lse_square_scale, label_smoothing, reduction, softcap, return_z_loss,
+        accum_dtype, use_token_scaling, return_token_accuracy,
+        return_predicted_tokens)
+    if return_z_loss or return_token_accuracy or return_predicted_tokens:
+        return out
+    return out[0] if isinstance(out, (tuple, list)) else out
+
+
+def _fused_linear_ce_ks(hidden, lm_head_weight, targets, *, ignore_index=-100,
+                        label_smoothing=0.0, chunk_size=0,
+                        reduction="mean", **_):
+    from .. import loss
+    import torch
+    num_tokens, hidden_dim = hidden.shape
+    vocab = lm_head_weight.shape[0]
+    losses = torch.empty(num_tokens, device=hidden.device, dtype=torch.float32)
+    grad_hidden = torch.empty_like(hidden)
+    grad_weight_fp32 = torch.empty(vocab, hidden_dim,
+                                   device=lm_head_weight.device,
+                                   dtype=torch.float32)
+    loss.fused_linear_cross_entropy(
+        losses, grad_hidden, grad_weight_fp32, hidden, lm_head_weight, targets,
+        num_tokens, hidden_dim, vocab, ignore_index=ignore_index,
+        label_smoothing=label_smoothing, chunk_size=chunk_size)
+    if reduction == "none":
+        return losses
+    valid = targets != ignore_index
+    selected = losses[valid] if getattr(valid, "ndim", 0) else losses
+    if reduction == "sum":
+        return selected.sum()
+    if reduction == "mean":
+        return selected.mean()
     return losses
 
 
@@ -1327,7 +1397,7 @@ def _sgl_provider(rank, call, *, min_sm=80, dtypes="fp16, bf16",
                     import_check="import sgl_kernel", call=call, note=note)
 
 
-# TODO(P2): defer 2:4-sparse, BitNet, W8A16-FP8, and fused-linear-CE wiring.
+# TODO(P2): defer 2:4-sparse and BitNet wiring until vendoring/model targets land.
 
 
 _OPS_RAW: List[Op] = [
@@ -1474,6 +1544,16 @@ _OPS_RAW: List[Op] = [
                  _w4a8_marlin, "Marlin QQQ/W4A8 (Ampere/Ada)"),
         _ks_provider(_ks_unsupported("w4a8 GEMM"), "",
                      "no portable W4A8 kernel; needs vLLM Machete/Marlin"),
+    ]),
+    Op("w8a16_fp8", "gemm-quant", None, [
+        Provider("vllm-fp8-marlin", 1, 80,
+                 "fp8 weights, fp16, bf16 acts",
+                 "from vllm import _custom_ops as ops; ops.marlin_gemm; "
+                 "ops.gptq_marlin_repack; ops.awq_marlin_repack",
+                 _w8a16_fp8_marlin,
+                 "FP8 weight-only Marlin for Ampere/Ada no-fp8-TC serving"),
+        _ks_provider(_ks_unsupported("w8a16_fp8 GEMM"), "",
+                     "no portable FP8 weight-only GEMM; needs vLLM Marlin"),
     ]),
     # FP8 BLOCKWISE GEMM (DeepSeek-V3 128x128 weight / 1x128 act recipe). DeepGEMM
     # is the Hopper/Blackwell reference; kernel-set's ks_gemm_fp8_blockwise is the
@@ -1639,6 +1719,15 @@ _OPS_RAW: List[Op] = [
                  "import torch",
                  _ce_torch, "torch.nn.functional.cross_entropy"),
         _ks_provider(_ce_ks, "ks_cross_entropy"),
+    ]),
+    Op("fused_linear_ce", "loss-optim-misc", "ks_fused_linear_cross_entropy", [
+        Provider("liger", 1, 80, "fp16, bf16, fp32",
+                 "from liger_kernel.ops.fused_linear_cross_entropy import "
+                 "LigerFusedLinearCrossEntropyFunction",
+                 _fused_linear_ce_liger,
+                 "Liger fused LM-head matmul + CE (no logits materialized)"),
+        _ks_provider(_fused_linear_ce_ks, "ks_fused_linear_cross_entropy",
+                     "chunked fused-linear CE fallback"),
     ]),
     Op("moe", "moe-comm", "ks_moe_grouped_gemm", [
         # Hopper/Blackwell: DeepGEMM grouped FP8 (DeepSeek-V3 production,

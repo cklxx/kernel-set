@@ -48,6 +48,8 @@ _OP_ALIASES = {
     "act.swiglu": "swiglu",
     "gemm.dense": "gemm",
     "loss.cross_entropy": "cross_entropy",
+    "loss.fused_linear_ce": "fused_linear_ce",
+    "loss.fused_linear_cross_entropy": "fused_linear_ce",
 }
 
 # dtype request -> canonical token used as the table key.

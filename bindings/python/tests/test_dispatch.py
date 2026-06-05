@@ -457,6 +457,17 @@ def test_new_flashinfer_import_checks_are_specific():
         "from flashinfer.page import append_paged_kv_cache"
 
 
+def test_new_deferred_op_import_checks_are_specific():
+    assert next(p for p in OPS["w8a16_fp8"].providers
+                if p.name == "vllm-fp8-marlin").import_check == \
+        "from vllm import _custom_ops as ops; ops.marlin_gemm; " \
+        "ops.gptq_marlin_repack; ops.awq_marlin_repack"
+    assert next(p for p in OPS["fused_linear_ce"].providers
+                if p.name == "liger").import_check == \
+        "from liger_kernel.ops.fused_linear_cross_entropy import " \
+        "LigerFusedLinearCrossEntropyFunction"
+
+
 def test_mxfp4_providers_are_blackwell_only():
     providers = {p.name: p for p in OPS["mxfp4_gemm"].providers}
     assert providers["flashinfer"].min_sm == 100
@@ -478,10 +489,11 @@ def test_mxfp4_providers_are_blackwell_only():
 # ops — norm/rope/act/sampling — are validated separately above; ks is SOTA-class
 # there and is a legitimate competitive provider, not merely a fallback.)
 COMPUTE_BOUND_OPS = [
-    "gemm", "fp8_gemm", "int8_gemm", "w4a16", "w4a8",
+    "gemm", "fp8_gemm", "int8_gemm", "w4a16", "w4a8", "w8a16_fp8",
     "attention_prefill", "attention_decode", "mla_decode",
     "moe", "selective_scan", "causal_conv1d",
     "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
+    "fused_linear_ce",
 ]
 
 
@@ -509,6 +521,7 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("w4a16", {"vllm"}, 90, "int4", "vllm-machete"),
         ("w4a8", {"vllm"}, 80, "int4", "vllm-marlin"),
         ("w4a8", {"vllm"}, 90, "int4", "vllm-machete"),
+        ("w8a16_fp8", {"vllm"}, 80, "bf16", "vllm-fp8-marlin"),
         ("attention_prefill", {"flash_attn"}, 80, "bf16", "flash-attn"),
         ("attention_decode", {"flashinfer"}, 80, "fp16", "flashinfer"),
         ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
@@ -520,6 +533,7 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("gated_delta_rule", {"fla"}, 80, "bf16", "flash-linear-attention"),
         ("gated_linear_attn", {"fla"}, 80, "fp16", "flash-linear-attention"),
         ("rwkv_wkv7", {"fla"}, 80, "bf16", "flash-linear-attention"),
+        ("fused_linear_ce", {"liger_kernel"}, 80, "bf16", "liger"),
     ]
     for op, libs, sm, dtype, expected in cases:
         dispatch.reset_cache()
@@ -605,6 +619,35 @@ def test_w4a8_new_op_marlin_ampere_machete_hopper(monkeypatch):
     assert dispatch.which("w4a8", dtype="int4") == KERNEL_SET
 
 
+def test_w8a16_fp8_new_op_marlin_weight_only(monkeypatch):
+    assert "w8a16_fp8" in dispatch.ops()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("w8a16_fp8", dtype="bf16") == "vllm-fp8-marlin"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=86)
+    assert dispatch.which("w8a16_fp8", dtype="fp16") == "vllm-fp8-marlin"
+    # The dtype gate is for activation compute. fp8 activations remain
+    # hardware-infeasible on sm80, even though this op stores weights in fp8.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("w8a16_fp8", dtype="fp8") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs=set(), sm=90)
+    assert dispatch.which("w8a16_fp8", dtype="bf16") == KERNEL_SET
+
+
+def test_fused_linear_ce_new_op_liger_and_ks(monkeypatch):
+    assert "fused_linear_ce" in dispatch.ops()
+    _mock_available(monkeypatch, available_libs={"liger_kernel"}, sm=80)
+    assert dispatch.which("fused_linear_ce", dtype="bf16") == "liger"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"liger_kernel"}, sm=75)
+    assert dispatch.which("fused_linear_ce", dtype="fp16") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs=set(), sm=90)
+    assert dispatch.which("fused_linear_ce", dtype="bf16") == KERNEL_SET
+
+
 def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
     torch = pytest.importorskip("torch")
     from kernel_set.backends import _registry
@@ -621,7 +664,8 @@ def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
     vllm._custom_ops = ops
     scalar_mod = types.ModuleType("vllm.scalar_type")
     scalar_mod.scalar_types = types.SimpleNamespace(
-        uint4b8="uint4b8", uint4="uint4", int8="int8", int4="int4")
+        uint4b8="uint4b8", uint4="uint4", int8="int8", int4="int4",
+        float8_e4m3fn="float8_e4m3fn")
     monkeypatch.setitem(sys.modules, "vllm", vllm)
     monkeypatch.setitem(sys.modules, "vllm._custom_ops", ops)
     monkeypatch.setitem(sys.modules, "vllm.scalar_type", scalar_mod)
@@ -646,6 +690,10 @@ def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
         "marlin_out"
     assert calls[-1][5] is a_scale
     assert calls[-1][11] == "int8"
+
+    assert _registry._w8a16_fp8_marlin(a, b, scales) == "marlin_out"
+    assert calls[-1][11] == "float8_e4m3fn"
+    assert calls[-1][12:15] == (2, 8, 4)
 
 
 def test_fa4_blackwell_only(monkeypatch):

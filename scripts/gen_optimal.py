@@ -262,6 +262,17 @@ HEURISTIC = {
         {"logical_op": "w4a8", "sm": 100, "dtype": "int4",
          "provider": "vllm-machete",
          "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
+        # W8A16-FP8 weight-only Marlin: fp8-e4m3 weights with fp16/bf16
+        # activations. The dtype key is the activation dtype; the op name carries
+        # the FP8 weight format. Native fp8_gemm remains the preferred true-FP8
+        # tensor-core op on sm89+ when activations are also fp8.
+        *[
+            {"logical_op": "w8a16_fp8", "sm": sm, "dtype": dtype,
+             "provider": "vllm-fp8-marlin",
+             "fallback_chain": ["vllm-fp8-marlin", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         # FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe). sm89 has no fp8 HW provider, so
         # kernel-set's portable blockwise kernel IS the winner there (chain
         # collapses to ["kernel-set"]); DeepGEMM wins on Hopper/Blackwell.
@@ -889,6 +900,16 @@ HEURISTIC = {
         {"logical_op": "cross_entropy", "sm": 100, "dtype": "bf16",
          "provider": "liger",
          "fallback_chain": ["liger", "torch", "kernel-set"]},
+        # --- fused_linear_ce: training-only LM-head matmul + CE without
+        #     materializing [tokens, vocab] logits. Liger is the sm80+ external
+        #     path; kernel-set's chunked FLCE is the terminal fallback.
+        *[
+            {"logical_op": "fused_linear_ce", "sm": sm, "dtype": dtype,
+             "provider": "liger",
+             "fallback_chain": ["liger", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
+        ],
         # --- SSM / causal conv front-end for Mamba-style blocks. External
         #     libraries are CUDA sm80+ and support fp16/bf16; below sm80 the
         #     selector falls back to the kernel-set terminal by omission.
