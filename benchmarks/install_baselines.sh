@@ -292,9 +292,44 @@ echo "Skipped (${#LOG_SKIP[@]}):"
 if [ "${#LOG_SKIP[@]}" -eq 0 ]; then echo "  (none)"; fi
 for x in "${LOG_SKIP[@]:-}"; do [ -n "$x" ] && echo "  skip - $x"; done
 
+# ----------------------------------------------------------------------------
+# INSTALL_ATOMIC — the cross-library atomic-op benchmark (bench_atomic.py)
+#
+# bench_atomic.py groups providers/atomic_ops.json (476 atomic library entry
+# points across flashinfer / sgl / vllm) by their logical_op and runs a
+# per-logical-op cross-LIBRARY comparison. It REUSES the exact provider call
+# adapters from bench_sota.py, so it needs NO new dependencies — the libraries
+# installed above (flashinfer, sgl-kernel, vllm) are the same ones it drives.
+# Nothing extra to install here; this note just documents the mapping:
+#
+#   logical_op               benched via the libs installed above
+#   -----------------------  --------------------------------------------------
+#   norm.rmsnorm             flashinfer.norm.rmsnorm / vllm.rms_norm /
+#                            sgl.rmsnorm (+ kernel-set ks_rmsnorm)
+#   norm.fused_add_rmsnorm   flashinfer / vllm.fused_add_rms_norm / sgl
+#                            (+ kernel-set ks_fused_add_rmsnorm)
+#   act.silu_mul             flashinfer / vllm.silu_and_mul / sgl
+#                            (+ kernel-set ks_silu_and_mul)
+#   act.gelu_mul             flashinfer / vllm.gelu_and_mul / sgl
+#   act.gelu_tanh_mul        flashinfer / vllm.gelu_tanh_and_mul / sgl
+#   rope.apply               flashinfer apply_rope_with_cos_sin_cache /
+#                            vllm.rotary_embedding / sgl.rotary_embedding
+#                            (+ kernel-set ks_rope)
+#   moe.gate_softmax         sgl.topk_softmax / vllm.topk_softmax
+#   gemm.w8a8                sgl.int8_scaled_mm / vllm.cutlass_scaled_mm
+#                            (+ kernel-set ks_gemm_w8a8)
+#
+# Atomic ops WITHOUT a verified call adapter (the other multi-lib logical_ops)
+# are reported `cataloged, no-adapter` rather than guessed at. To see the full
+# catalog + adapter coverage WITHOUT a GPU: python3 benchmarks/bench_atomic.py
+# --list  (works on a CPU box; it is just JSON introspection).
+# ----------------------------------------------------------------------------
+note "INSTALL_ATOMIC: bench_atomic.py reuses the libs installed above (flashinfer/sgl-kernel/vllm) — nothing extra to install."
+
 echo ""
 note "Next: python3 benchmarks/bench_sota.py --dtype fp16 --output results/sota.md"
-echo "(providers that failed/skipped above will show as import-fail / skip rows — that is expected, not a crash.)"
+note "  or: python3 benchmarks/bench_atomic.py --dtype fp16 --output results/atomic.md  (cross-library atomic-op comparison)"
+echo "(providers that failed/skipped above will show as import-fail / skip / cataloged-no-adapter rows — that is expected, not a crash.)"
 
 # Always exit 0: a partial install is a valid, expected outcome.
 exit 0

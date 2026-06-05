@@ -58,6 +58,24 @@ KS_API ks_status_t ks_gemm_w4a16(void* c, const void* a, const void* b_packed,
                                  int64_t k, int group_size, ks_dtype_t dtype,
                                  ks_stream_t stream);
 
+/* FP8 GEMM: fp8 A [M,K] x fp8 B [K,N] -> `out_dtype` C [M,N] (bf16/fp16/fp32).
+ * Both operands are FP8 (e4m3 or e5m2, selected by `fp8_dtype`), dequantized to
+ * fp32 by the supplied scales before the matmul:
+ *   C = (a_scale (x) b_scale) * (A_fp8 @ B_fp8)
+ *     a_scale: per-token  [M]  (KS_QUANT_PER_TOKEN)   or [1] (PER_TENSOR)
+ *     b_scale: per-channel [N] (KS_QUANT_PER_CHANNEL) or [1] (PER_TENSOR)
+ * Row-major, non-transposed (A row stride K, B row stride N) — the standard
+ * quantized-linear layout (B is the transposed-and-quantized weight stored
+ * [K,N]). Correctness path converts fp8->fp32 and accumulates in fp32 on every
+ * arch; a hardware fp8 tensor-core (mma.sync.f8) path is the documented perf
+ * upgrade (sm_89+). */
+KS_API ks_status_t ks_gemm_fp8(void* out, const void* a_fp8, const void* b_fp8,
+                               const float* a_scale, const float* b_scale,
+                               int64_t m, int64_t n, int64_t k,
+                               ks_quant_mode_t a_mode, ks_quant_mode_t b_mode,
+                               ks_dtype_t fp8_dtype, ks_dtype_t out_dtype,
+                               ks_stream_t stream);
+
 KS_END_EXTERN_C
 
 #endif /* KERNEL_SET_GEMM_H_ */

@@ -1,120 +1,95 @@
 <h1 align="center">kernel-set</h1>
 
-<p align="center">
-  <b>High-performance CUDA kernels for LLM inference & training — callable from Python, Rust, Go, and TypeScript through one stable C ABI.</b>
-</p>
+<p align="center"><b>High-performance LLM inference & training kernels — one C ABI, callable from Python / Rust / Go / TypeScript — that auto-selects the strongest kernel per model & GPU.</b></p>
 
 ---
 
-`kernel-set` is a single, coherent collection of the operators that dominate
-transformer inference and training — fused attention, GEMM, normalization,
-rotary embeddings, gated MLPs, MoE routing, quantization, sampling, losses, and
-optimizers — exposed behind **one pure-C ABI** so any language can call them
-without a GPU toolchain of its own. A model→kernel registry and the `ksctl` CLI
-then **auto-select the strongest kernel per operator** for a given model and GPU.
+`kernel-set` is two things in one:
 
-> **Status:** CUDA backend. A HIP/ROCm backend is wired into the build and the
-> platform abstraction layer (`KS_PLATFORM_HIP`) so porting to ROCm is a flag,
-> not a rewrite — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+1. **A portable kernel library** — the operators that dominate transformer
+   inference/training (attention, GEMM, norm, RoPE, gated-MLP, MoE, quant,
+   sampling, loss, optimizer, **Mamba SSM**) behind **one pure-C ABI**, so any
+   language binds the *same* `libkernel_set` with no GPU toolchain of its own.
+2. **A best-kernel selector** — a catalog of the real-world SOTA kernels
+   (FlashAttention/FlashInfer/vLLM/SGLang/CUTLASS/Marlin/DeepGEMM/…) and a
+   dispatcher that routes each op to the **strongest available** implementation,
+   falling back to kernel-set's own kernels for portability.
 
-## Why
+> **Verified:** every kernel-set op is GPU-checked for correctness on **L4
+> (sm89)** and **A100 (sm80)** (`benchmarks/results/`); the library loads on
+> **sm70–sm90** (T4/V100/A100/L4/H100). HIP/ROCm is wired behind a build flag.
 
-- **Write once, call everywhere.** The ABI in [`include/kernel_set/`](include/kernel_set)
-  is plain C with no CUDA headers — so Python (ctypes), Go (cgo), Rust (FFI), and
-  Node (koffi) all bind to the *same* `libkernel_set`.
-- **Best-in-class, mapped to models.** Operators are surveyed against the
-  real-world landscape (FlashAttention/FlashInfer/vLLM/SGLang/CUTLASS/Marlin/
-  AWQ/Liger/…) and mapped per model family. `ksctl plan` picks the strongest
-  kernel + dtype for your `(model, gpu)`.
-- **Built for the GPUs you have.** Targets T4/A100/A10/L4/H100 by default; the
-  Colab benchmark harness builds for L4 (sm_89) and A100 (sm_80) and benchmarks
-  every op against a PyTorch reference.
+## The strategy (honest)
 
-## Repository layout
+- **Memory-bound ops are SOTA-class self-developed kernels** — RMSNorm, SwiGLU,
+  RoPE, elementwise, AdamW hit **84–87 % of A100 peak bandwidth** (AdamW 87 %,
+  SwiGLU/GeGLU 84 %), on par with or beating FlashInfer/Liger.
+- **Compute-bound ops dispatch to the industry best** — our clean-room GEMM /
+  attention / MoE are ~0.01–0.1× cuBLAS/FlashAttention, so the dispatcher routes
+  them to cuBLAS / FlashAttention / FlashInfer / Marlin / DeepGEMM / sgl-kernel;
+  kernel-set stays as the correct portable fallback. See
+  [`docs/OPTIMAL_SELECTION.md`](docs/OPTIMAL_SELECTION.md).
 
-```
-include/kernel_set/     Pure-C ABI — the single source of truth (12 categories + runtime)
-kernels/src/common/     Platform abstraction (CUDA/HIP), dtype traits, reductions, vec IO, dispatch
-kernels/src/<category>/ CUDA kernel implementations (.cu)
-kernels/tests/          C++ correctness tests (compare vs CPU reference)
-bindings/python|rust|go|ts/   One FFI wrapper per language over the C ABI
-models/                 Model→kernel registry (registry.json/.yaml) + select engine + `ksctl` CLI
-benchmarks/             Colab-ready benchmark harness (bench.py, colab_bench.ipynb)
-docs/                   Architecture, usage, kernel landscape, model→kernel table
-examples/               Minimal end-to-end example per language
-```
-
-## Operator categories
+## Operators
 
 | Category | Header | Highlights |
 |---|---|---|
-| Attention | `attention.h` | FlashAttention-2 prefill (dense + varlen), paged decode, KV-cache append, **MLA** decode, backward |
-| GEMM | `gemm.h` | tensor-core fp16/bf16, fused bias+act, batched, **W8A8**, **W4A16** (AWQ/GPTQ) |
-| Norm | `norm.h` | RMSNorm (+fused add-residual), LayerNorm, both backward |
+| Attention | `attention.h` | FlashAttention-2 prefill (dense+varlen), paged decode, **MLA**, KV-cache, backward |
+| GEMM | `gemm.h` | tensor-core fp16/bf16, bias+act, batched, **W8A8 / W4A16 / FP8** |
+| Norm | `norm.h` | RMSNorm (+fused residual), LayerNorm, backward |
 | RoPE | `rope.h` | NeoX & interleaved, gathered, GQA, backward |
-| Activation | `activation.h` | SiLU/GeLU/ReLU, **SwiGLU**/GeGLU (+packed, +backward) |
-| Quant | `quant.h` | **FP8** e4m3/e5m2, INT8 (per-tensor/token), INT4 dequant |
-| MoE | `moe.h` | softmax & **DeepSeek group** top-k gating, permute/unpermute, **grouped GEMM** |
-| Sampling | `sampling.h` | softmax, argmax, fused temperature+top-k+top-p (Philox RNG) |
-| Embedding | `embedding.h` | lookup + scatter-add backward |
-| Elementwise | `elementwise.h` | add/mul/residual/scale/cast/axpby (vectorized) |
-| Loss | `loss.h` | fused cross-entropy, **fused-linear-cross-entropy** (chunked) |
-| Optimizer | `optimizer.h` | fused AdamW, SGD-momentum, global grad-norm |
+| Activation | `activation.h` | SiLU/GeLU/ReLU, **SwiGLU/GeGLU** (+backward) |
+| Quant | `quant.h` | FP8 e4m3/e5m2, INT8, INT4 dequant |
+| MoE | `moe.h` | softmax & **DeepSeek group** gating, permute, grouped GEMM |
+| Sampling | `sampling.h` | softmax, argmax, temp+top-k+top-p (Philox) |
+| SSM | `ssm.h` | **Mamba** selective-scan + causal-conv1d |
+| Loss · Optimizer · Embedding · Elementwise | … | fused CE / FLCE · AdamW/SGD · lookup+bwd · add/mul/cast/… |
 
-Every entry point returns `ks_status_t`, takes device pointers (`void*`), a
-dtype tag, and a `ks_stream_t` (`NULL` = default stream). See
-[`CONTRACT.md`](CONTRACT.md) for the full convention.
+Every entry point returns `ks_status_t`, takes device pointers + a `ks_stream_t`.
+See [`CONTRACT.md`](CONTRACT.md).
 
-## Build
-
-Requires CUDA 12.x + CMake ≥ 3.24.
+## Quickstart
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=89   # L4; use 80 for A100
-cmake --build build -j
-# -> build/libkernel_set.so
-export KERNEL_SET_LIB=$PWD/build/libkernel_set.so   # bindings discover the lib here
-```
+# build (CUDA 12.x, CMake ≥3.24) — globs kernels/src/**/*.cu, no per-kernel edits
+cmake -B build -DCMAKE_CUDA_ARCHITECTURES=89 && cmake --build build -j   # L4; 80=A100, 90=H100
+export KERNEL_SET_LIB=$PWD/build/libkernel_set.so
 
-The build globs `kernels/src/**/*.cu`, so adding a kernel needs no CMake edit.
+# which kernel is best for my model+GPU?
+python3 models/ksctl plan     --model deepseek-v3 --gpu a100 --dtype bf16
+python3 models/ksctl backends --gpu h100        # the runtime best-backend chain per op
 
-## Auto-select kernels for a model
-
-```bash
-python3 models/ksctl list
-python3 models/ksctl plan --model deepseek-v3 --gpu a100 --dtype bf16 --mode inference
-python3 models/ksctl table --gpu l4 --md docs/MODEL_KERNEL_MAP.md
-```
-
-`plan` reports, per logical op, the strongest `kernel-set` function + dtype/quant
-scheme + rationale given the GPU's capabilities (e.g. FP8 on L4/H100 but not
-A100) and the model's architecture (MLA→`ks_mla_decode`, MoE→`ks_moe_*`).
-
-This static plan is **Tier 1** of routing; the runtime
-best-available-provider dispatcher (`kernel_set.dispatch`) is **Tier 2**, and
-the kernel-set C ABI is the **Tier 3** portable fallback. See
-[`docs/ROUTING.md`](docs/ROUTING.md) for the full three-tier map.
-
-## Call it from your language
-
-```python
+# call it (auto-routes to the best installed backend; ks kernel as fallback)
+python3 - <<'PY'
 import torch, kernel_set as ks
 x = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
-w = torch.ones(4096, device="cuda", dtype=torch.bfloat16)
-out = ks.rms_norm(x, w, eps=1e-6)
+print(ks.dispatch.rms_norm(x, torch.ones(4096, device="cuda", dtype=torch.bfloat16)))
+PY
+
+# benchmark every op vs PyTorch/SOTA (Colab L4/A100)
+benchmarks/build_and_bench.sh      # or open benchmarks/colab_bench.ipynb
 ```
 
-See [`docs/USAGE.md`](docs/USAGE.md) and each `bindings/<lang>/README.md` for
-Rust, Go, and TypeScript snippets.
+## Layout
 
-## Benchmark on Colab (L4 / A100)
+```
+include/kernel_set/   pure-C ABI (the contract)        bindings/{python,rust,go,ts}/  FFI wrappers
+kernels/src/          CUDA kernels (+common/ platform)  models/   registry + ksctl (model→kernel plan)
+providers/            SOTA catalog + 476-op atomic index third_party/  vendored SOTA kernel sources
+benchmarks/           harness + results/{l4,a100}.md     docs/     architecture / routing / selection
+```
 
-Open [`benchmarks/colab_bench.ipynb`](benchmarks/colab_bench.ipynb) on a GPU
-runtime — it detects the GPU, builds for the right arch, and benchmarks every op
-against PyTorch. Locally: `benchmarks/build_and_bench.sh`.
+## Docs
+
+| | |
+|---|---|
+| [`docs/ROUTING.md`](docs/ROUTING.md) | three-tier routing: static plan → runtime dispatch → C-ABI fallback |
+| [`docs/OPTIMAL_SELECTION.md`](docs/OPTIMAL_SELECTION.md) | per-op optimal provider + adopt-vs-self-develop decision |
+| [`docs/OPERATOR_CATALOG.md`](docs/OPERATOR_CATALOG.md) · [`ATOMIC_OPERATORS.md`](docs/ATOMIC_OPERATORS.md) | 127 logical ops · 476 atomic ops (`sgl.*`/`flashinfer.*`/`vllm.*`) flattened |
+| [`docs/MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 100+ models → kernels (Llama 4, Qwen3, DeepSeek-V3, Kimi-K2, …) |
+| [`docs/KERNEL_LANDSCAPE.md`](docs/KERNEL_LANDSCAPE.md) · [`BENCHMARK_METHODOLOGY.md`](docs/BENCHMARK_METHODOLOGY.md) · [`USAGE.md`](docs/USAGE.md) · [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | landscape · bench methodology · usage · architecture |
 
 ## License
 
-See [`LICENSE`](LICENSE). Kernels are clean-room implementations; provenance of
-the algorithms they are modeled on is documented in
-[`docs/KERNEL_LANDSCAPE.md`](docs/KERNEL_LANDSCAPE.md).
+[Apache-2.0](LICENSE). kernel-set kernels are clean-room; vendored third-party
+sources keep their own licenses ([`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).

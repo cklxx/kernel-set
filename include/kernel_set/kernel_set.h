@@ -28,5 +28,6 @@
 #include "kernel_set/quant.h"
 #include "kernel_set/rope.h"
 #include "kernel_set/sampling.h"
+#include "kernel_set/ssm.h"
 
 #endif /* KERNEL_SET_KERNEL_SET_H_ */
