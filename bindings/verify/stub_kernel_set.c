@@ -1116,3 +1116,55 @@ ks_status_t ks_sample(int32_t* out_tokens, float* out_probs, const void* logits,
   (void)stream;
   return KS_SUCCESS;
 }
+
+/* ===================================================================== */
+/* ssm.h — Mamba state-space (added with the SSM ABI)                     */
+/* ===================================================================== */
+
+ks_status_t ks_causal_conv1d(void* out, const void* x, const void* weight,
+                             const void* bias, int batch, int dim, int seqlen,
+                             int width, int silu, ks_dtype_t dtype,
+                             ks_stream_t stream) {
+  (void)out; (void)x; (void)weight; (void)bias; (void)batch; (void)dim;
+  (void)seqlen; (void)width; (void)silu; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_selective_scan(void* out, const void* x, const void* dt,
+                              const void* A, const void* B, const void* C,
+                              const void* D, const void* z, const void* dt_bias,
+                              int delta_softplus, int batch, int dim, int seqlen,
+                              int dstate, ks_dtype_t dtype, ks_stream_t stream) {
+  (void)out; (void)x; (void)dt; (void)A; (void)B; (void)C; (void)D; (void)z;
+  (void)dt_bias; (void)delta_softplus; (void)batch; (void)dim; (void)seqlen;
+  (void)dstate; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_selective_scan_update(void* state, void* out, const void* x,
+                                     const void* dt, const void* A,
+                                     const void* B, const void* C, const void* D,
+                                     const void* z, const void* dt_bias,
+                                     int delta_softplus, int batch, int dim,
+                                     int dstate, ks_dtype_t dtype,
+                                     ks_stream_t stream) {
+  (void)state; (void)out; (void)x; (void)dt; (void)A; (void)B; (void)C; (void)D;
+  (void)z; (void)dt_bias; (void)delta_softplus; (void)batch; (void)dim;
+  (void)dstate; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+/* ===================================================================== */
+/* gemm.h — native FP8 GEMM (added with the fp8 ABI)                      */
+/* ===================================================================== */
+
+ks_status_t ks_gemm_fp8(void* out, const void* a_fp8, const void* b_fp8,
+                        const float* a_scale, const float* b_scale, int64_t m,
+                        int64_t n, int64_t k, ks_quant_mode_t a_mode,
+                        ks_quant_mode_t b_mode, ks_dtype_t fp8_dtype,
+                        ks_dtype_t out_dtype, ks_stream_t stream) {
+  (void)out; (void)a_fp8; (void)b_fp8; (void)a_scale; (void)b_scale; (void)m;
+  (void)n; (void)k; (void)a_mode; (void)b_mode; (void)fp8_dtype; (void)out_dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}

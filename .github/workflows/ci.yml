@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # No-GPU checks: ABI coverage, catalog validity, dispatch logic, CLI, harness.
+  # ---------------------------------------------------------------------------
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pytest
+
+      - name: ABI coverage (every declared ks_* has a definition)
+        run: python scripts/check_abi.py
+
+      - name: Catalogs are valid JSON
+        run: |
+          python - <<'PY'
+          import json
+          for f in ("providers/registry.json","providers/atomic_ops.json","models/registry.json"):
+              json.load(open(f)); print("ok", f)
+          PY
+
+      - name: baselines.yaml in sync with registry
+        run: python scripts/gen_baselines.py --check
+
+      - name: ksctl smoke (list / plan / table / backends)
+        run: |
+          python models/ksctl list > /dev/null
+          python models/ksctl plan --model deepseek-v3 --gpu a100 --dtype bf16 > /dev/null
+          python models/ksctl backends --gpu h100 > /dev/null
+          python models/ksctl table --gpu l4 > /dev/null
+
+      - name: Dispatch unit tests
+        run: PYTHONPATH=bindings/python python -m pytest bindings/python/tests/test_dispatch.py -q
+
+      - name: Benchmark harnesses parse + list
+        run: |
+          for f in bench bench_sota bench_atomic; do
+            python -c "import ast; ast.parse(open('benchmarks/$f.py').read()); print('parse ok: $f')"
+          done
+          python benchmarks/bench.py --list-ops > /dev/null
+
+      - name: Shell scripts lint
+        run: |
+          bash -n benchmarks/build_and_bench.sh
+          bash -n benchmarks/install_baselines.sh
+
+  # ---------------------------------------------------------------------------
+  # CUDA compile (no GPU needed to *compile*). A per-arch single-target build
+  # + dlopen catches the class of bug that broke A100/T4/V100 once (a kernel
+  # compiled out on one arch leaving an undefined device symbol -> .so won't load).
+  # NOTE: pin the CUDA / action versions to ones available on the runner if this
+  # ever fails to provision; nvcc compiles fine without a physical GPU.
+  # ---------------------------------------------------------------------------
+  build-cuda:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ["80", "89", "90"]   # A100/V100-ish, L4/Ada, Hopper
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA toolkit (nvcc, no GPU)
+        id: cuda
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: "12.5.1"
+          method: "network"
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install "cmake>=3.24" ninja
+      - name: Configure + build (sm_${{ matrix.arch }})
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }}
+          cmake --build build -j
+      - name: dlopen the library (no undefined symbols)
+        run: |
+          LD_LIBRARY_PATH="${{ steps.cuda.outputs.CUDA_PATH }}/lib64:${LD_LIBRARY_PATH:-}" \
+          python -c "import ctypes; ctypes.CDLL('build/libkernel_set.so'); print('dlopen OK sm_${{ matrix.arch }}')"
+
+  # ---------------------------------------------------------------------------
+  # Language-binding FFI: build a CPU stub of libkernel_set from the headers and
+  # link/load/call it from all four bindings (no GPU). Proves the FFI plumbing
+  # (symbols, marshalling, linkage) for Python / Rust / Go / TypeScript.
+  # ---------------------------------------------------------------------------
+  bindings-ffi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - uses: actions/setup-go@v5
+        with: { go-version: "stable" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build CPU stub (header-faithful, all ks_* symbols)
+        run: |
+          cc -shared -fPIC -I include -DKERNEL_SET_BUILD \
+            bindings/verify/stub_kernel_set.c -o bindings/verify/libkernel_set.so
+          echo "STUB=$PWD/bindings/verify/libkernel_set.so" >> "$GITHUB_ENV"
+          echo "STUBDIR=$PWD/bindings/verify" >> "$GITHUB_ENV"
+
+      - name: Python FFI
+        run: KERNEL_SET_LIB="$STUB" PYTHONPATH=bindings/python python bindings/verify/verify_python.py
+
+      - name: Rust FFI
+        run: |
+          cd bindings/rust
+          KERNEL_SET_LIB="$STUB" LD_LIBRARY_PATH="$STUBDIR" cargo run --example verify
+
+      - name: Go FFI (cgo)
+        run: |
+          cd bindings/go
+          CGO_CFLAGS="-I $PWD/../../include" CGO_LDFLAGS="-L $STUBDIR -lkernel_set" \
+          LD_LIBRARY_PATH="$STUBDIR" go run ./verify
+
+      - name: TypeScript FFI (koffi)
+        run: |
+          cd bindings/ts && npm install && npx tsc -p tsconfig.json
+          cd "$GITHUB_WORKSPACE"
+          KERNEL_SET_LIB="$STUB" node bindings/verify/verify_ts.mjs
+
+      - name: Signature cross-check vs headers (informational)
+        continue-on-error: true   # ssm/fp8 ops not yet wrapped in all 4 bindings
+        run: python bindings/verify/xcheck_signatures.py

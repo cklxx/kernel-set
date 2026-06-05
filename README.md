@@ -2,6 +2,11 @@
 
 <p align="center"><b>High-performance LLM inference & training kernels — one C ABI, callable from Python / Rust / Go / TypeScript — that auto-selects the strongest kernel per model & GPU.</b></p>
 
+<p align="center">
+  <a href="https://github.com/cklxx/kernel-set/actions/workflows/ci.yml"><img src="https://github.com/cklxx/kernel-set/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
+</p>
+
 ---
 
 `kernel-set` is two things in one:
