@@ -67,6 +67,16 @@ from _bench_common import (  # noqa: E402
     ATTN_DECODE_SHAPES as _ATTN_DECODE_SHAPES,
     ROPE_SHAPES as _ROPE_SHAPES,
     CE_SHAPES as _CE_SHAPES,
+    ELEMENTWISE_SHAPES as _ELEMENTWISE_SHAPES,
+    EMBEDDING_SHAPES as _EMBEDDING_SHAPES,
+    QUANT_SHAPES as _QUANT_SHAPES,
+    DEQUANT_INT4_SHAPES as _DEQUANT_INT4_SHAPES,
+    MOE_PERMUTE_SHAPES as _MOE_PERMUTE_SHAPES,
+    RESHAPE_CACHE_SHAPES as _RESHAPE_CACHE_SHAPES,
+    ATTN_BWD_SHAPES as _ATTN_BWD_SHAPES,
+    FLCE_SHAPES as _FLCE_SHAPES,
+    OPTIM_SHAPES as _OPTIM_SHAPES,
+    LOG_SOFTMAX_SHAPES as _LOG_SOFTMAX_SHAPES,
     ref_rope_neox as _ref_rope_neox,
 )
 
@@ -806,6 +816,21 @@ def gate_correctness(r: Result, ctx: Ctx) -> bool:
     return bool(r.is_correct)
 
 
+def _is_arch_unsupported(exc: Exception) -> bool:
+    """True if a kernel_set error is ARCH_UNSUPPORTED (e.g. fp8 quant on sm80),
+    so the caller can mark skip(arch) rather than failing the whole run.
+
+    KernelSetError carries the numeric ks_status_t as ``.status`` (7 ==
+    KS_ERROR_ARCH_UNSUPPORTED) and a symbolic ``.status_name``; we also fall back
+    to a substring match so the guard is robust if the error type changes."""
+    if getattr(exc, "status", None) == 7:
+        return True
+    name = (getattr(exc, "status_name", "") or "").upper()
+    if "ARCH_UNSUPPORTED" in name:
+        return True
+    return "ARCH_UNSUPPORTED" in str(exc).upper()
+
+
 # op-category -> list of (shape_label, builder). builder(ctx) -> Result
 _REGISTRY: "Dict[str, List[Tuple[str, Callable[[Ctx], Result]]]]" = {}
 
@@ -1486,13 +1511,1124 @@ for _lbl, _n in _ADAMW_SHAPES:
         (lambda n: lambda c: _bench_adamw(c, n))(_n))
 
 
+# =========================================================================== #
+# Full-op-coverage benchmarks: every remaining kernel-set compute op, each with
+# a correctness gate (vs the strongest available torch reference — autograd for
+# the backward kernels) + perf (GB/s for bandwidth-bound, TFLOP/s for FLCE).
+# =========================================================================== #
+
+# --------------------------- NORM BACKWARD --------------------------------- #
+def _bench_rmsnorm_bwd(ctx: Ctx, rows: int, hidden: int) -> Result:
+    r = Result("rmsnorm_bwd", f"rows={rows},hidden={hidden}", ctx.dtype_name)
+    x = ctx.rand(rows, hidden)
+    w = ctx.rand(hidden)
+    g = ctx.rand(rows, hidden)                       # grad_out
+    eps = 1e-6
+    grad_input = ctx.empty(rows, hidden)
+    grad_weight_fp32 = torch.zeros(hidden, device="cuda", dtype=torch.float32)
+
+    def run():
+        grad_weight_fp32.zero_()
+        ks.norm.rms_norm_backward(grad_input, grad_weight_fp32, g, x, w,
+                                  rows=rows, cols=hidden, eps=eps)
+
+    # reference via torch autograd through the RMSNorm forward (fp32 math).
+    xv = x.float().detach().requires_grad_(True)
+    wv = w.float().detach().requires_grad_(True)
+    rms = torch.rsqrt(xv.pow(2).mean(-1, keepdim=True) + eps)
+    y = (xv * rms) * wv
+    y.backward(g.float())
+    ref_gi, ref_gw = xv.grad, wv.grad
+
+    grad_weight_fp32.zero_()
+    ks.norm.rms_norm_backward(grad_input, grad_weight_fp32, g, x, w,
+                              rows=rows, cols=hidden, eps=eps)
+    torch.cuda.synchronize()
+    r.rel_err = max(rel_err(grad_input, ref_gi),
+                    rel_err(grad_weight_fp32, ref_gw))
+    r.note = "autograd ref (grad_input + grad_weight_fp32)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read grad_out + input, write grad_input (+ atomic grad_weight, negligible)
+    nbytes = 3 * rows * hidden * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_layernorm_bwd(ctx: Ctx, rows: int, hidden: int) -> Result:
+    r = Result("layernorm_bwd", f"rows={rows},hidden={hidden}", ctx.dtype_name)
+    x = ctx.rand(rows, hidden)
+    w = ctx.rand(hidden)
+    b = ctx.rand(hidden)
+    g = ctx.rand(rows, hidden)
+    eps = 1e-5
+    grad_input = ctx.empty(rows, hidden)
+    grad_weight_fp32 = torch.zeros(hidden, device="cuda", dtype=torch.float32)
+    grad_bias_fp32 = torch.zeros(hidden, device="cuda", dtype=torch.float32)
+
+    def run():
+        grad_weight_fp32.zero_()
+        grad_bias_fp32.zero_()
+        ks.norm.layer_norm_backward(grad_input, grad_weight_fp32, grad_bias_fp32,
+                                    g, x, w, rows=rows, cols=hidden, eps=eps)
+
+    # reference via torch autograd through F.layer_norm (fp32 math).
+    xv = x.float().detach().requires_grad_(True)
+    wv = w.float().detach().requires_grad_(True)
+    bv = b.float().detach().requires_grad_(True)
+    y = torch.nn.functional.layer_norm(xv, (hidden,), wv, bv, eps)
+    y.backward(g.float())
+    ref_gi, ref_gw, ref_gb = xv.grad, wv.grad, bv.grad
+
+    grad_weight_fp32.zero_()
+    grad_bias_fp32.zero_()
+    ks.norm.layer_norm_backward(grad_input, grad_weight_fp32, grad_bias_fp32,
+                                g, x, w, rows=rows, cols=hidden, eps=eps)
+    torch.cuda.synchronize()
+    r.rel_err = max(rel_err(grad_input, ref_gi),
+                    rel_err(grad_weight_fp32, ref_gw),
+                    rel_err(grad_bias_fp32, ref_gb))
+    r.note = "autograd ref (grad_input + grad_weight/bias_fp32)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 3 * rows * hidden * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+# layer_norm forward is already registered under "layernorm" (_bench_layernorm).
+for _lbl, _rows, _hid in _NORM_SHAPES:
+    register("rmsnorm_bwd", _lbl)(
+        (lambda rows, hid: lambda c: _bench_rmsnorm_bwd(c, rows, hid))(_rows, _hid))
+    register("layernorm_bwd", _lbl)(
+        (lambda rows, hid: lambda c: _bench_layernorm_bwd(c, rows, hid))(_rows, _hid))
+
+
+# ------------------------- ACTIVATION: GeGLU + bwd ------------------------- #
+def _bench_geglu(ctx: Ctx, rows: int, inter: int) -> Result:
+    r = Result("geglu", f"rows={rows},inter={inter}", ctx.dtype_name)
+    gate = ctx.rand(rows, inter)
+    up = ctx.rand(rows, inter)
+    out = ctx.empty(rows, inter)
+
+    def run():
+        ks.activation.geglu(out, gate, up)
+
+    # exact (erf) GELU * up, fp32 reference.
+    ref = (torch.nn.functional.gelu(gate.float()) * up.float()).to(ctx.dt)
+    ks.activation.geglu(out, gate, up)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 3 * rows * inter * dtype_bytes(ctx.dt)   # read gate+up, write out
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(
+        lambda: torch.nn.functional.gelu(gate) * up)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+def _bench_swiglu_bwd(ctx: Ctx, rows: int, inter: int) -> Result:
+    r = Result("swiglu_bwd", f"rows={rows},inter={inter}", ctx.dtype_name)
+    gate = ctx.rand(rows, inter)
+    up = ctx.rand(rows, inter)
+    g = ctx.rand(rows, inter)                          # grad_out
+    grad_gate = ctx.empty(rows, inter)
+    grad_up = ctx.empty(rows, inter)
+
+    def run():
+        ks.activation.swiglu_backward(grad_gate, grad_up, g, gate, up)
+
+    # autograd through silu(gate)*up.
+    gv = gate.float().detach().requires_grad_(True)
+    uv = up.float().detach().requires_grad_(True)
+    y = torch.nn.functional.silu(gv) * uv
+    y.backward(g.float())
+    ref_gg, ref_gu = gv.grad, uv.grad
+
+    ks.activation.swiglu_backward(grad_gate, grad_up, g, gate, up)
+    torch.cuda.synchronize()
+    r.rel_err = max(rel_err(grad_gate, ref_gg), rel_err(grad_up, ref_gu))
+    r.note = "autograd ref (grad_gate + grad_up)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read grad_out + gate + up, write grad_gate + grad_up = 5 * rows*inter
+    nbytes = 5 * rows * inter * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _rows, _inter in _SWIGLU_SHAPES:
+    register("geglu", _lbl)(
+        (lambda rows, inter: lambda c: _bench_geglu(c, rows, inter))(_rows, _inter))
+    register("swiglu_bwd", _lbl)(
+        (lambda rows, inter: lambda c: _bench_swiglu_bwd(c, rows, inter))(_rows, _inter))
+
+
+# ----------------------------- ROPE BACKWARD ------------------------------- #
+def _bench_rope_bwd(ctx: Ctx, tokens: int, qh: int, kvh: int, hd: int) -> Result:
+    r = Result("rope_bwd", f"tokens={tokens},qh={qh},kvh={kvh},hd={hd}",
+               ctx.dtype_name)
+    grad_q = ctx.rand(tokens, qh, hd)
+    grad_k = ctx.rand(tokens, kvh, hd)
+    cos = ctx.rand(tokens, hd // 2)
+    sin = ctx.rand(tokens, hd // 2)
+    gq0, gk0 = grad_q.clone(), grad_k.clone()
+
+    def run():
+        # in-place; rotates the grads by the conjugate rotation each call.
+        grad_q.copy_(gq0)
+        grad_k.copy_(gk0)
+        ks.rope.rope_backward(grad_q, grad_k, cos, sin,
+                              tokens, qh, kvh, hd)
+
+    # RoPE backward is the conjugate (transpose) rotation, i.e. RoPE with -sin.
+    # That is exactly autograd through the forward NeoX RoPE:
+    #   forward o = R(theta) x  =>  grad_x = R(theta)^T grad_o = R(-theta) grad_o.
+    gqc, gkc = gq0.clone(), gk0.clone()
+    ref_gq = _ref_rope_neox(gqc, cos, -sin)   # conjugate rotation
+    ks.rope.rope_backward(gqc, gkc, cos, sin, tokens, qh, kvh, hd)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(gqc, ref_gq)
+    r.note = "conjugate-rotation ref (neox)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 2 * (tokens * qh * hd + tokens * kvh * hd) * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _tk, _qh, _kvh, _hd in _ROPE_SHAPES:
+    register("rope_bwd", _lbl)(
+        (lambda tk, qh, kvh, hd: lambda c: _bench_rope_bwd(c, tk, qh, kvh, hd))(
+            _tk, _qh, _kvh, _hd))
+
+
+# ------------------------------- EMBEDDING --------------------------------- #
+def _bench_embedding_lookup(ctx: Ctx, tokens, vocab, embed_dim) -> Result:
+    r = Result("embedding", f"tokens={tokens},vocab={vocab},d={embed_dim}",
+               ctx.dtype_name)
+    table = ctx.rand(vocab, embed_dim)
+    idx = torch.randint(0, vocab, (tokens,), device="cuda", dtype=torch.int32)
+    out = ctx.empty(tokens, embed_dim)
+
+    def run():
+        ks.embedding.embedding_lookup(out, table, idx, tokens, embed_dim)
+
+    # reference: torch index_select.
+    ref = table.index_select(0, idx.to(torch.int64))
+    ks.embedding.embedding_lookup(out, table, idx, tokens, embed_dim)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = "index_select ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read+write the gathered rows = 2 * tokens*embed_dim (table read is sparse).
+    nbytes = 2 * tokens * embed_dim * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+
+    r.set_ref_timing(time_op(_sink(
+        lambda: table.index_select(0, idx.to(torch.int64)))))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager(index_select)"
+    return r
+
+
+def _bench_embedding_bwd(ctx: Ctx, tokens, vocab, embed_dim) -> Result:
+    r = Result("embedding_bwd", f"tokens={tokens},vocab={vocab},d={embed_dim}",
+               ctx.dtype_name)
+    idx = torch.randint(0, vocab, (tokens,), device="cuda", dtype=torch.int32)
+    g = ctx.rand(tokens, embed_dim)                    # grad_out
+    grad_table_fp32 = torch.zeros(vocab, embed_dim, device="cuda",
+                                  dtype=torch.float32)
+
+    def run():
+        grad_table_fp32.zero_()
+        ks.embedding.embedding_backward(grad_table_fp32, g, idx,
+                                        tokens, embed_dim)
+
+    # reference: scatter-add into a zero table (autograd of index_select).
+    ref = torch.zeros(vocab, embed_dim, device="cuda", dtype=torch.float32)
+    ref.index_add_(0, idx.to(torch.int64), g.float())
+
+    grad_table_fp32.zero_()
+    ks.embedding.embedding_backward(grad_table_fp32, g, idx, tokens, embed_dim)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(grad_table_fp32, ref)
+    r.note = "scatter-add (index_add) ref; grad_table fp32"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read grad_out (dt) + scatter-add into fp32 table (read+write touched rows).
+    nbytes = tokens * embed_dim * dtype_bytes(ctx.dt) + 2 * tokens * embed_dim * 4
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _tk, _v, _d in _EMBEDDING_SHAPES:
+    register("embedding", _lbl)(
+        (lambda tk, v, d: lambda c: _bench_embedding_lookup(c, tk, v, d))(
+            _tk, _v, _d))
+    register("embedding_bwd", _lbl)(
+        (lambda tk, v, d: lambda c: _bench_embedding_bwd(c, tk, v, d))(
+            _tk, _v, _d))
+
+
+# ------------------------------ ELEMENTWISE -------------------------------- #
+def _bench_ew_add(ctx: Ctx, n) -> Result:
+    r = Result("ew_add", f"n={n}", ctx.dtype_name)
+    a = ctx.rand(n)
+    b = ctx.rand(n)
+    out = ctx.empty(n)
+
+    def run():
+        ks.elementwise.add(out, a, b, n)
+
+    ref = (a + b)
+    ks.elementwise.add(out, a, b, n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    r.gbps = (3 * n * dtype_bytes(ctx.dt)) / (r.ks_us * 1e-6) / 1e9   # 2 read+1 write
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: a + b)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+def _bench_ew_mul(ctx: Ctx, n) -> Result:
+    r = Result("ew_mul", f"n={n}", ctx.dtype_name)
+    a = ctx.rand(n)
+    b = ctx.rand(n)
+    out = ctx.empty(n)
+
+    def run():
+        ks.elementwise.mul(out, a, b, n)
+
+    ref = (a * b)
+    ks.elementwise.mul(out, a, b, n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    r.gbps = (3 * n * dtype_bytes(ctx.dt)) / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: a * b)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+def _bench_ew_add_residual(ctx: Ctx, n) -> Result:
+    r = Result("ew_add_residual", f"n={n}", ctx.dtype_name)
+    x = ctx.rand(n)
+    res0 = ctx.rand(n)
+    residual = res0.clone()
+
+    def run():
+        residual.copy_(res0)
+        ks.elementwise.add_residual(residual, x, n)
+
+    # in-place: residual <- residual + x
+    rc = res0.clone()
+    ref = res0 + x
+    ks.elementwise.add_residual(rc, x, n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(rc, ref)
+    r.note = "in-place residual += x"
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    # read residual + x, write residual = 3 * n
+    r.gbps = (3 * n * dtype_bytes(ctx.dt)) / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_ew_scale(ctx: Ctx, n) -> Result:
+    r = Result("ew_scale", f"n={n}", ctx.dtype_name)
+    x = ctx.rand(n)
+    out = ctx.empty(n)
+    s = 1.2345
+
+    def run():
+        ks.elementwise.scale(out, x, s, n)
+
+    ref = (x * s)
+    ks.elementwise.scale(out, x, s, n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    r.gbps = (2 * n * dtype_bytes(ctx.dt)) / (r.ks_us * 1e-6) / 1e9   # read+write
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: x * s)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+def _bench_ew_cast(ctx: Ctx, n) -> Result:
+    # cast the active dtype -> fp32 (correctness-checkable, dtype-stable).
+    r = Result("ew_cast", f"n={n}", ctx.dtype_name)
+    x = ctx.rand(n)
+    out = torch.empty(n, device="cuda", dtype=torch.float32)
+    dst = ks.dtype_to_ks(torch.float32)
+
+    def run():
+        ks.elementwise.cast(out, dst, x, n=n)
+
+    ref = x.to(torch.float32)
+    ks.elementwise.cast(out, dst, x, n=n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = f"{ctx.dtype_name}->fp32 cast"
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    # read src (dt) + write dst (fp32)
+    r.gbps = (n * dtype_bytes(ctx.dt) + n * 4) / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: x.to(torch.float32))))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager(.to)"
+    return r
+
+
+def _bench_ew_axpby(ctx: Ctx, n) -> Result:
+    r = Result("ew_axpby", f"n={n}", ctx.dtype_name)
+    a = ctx.rand(n)
+    b = ctx.rand(n)
+    out = ctx.empty(n)
+    alpha, beta = 0.75, -0.5
+
+    def run():
+        ks.elementwise.axpby(out, a, alpha, b, beta, n)
+
+    ref = (a * alpha + b * beta)
+    ks.elementwise.axpby(out, a, alpha, b, beta, n)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = "out = a*alpha + b*beta"
+    if not gate_correctness(r, ctx):
+        return r
+    r.set_ks_timing(time_op(run))
+    r.gbps = (3 * n * dtype_bytes(ctx.dt)) / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: a * alpha + b * beta)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+_EW_BUILDERS = [
+    ("add", _bench_ew_add),
+    ("mul", _bench_ew_mul),
+    ("add_residual", _bench_ew_add_residual),
+    ("scale", _bench_ew_scale),
+    ("cast", _bench_ew_cast),
+    ("axpby", _bench_ew_axpby),
+]
+for _op_name, _fn in _EW_BUILDERS:
+    for _lbl, _n in _ELEMENTWISE_SHAPES:
+        register("elementwise", f"{_op_name},{_lbl}")(
+            (lambda fn, n: lambda c: fn(c, n))(_fn, _n))
+
+
+# ------------------------------ QUANTIZATION ------------------------------- #
+def _bench_quantize_fp8(ctx: Ctx, rows, cols) -> Result:
+    r = Result("quantize_fp8", f"rows={rows},cols={cols}", ctx.dtype_name)
+    x = ctx.rand(rows, cols)
+    out = torch.empty(rows, cols, device="cuda", dtype=torch.float8_e4m3fn)
+    scale = torch.zeros(1, device="cuda", dtype=torch.float32)   # per-tensor
+    deq = torch.empty(rows, cols, device="cuda", dtype=torch.float32)
+
+    def run():
+        ks.quant.quantize_fp8(out, scale, x, rows, cols,
+                              fp8_dtype=ks.DType.F8E4M3,
+                              mode=ks.QuantMode.PER_TENSOR)
+
+    # correctness: round-trip dequant(quant(x)) ~ x within fp8 quant tolerance.
+    # (FP8 e4m3 has ~2-3 mantissa bits -> ~6-12% per-element error; gate on the
+    # relative L2 of the round-trip, which the round-trip preserves well.)
+    try:
+        ks.quant.quantize_fp8(out, scale, x, rows, cols,
+                              fp8_dtype=ks.DType.F8E4M3,
+                              mode=ks.QuantMode.PER_TENSOR)
+        ks.quant.dequantize_fp8(deq, out, scale, rows, cols,
+                                fp8_dtype=ks.DType.F8E4M3,
+                                mode=ks.QuantMode.PER_TENSOR)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "fp8 not supported on this arch (ARCH_UNSUPPORTED)"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    # relative L2 of the round-trip (robust to per-element fp8 rounding noise).
+    xf = x.float()
+    r.rel_err = ((deq - xf).norm() / xf.norm().clamp_min(1e-6)).item()
+    r.tol = 0.10   # fp8 e4m3 round-trip tolerance (overrides dtype tol)
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct and r.status == "ok":
+        r.status = "INCORRECT"
+    r.note = "round-trip dequant(quant(x))~x; rel-L2 gate @0.10"
+    if not r.is_correct:
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read x (dt), write fp8 out (1 byte) + scale (negligible)
+    nbytes = rows * cols * dtype_bytes(ctx.dt) + rows * cols * 1
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_dequantize_fp8(ctx: Ctx, rows, cols) -> Result:
+    r = Result("dequantize_fp8", f"rows={rows},cols={cols}", ctx.dtype_name)
+    x = ctx.rand(rows, cols)
+    q = torch.empty(rows, cols, device="cuda", dtype=torch.float8_e4m3fn)
+    scale = torch.zeros(1, device="cuda", dtype=torch.float32)
+    out = ctx.empty(rows, cols)
+
+    try:
+        ks.quant.quantize_fp8(q, scale, x, rows, cols,
+                              fp8_dtype=ks.DType.F8E4M3,
+                              mode=ks.QuantMode.PER_TENSOR)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "fp8 not supported on this arch (ARCH_UNSUPPORTED)"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+
+    def run():
+        ks.quant.dequantize_fp8(out, q, scale, rows, cols,
+                                fp8_dtype=ks.DType.F8E4M3,
+                                mode=ks.QuantMode.PER_TENSOR)
+
+    # reference: float(fp8) * scale, computed by upcasting the fp8 codes via torch.
+    ref = (q.float() * scale).to(ctx.dt)
+    ks.quant.dequantize_fp8(out, q, scale, rows, cols,
+                            fp8_dtype=ks.DType.F8E4M3,
+                            mode=ks.QuantMode.PER_TENSOR)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = "ref = float(fp8)*scale"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read fp8 (1 byte), write out (dt)
+    nbytes = rows * cols * 1 + rows * cols * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_quantize_int8(ctx: Ctx, rows, cols) -> Result:
+    r = Result("quantize_int8", f"rows={rows},cols={cols}", ctx.dtype_name)
+    x = ctx.rand(rows, cols)
+    out = torch.empty(rows, cols, device="cuda", dtype=torch.int8)
+    scale = torch.zeros(rows, device="cuda", dtype=torch.float32)   # per-token
+    deq = torch.empty(rows, cols, device="cuda", dtype=torch.float32)
+
+    def run():
+        ks.quant.quantize_int8(out, scale, x, rows, cols,
+                               mode=ks.QuantMode.PER_TOKEN)
+
+    # correctness: reference symmetric per-token quant scale = amax/127, then
+    # compare both the codes and the round-trip.
+    try:
+        ks.quant.quantize_int8(out, scale, x, rows, cols,
+                               mode=ks.QuantMode.PER_TOKEN)
+        ks.quant.dequantize_int8(deq, out, scale, rows, cols,
+                                 mode=ks.QuantMode.PER_TOKEN)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    # gate on (a) the per-token scale matching the symmetric amax/127 reference
+    # and (b) the round-trip dequant(quant(x)) ~ x within one quant step.
+    xf = x.float()
+    ref_scale = (xf.abs().amax(dim=1) / 127.0).clamp_min(1e-12)
+    r.rel_err = max(
+        rel_err(scale, ref_scale),
+        ((deq - xf).norm() / xf.norm().clamp_min(1e-6)).item(),
+    )
+    r.tol = 0.03   # int8 per-token round-trip + scale tolerance
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct and r.status == "ok":
+        r.status = "INCORRECT"
+    r.note = "ref scale=amax/127; round-trip rel-L2 gate @0.03"
+    if not r.is_correct:
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = rows * cols * dtype_bytes(ctx.dt) + rows * cols * 1
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_dequantize_int8(ctx: Ctx, rows, cols) -> Result:
+    r = Result("dequantize_int8", f"rows={rows},cols={cols}", ctx.dtype_name)
+    x = ctx.rand(rows, cols)
+    q = torch.empty(rows, cols, device="cuda", dtype=torch.int8)
+    scale = torch.zeros(rows, device="cuda", dtype=torch.float32)
+    out = ctx.empty(rows, cols)
+    try:
+        ks.quant.quantize_int8(q, scale, x, rows, cols,
+                               mode=ks.QuantMode.PER_TOKEN)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+
+    def run():
+        ks.quant.dequantize_int8(out, q, scale, rows, cols,
+                                 mode=ks.QuantMode.PER_TOKEN)
+
+    # reference: int8 codes * per-token scale.
+    ref = (q.float() * scale.unsqueeze(1)).to(ctx.dt)
+    ks.quant.dequantize_int8(out, q, scale, rows, cols,
+                             mode=ks.QuantMode.PER_TOKEN)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = "ref = int8*scale (per-token)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = rows * cols * 1 + rows * cols * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_dequantize_int4(ctx: Ctx, k, n, group_size) -> Result:
+    r = Result("dequantize_int4", f"K={k},N={n},g={group_size}", ctx.dtype_name)
+    if ctx.dt not in (torch.float16, torch.bfloat16, torch.float32):
+        r.status = "skip"
+        r.note = "int4 dequant out must be float"
+        return r
+    # packed int32 [K/8, N], 8 nibbles (codes 0..15) per word along K.
+    qweight = torch.randint(0, 2 ** 31 - 1, (k // 8, n), device="cuda",
+                            dtype=torch.int32)
+    n_groups = k // group_size
+    scales = (ctx.rand(n_groups, n).abs() * 0.02 + 1e-3).to(ctx.dt)
+    zeros = torch.full((n_groups, n), 8.0, device="cuda").to(ctx.dt)  # symmetric
+    out = ctx.empty(k, n)
+
+    def run():
+        ks.quant.dequantize_int4(out, qweight, scales, zeros, k, n, group_size)
+
+    # exact AWQ/GPTQ unpack reference (matches dequant_int4.cu):
+    #   q = (word >> (4*(kk%8))) & 0xF;  g = kk/group_size
+    #   out[kk,nn] = (q - zero[g,nn]) * scale[g,nn]
+    try:
+        ks.quant.dequantize_int4(out, qweight, scales, zeros, k, n, group_size)
+        torch.cuda.synchronize()
+        kk = torch.arange(k, device="cuda")
+        word = qweight[(kk >> 3)]                       # [K, N] gathered words
+        shift = ((kk & 7) * 4).view(k, 1)
+        codes = ((word >> shift) & 0xF).float()         # [K, N] in [0,15]
+        g = (kk // group_size)
+        zexp = zeros.float()[g]                         # [K, N]
+        sexp = scales.float()[g]                        # [K, N]
+        ref = ((codes - zexp) * sexp).to(ctx.dt)
+        r.rel_err = rel_err(out, ref)
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    r.note = "exact AWQ/GPTQ unpack ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read packed (4 bytes / 8 codes) + scales/zeros, write [K,N] out (dt).
+    nbytes = (k // 8) * n * 4 + k * n * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _rows, _cols in _QUANT_SHAPES:
+    register("quant", f"quantize_fp8,{_lbl}")(
+        (lambda rw, cl: lambda c: _bench_quantize_fp8(c, rw, cl))(_rows, _cols))
+    register("quant", f"dequantize_fp8,{_lbl}")(
+        (lambda rw, cl: lambda c: _bench_dequantize_fp8(c, rw, cl))(_rows, _cols))
+    register("quant", f"quantize_int8,{_lbl}")(
+        (lambda rw, cl: lambda c: _bench_quantize_int8(c, rw, cl))(_rows, _cols))
+    register("quant", f"dequantize_int8,{_lbl}")(
+        (lambda rw, cl: lambda c: _bench_dequantize_int8(c, rw, cl))(_rows, _cols))
+for _lbl, _k, _n, _g in _DEQUANT_INT4_SHAPES:
+    register("quant", f"dequantize_int4,{_lbl}")(
+        (lambda kk, nn, gg: lambda c: _bench_dequantize_int4(c, kk, nn, gg))(
+            _k, _n, _g))
+
+
+# --------------------------- MoE PERMUTE/UNPERMUTE ------------------------- #
+def _moe_permutation_setup(ctx: Ctx, tokens, E, k):
+    """Build the routing indices + permutation (compute_permutation is the
+    setup helper) shared by the permute / unpermute benchmarks."""
+    logits = ctx.rand(tokens, E)
+    weights = torch.empty(tokens, k, device="cuda", dtype=torch.float32)
+    indices = torch.empty(tokens, k, device="cuda", dtype=torch.int32)
+    ks.moe.gate_softmax_topk(weights, indices, logits, tokens, E, k,
+                             renormalize=True)
+    sorted_token_ids = torch.empty(tokens * k, device="cuda", dtype=torch.int32)
+    expert_offsets = torch.empty(E + 1, device="cuda", dtype=torch.int32)
+    ks.moe.compute_permutation(sorted_token_ids, expert_offsets, indices,
+                               tokens, E, k)
+    torch.cuda.synchronize()
+    return weights, indices, sorted_token_ids, expert_offsets
+
+
+def _bench_moe_permute(ctx: Ctx, tokens, hidden, E, k) -> Result:
+    r = Result("moe_permute", f"tokens={tokens},h={hidden},E={E},k={k}",
+               ctx.dtype_name)
+    _, _, sorted_ids, _ = _moe_permutation_setup(ctx, tokens, E, k)
+    x = ctx.rand(tokens, hidden)
+    permuted = ctx.empty(tokens * k, hidden)
+
+    def run():
+        ks.moe.permute(permuted, x, sorted_ids, tokens, k, hidden)
+
+    # reference: gather rows of x by sorted_token_ids (// k maps to source token).
+    ks.moe.permute(permuted, x, sorted_ids, tokens, k, hidden)
+    torch.cuda.synchronize()
+    src = (sorted_ids.to(torch.int64) // k)            # source-token per dest row
+    ref = x.index_select(0, src)
+    r.rel_err = rel_err(permuted, ref)
+    r.note = "gather-by-sorted_token_ids ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 2 * tokens * k * hidden * dtype_bytes(ctx.dt)   # read+write rows
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_moe_unpermute(ctx: Ctx, tokens, hidden, E, k) -> Result:
+    r = Result("moe_unpermute", f"tokens={tokens},h={hidden},E={E},k={k}",
+               ctx.dtype_name)
+    weights, _, sorted_ids, _ = _moe_permutation_setup(ctx, tokens, E, k)
+    permuted = ctx.rand(tokens * k, hidden)            # expert outputs
+    out = ctx.empty(tokens, hidden)
+
+    def run():
+        ks.moe.unpermute(out, permuted, sorted_ids, weights,
+                         tokens, k, hidden)
+
+    # reference: out[token] = sum_k weight[token,k] * permuted[pos(token,k)].
+    # sorted_ids[pos] = token*k + slot, so dest token = id // k, weight slot id%k.
+    ks.moe.unpermute(out, permuted, sorted_ids, weights, tokens, k, hidden)
+    torch.cuda.synchronize()
+    ids = sorted_ids.to(torch.int64)
+    dst_tok = ids // k
+    slot = ids % k
+    w_per_row = weights[dst_tok, slot].unsqueeze(1).float()   # [tokens*k, 1]
+    contrib = permuted.float() * w_per_row
+    ref = torch.zeros(tokens, hidden, device="cuda", dtype=torch.float32)
+    ref.index_add_(0, dst_tok, contrib)
+    r.rel_err = rel_err(out, ref.to(ctx.dt))
+    r.note = "weighted scatter-add ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = (tokens * k * hidden + tokens * hidden) * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _tk, _h, _E, _k in _MOE_PERMUTE_SHAPES:
+    register("moe_permute", _lbl)(
+        (lambda tk, h, E, k: lambda c: _bench_moe_permute(c, tk, h, E, k))(
+            _tk, _h, _E, _k))
+    register("moe_unpermute", _lbl)(
+        (lambda tk, h, E, k: lambda c: _bench_moe_unpermute(c, tk, h, E, k))(
+            _tk, _h, _E, _k))
+
+
+# --------------------------- ATTENTION: cache + bwd ----------------------- #
+def _bench_reshape_and_cache(ctx: Ctx, tokens, kvh, hd, block) -> Result:
+    r = Result("reshape_and_cache",
+               f"tokens={tokens},kvh={kvh},hd={hd},blk={block}", ctx.dtype_name)
+    key = ctx.rand(tokens, kvh, hd)
+    value = ctx.rand(tokens, kvh, hd)
+    # enough blocks to hold all tokens, one token per distinct slot.
+    num_blocks = (tokens + block - 1) // block + 1
+    k_cache = ctx.rand(num_blocks, kvh, block, hd)
+    v_cache = ctx.rand(num_blocks, kvh, block, hd)
+    # distinct flat slots = block_id*block + offset; pick the first `tokens`.
+    slot_mapping = torch.arange(tokens, device="cuda", dtype=torch.int32)
+
+    def run():
+        ks.attention.reshape_and_cache(k_cache, v_cache, key, value,
+                                       slot_mapping, tokens, kvh, hd, block)
+
+    # correctness: scatter K/V into the cache, then gather back by slot and
+    # compare to the original key/value.
+    ks.attention.reshape_and_cache(k_cache, v_cache, key, value,
+                                   slot_mapping, tokens, kvh, hd, block)
+    torch.cuda.synchronize()
+    slots = slot_mapping.to(torch.int64)
+    blk_id = slots // block
+    off = slots % block
+    # cache layout [num_blocks, kvh, block, hd] -> gather [tokens, kvh, hd]
+    got_k = k_cache[blk_id, :, off, :]                 # [tokens, kvh, hd]
+    got_v = v_cache[blk_id, :, off, :]
+    r.rel_err = max(rel_err(got_k, key), rel_err(got_v, value))
+    r.note = "scatter-then-gather-by-slot ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read K+V, write K+V into cache = 4 * tokens*kvh*hd
+    nbytes = 4 * tokens * kvh * hd * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_flash_attn_bwd(ctx: Ctx, b, seq, qh, kvh, hd) -> Result:
+    r = Result("flash_attn_bwd",
+               f"b={b},seq={seq},qh={qh},kvh={kvh},hd={hd}", ctx.dtype_name)
+    q = ctx.rand(b, seq, qh, hd)
+    k = ctx.rand(b, seq, kvh, hd)
+    v = ctx.rand(b, seq, kvh, hd)
+    out = ctx.empty(b, seq, qh, hd)
+    g = ctx.rand(b, seq, qh, hd)                       # grad_out
+    lse = torch.empty(qh, b * seq, device="cuda", dtype=torch.float32)
+    scale = 1.0 / math.sqrt(hd)
+    grad_q = ctx.empty(b, seq, qh, hd)
+    grad_k = ctx.empty(b, seq, kvh, hd)
+    grad_v = ctx.empty(b, seq, kvh, hd)
+
+    # forward (produces out + softmax_lse needed by the backward).
+    try:
+        ks.attention.flash_attn(out, q, k, v, b, seq, seq, qh, kvh, hd,
+                                softmax_lse=lse, softmax_scale=scale, causal=True)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "flash_attn fwd ARCH_UNSUPPORTED"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+
+    def run():
+        ks.attention.flash_attn_backward(
+            grad_q, grad_k, grad_v, g, q, k, v, out, lse,
+            b, seq, seq, qh, kvh, hd, softmax_scale=scale, causal=True)
+
+    # reference: autograd through the fp32 SDPA math reference (GQA-expanded).
+    qv = q.float().detach().transpose(1, 2).requires_grad_(True)
+    kv = k.float().detach().transpose(1, 2).requires_grad_(True)
+    vv = v.float().detach().transpose(1, 2).requires_grad_(True)
+    rep = qh // kvh
+    ke = kv.repeat_interleave(rep, dim=1) if kvh != qh else kv
+    ve = vv.repeat_interleave(rep, dim=1) if kvh != qh else vv
+    o = torch.nn.functional.scaled_dot_product_attention(
+        qv, ke, ve, is_causal=True, scale=scale)
+    o.transpose(1, 2).backward(g.float())
+    ref_gq = qv.grad.transpose(1, 2)
+    ref_gk = kv.grad.transpose(1, 2)
+    ref_gv = vv.grad.transpose(1, 2)
+
+    try:
+        ks.attention.flash_attn_backward(
+            grad_q, grad_k, grad_v, g, q, k, v, out, lse,
+            b, seq, seq, qh, kvh, hd, softmax_scale=scale, causal=True)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "flash_attn_backward ARCH_UNSUPPORTED"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    r.rel_err = max(rel_err(grad_q, ref_gq), rel_err(grad_k, ref_gk),
+                    rel_err(grad_v, ref_gv))
+    r.note = "autograd-through-SDPA ref (grad_q/k/v)"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # backward attention ~ 2.5x the forward causal FLOPs (BWD ~ 5 matmuls).
+    flops = 2.5 * (4.0 * b * qh * (seq ** 2) * hd * 0.5)
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _tk, _kvh, _hd, _blk in _RESHAPE_CACHE_SHAPES:
+    register("reshape_and_cache", _lbl)(
+        (lambda tk, kvh, hd, blk:
+         lambda c: _bench_reshape_and_cache(c, tk, kvh, hd, blk))(
+            _tk, _kvh, _hd, _blk))
+for _lbl, _b, _seq, _qh, _kvh, _hd in _ATTN_BWD_SHAPES:
+    register("flash_attn_bwd", _lbl)(
+        (lambda b, seq, qh, kvh, hd:
+         lambda c: _bench_flash_attn_bwd(c, b, seq, qh, kvh, hd))(
+            _b, _seq, _qh, _kvh, _hd))
+
+
+# ------------------- FUSED LINEAR CROSS ENTROPY (FLCE) -------------------- #
+def _bench_flce(ctx: Ctx, tokens, hidden_dim, vocab) -> Result:
+    r = Result("fused_linear_ce",
+               f"tokens={tokens},d={hidden_dim},vocab={vocab}", ctx.dtype_name)
+    hidden = ctx.rand(tokens, hidden_dim)
+    weight = ctx.rand(vocab, hidden_dim)               # LM head [vocab, d]
+    targets = torch.randint(0, vocab, (tokens,), device="cuda", dtype=torch.int64)
+    losses = torch.empty(tokens, device="cuda", dtype=torch.float32)
+    grad_hidden = ctx.empty(tokens, hidden_dim)
+    grad_weight_fp32 = torch.zeros(vocab, hidden_dim, device="cuda",
+                                   dtype=torch.float32)
+
+    def run():
+        grad_weight_fp32.zero_()
+        ks.loss.fused_linear_cross_entropy(
+            losses, grad_hidden, grad_weight_fp32, hidden, weight, targets,
+            tokens, hidden_dim, vocab, ignore_index=-100)
+
+    # reference: torch F.cross_entropy(hidden @ W^T, targets) + autograd grads.
+    # The kernel emits per-token losses and SUM-reduction grads (grad of logits
+    # = softmax - onehot, no 1/n scaling — reduction is left to the caller, see
+    # fused_linear_cross_entropy.cu). So back-prop the SUMMED loss for the grads
+    # and compare the per-token loss vector separately.
+    hv = hidden.float().detach().requires_grad_(True)
+    wv = weight.float().detach().requires_grad_(True)
+    logits = hv @ wv.t()                               # [tokens, vocab]
+    loss = torch.nn.functional.cross_entropy(logits, targets, reduction="sum")
+    loss.backward()
+    ref_losses = torch.nn.functional.cross_entropy(
+        logits.detach(), targets, reduction="none")
+    ref_gh, ref_gw = hv.grad, wv.grad
+
+    grad_weight_fp32.zero_()
+    ks.loss.fused_linear_cross_entropy(
+        losses, grad_hidden, grad_weight_fp32, hidden, weight, targets,
+        tokens, hidden_dim, vocab, ignore_index=-100)
+    torch.cuda.synchronize()
+    r.rel_err = max(rel_err(losses, ref_losses),
+                    rel_err(grad_hidden, ref_gh),
+                    rel_err(grad_weight_fp32, ref_gw))
+    r.note = "F.cross_entropy(h@W^T)+autograd; per-token loss, sum-reduction grads"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # FLCE is compute-bound (two GEMMs: logits = h@W^T fwd, grads bwd).
+    # FLOPs ~ 2*tokens*vocab*hidden (fwd) + 2*tokens*vocab*hidden (grad_hidden)
+    #        + 2*tokens*vocab*hidden (grad_weight) = 6*tokens*vocab*hidden.
+    flops = 6.0 * tokens * vocab * hidden_dim
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _tk, _d, _v in _FLCE_SHAPES:
+    register("fused_linear_ce", _lbl)(
+        (lambda tk, d, v: lambda c: _bench_flce(c, tk, d, v))(_tk, _d, _v))
+
+
+# ----------------------------- OPTIMIZER ---------------------------------- #
+def _bench_sgd_momentum(ctx: Ctx, n) -> Result:
+    r = Result("sgd_momentum", f"n={n}", ctx.dtype_name)
+    param0 = ctx.rand(n)
+    grad = ctx.rand(n)
+    lr, mf, wd = 1e-2, 0.9, 0.01
+
+    def run():
+        pk = param0.clone()
+        mk = torch.zeros(n, device="cuda", dtype=torch.float32)
+        ks.optimizer.sgd_momentum(pk, grad, mk, lr,
+                                  momentum_factor=mf, weight_decay=wd)
+
+    # reference: one SGD-with-momentum step (decoupled? -> standard coupled wd:
+    # d = grad + wd*param; buf = mf*buf + d (buf starts 0); param -= lr*buf).
+    p_ref = param0.float().clone()
+    g_ref = grad.float()
+    d = g_ref + wd * p_ref
+    buf = d                                  # mf*0 + d
+    p_ref = p_ref - lr * buf
+
+    pk = param0.clone()
+    mk = torch.zeros(n, device="cuda", dtype=torch.float32)
+    ks.optimizer.sgd_momentum(pk, grad, mk, lr,
+                              momentum_factor=mf, weight_decay=wd)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(pk, p_ref.to(ctx.dt))
+    r.note = "manual SGD+momentum step ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    # read+write param (dt) + read grad (dt) + read+write momentum (fp32)
+    nbytes = 3 * n * dtype_bytes(ctx.dt) + 2 * n * 4
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+def _bench_global_grad_norm(ctx: Ctx, n) -> Result:
+    r = Result("global_grad_norm", f"n={n}", ctx.dtype_name)
+    # split into a few tensors (typical: per-parameter grads).
+    n1 = n // 2
+    n2 = n - n1
+    g1 = ctx.rand(n1)
+    g2 = ctx.rand(n2)
+    out_norm = torch.zeros(1, device="cuda", dtype=torch.float32)
+
+    def run():
+        ks.optimizer.global_grad_norm(out_norm, [g1, g2])
+
+    # reference: torch.linalg.vector_norm over the concatenated grads (fp32).
+    ref = torch.linalg.vector_norm(
+        torch.cat([g1.float().reshape(-1), g2.float().reshape(-1)]))
+    ks.optimizer.global_grad_norm(out_norm, [g1, g2])
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out_norm, ref.reshape(1))
+    r.note = "sqrt(sum||g||^2) vs torch vector_norm"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = n * dtype_bytes(ctx.dt)                   # read all grads once
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
+for _lbl, _n in _OPTIM_SHAPES:
+    register("sgd_momentum", _lbl)(
+        (lambda n: lambda c: _bench_sgd_momentum(c, n))(_n))
+    register("global_grad_norm", _lbl)(
+        (lambda n: lambda c: _bench_global_grad_norm(c, n))(_n))
+
+
+# ------------------------------- SAMPLING --------------------------------- #
+# argmax is already covered by the "sampling" category (_bench_sampling). Add a
+# stand-alone argmax registration + log_softmax to close coverage explicitly.
+def _bench_argmax(ctx: Ctx, num_seqs, vocab) -> Result:
+    r = Result("argmax", f"seqs={num_seqs},vocab={vocab}", ctx.dtype_name)
+    logits = ctx.rand(num_seqs, vocab)
+    tokens = torch.empty(num_seqs, device="cuda", dtype=torch.int32)
+
+    def run():
+        ks.sampling.argmax(tokens, logits, num_seqs, vocab)
+
+    ref = logits.float().argmax(-1).to(torch.int32)
+    ks.sampling.argmax(tokens, logits, num_seqs, vocab)
+    torch.cuda.synchronize()
+    r.rel_err = 1.0 - (tokens == ref).float().mean().item()   # mismatch fraction
+    r.note = "torch.argmax ref; rel_err = mismatch fraction"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = num_seqs * vocab * dtype_bytes(ctx.dt)
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: logits.argmax(-1))))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+def _bench_log_softmax(ctx: Ctx, rows, cols) -> Result:
+    r = Result("log_softmax", f"rows={rows},vocab={cols}", ctx.dtype_name)
+    x = ctx.rand(rows, cols)
+    out = ctx.empty(rows, cols)
+
+    def run():
+        ks.sampling.log_softmax(out, x, rows, cols)
+
+    ref = torch.log_softmax(x.float(), dim=-1).to(ctx.dt)
+    ks.sampling.log_softmax(out, x, rows, cols)
+    torch.cuda.synchronize()
+    r.rel_err = rel_err(out, ref)
+    r.note = "torch.log_softmax(fp32) ref"
+    if not gate_correctness(r, ctx):
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = 2 * rows * cols * dtype_bytes(ctx.dt)     # read + write
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: torch.log_softmax(x, dim=-1))))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "eager"
+    return r
+
+
+for _lbl, _s, _v in _SAMPLING_SHAPES:
+    register("argmax", _lbl)(
+        (lambda s, v: lambda c: _bench_argmax(c, s, v))(_s, _v))
+for _lbl, _rows, _cols in _LOG_SOFTMAX_SHAPES:
+    register("log_softmax", _lbl)(
+        (lambda rows, cols: lambda c: _bench_log_softmax(c, rows, cols))(
+            _rows, _cols))
+
+
 # --------------------------------------------------------------------------- #
 # Op aliases: the user-facing op names map to one or more registry categories.
 # This lets `--ops gemm` cover the fp16/bf16 selector and keeps the help tidy.
 # --------------------------------------------------------------------------- #
 ALL_OPS = [
+    # forward / GEMM / attention / MoE / sampling / loss / optimizer (existing)
     "rmsnorm", "layernorm", "swiglu", "rope", "attention",
     "gemm", "w8a8", "w4a16", "moe", "sampling", "cross_entropy", "adamw",
+    # full-op-coverage additions (every remaining kernel-set compute op):
+    "rmsnorm_bwd", "layernorm_bwd",                     # norm backward
+    "geglu", "swiglu_bwd",                              # activation
+    "rope_bwd",                                         # rope backward
+    "embedding", "embedding_bwd",                       # embedding fwd/bwd
+    "elementwise",                                      # add/mul/add_residual/scale/cast/axpby
+    "quant",                                            # fp8/int8 quant+dequant, int4 dequant
+    "moe_permute", "moe_unpermute",                     # MoE permute/unpermute
+    "reshape_and_cache", "flash_attn_bwd",             # attention cache + backward
+    "fused_linear_ce",                                  # fused-linear-cross-entropy
+    "sgd_momentum", "global_grad_norm",                # optimizer
+    "argmax", "log_softmax",                            # sampling
 ]
 
 

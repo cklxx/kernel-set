@@ -59,6 +59,76 @@ CE_SHAPES = [
     ("tokens=8192,vocab=128256", 8192, 128256),
 ]
 
+# --------------------------------------------------------------------------- #
+# Extra shape tables used only by bench.py's full-op-coverage benchmarks (the
+# correctness-gate + perf sweep over every kernel-set compute op). Kept here so
+# the file stays the single source of truth for representative LLM shapes; they
+# are import-safe (no torch at module scope).
+# --------------------------------------------------------------------------- #
+
+# Elementwise (add/mul/scale/cast/axpby/add_residual): (label, n_elements).
+# Sized as a typical activation tensor: rows(=batch*seq) x hidden.
+ELEMENTWISE_SHAPES = [
+    ("n=4096*4096", 4096 * 4096),       # tokens=4096, hidden=4096
+    ("n=8192*8192", 8192 * 8192),       # large layer
+    ("n=1*4096",    1 * 4096),          # decode (single token)
+]
+
+# Embedding: (label, num_tokens, vocab, embed_dim).
+EMBEDDING_SHAPES = [
+    ("tokens=4096,vocab=32000,d=4096", 4096, 32000, 4096),   # Llama-2
+    ("tokens=8192,vocab=128256,d=4096", 8192, 128256, 4096),  # Llama-3
+    ("tokens=1,vocab=128256,d=4096", 1, 128256, 4096),       # decode
+]
+
+# Quantization: (label, rows, cols). rows=tokens, cols=hidden.
+QUANT_SHAPES = [
+    ("rows=4096,cols=4096", 4096, 4096),
+    ("rows=8192,cols=8192", 8192, 8192),
+]
+
+# INT4 weight dequant (AWQ/GPTQ): (label, K, N, group_size). K%8==0, K%g==0.
+DEQUANT_INT4_SHAPES = [
+    ("K=4096,N=4096,g=128", 4096, 4096, 128),
+    ("K=4096,N=14336,g=128", 4096, 14336, 128),   # MLP up-proj weight
+]
+
+# MoE permute / unpermute: (label, num_tokens, hidden, num_experts, top_k).
+MOE_PERMUTE_SHAPES = [
+    ("tokens=4096,h=4096,E=8,k=2", 4096, 4096, 8, 2),
+    ("tokens=2048,h=2048,E=64,k=6", 2048, 2048, 64, 6),
+]
+
+# reshape_and_cache: (label, num_tokens, num_kv_heads, head_dim, block_size).
+RESHAPE_CACHE_SHAPES = [
+    ("tokens=4096,kvh=8,hd=128,blk=16", 4096, 8, 128, 16),
+    ("tokens=1,kvh=8,hd=128,blk=16", 1, 8, 128, 16),   # decode (one new token)
+]
+
+# Flash-attention backward: (label, batch, seqlen, qheads, kvheads, head_dim).
+ATTN_BWD_SHAPES = [
+    ("b=1,seq=2048,qh=32,kvh=8,hd=128", 1, 2048, 32, 8, 128),
+    ("b=4,seq=1024,qh=32,kvh=8,hd=128", 4, 1024, 32, 8, 128),
+]
+
+# Fused-linear-cross-entropy: (label, num_tokens, hidden_dim, vocab).
+FLCE_SHAPES = [
+    ("tokens=4096,d=4096,vocab=32000", 4096, 4096, 32000),
+    ("tokens=2048,d=4096,vocab=128256", 2048, 4096, 128256),
+]
+
+# Optimizer (sgd_momentum) + global_grad_norm: (label, n_elements).
+OPTIM_SHAPES = [
+    ("n=4096*4096", 4096 * 4096),
+    ("n=8192*8192", 8192 * 8192),
+]
+
+# log_softmax: (label, rows, cols) — same population as sampling/CE.
+LOG_SOFTMAX_SHAPES = [
+    ("rows=256,vocab=32000", 256, 32000),
+    ("rows=64,vocab=128256", 64, 128256),
+]
+
 
 # --------------------------------------------------------------------------- #
 # Reference math shared by both harnesses.
