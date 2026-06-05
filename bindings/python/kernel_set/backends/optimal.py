@@ -54,7 +54,7 @@ _OP_ALIASES = {
 _DTYPE_ALIASES = {
     "float16": "fp16", "half": "fp16", "f16": "fp16", "fp16": "fp16",
     "bfloat16": "bf16", "bf16": "bf16",
-    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "tf32",
     "fp32": "fp32",
     "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
     "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
@@ -76,6 +76,7 @@ _DTYPE_NEAREST = {
     "fp16": ["fp16", "bf16", "fp32"],
     "bf16": ["bf16", "fp16", "fp32"],
     "fp32": ["fp32", "bf16", "fp16"],
+    "tf32": ["tf32", "fp32"],
     "fp8": ["fp8", "bf16", "fp16"],
     "int8": ["int8", "bf16", "fp16"],
     "int4": ["int4", "bf16", "fp16"],

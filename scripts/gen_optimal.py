@@ -1062,6 +1062,10 @@ def _sm_to_gpu(sm):
 # documented here (invariant 5: every accepted dtype token appears in >=1
 # feasible cell OR is a documented degradation path).
 _DOCUMENTED_DEGRADATIONS = {
+    # TF32 is a gated Ampere+ compute mode for fp32 GEMM. The selector keeps the
+    # token distinct so sm75 cannot borrow fp32 cells, then sm80+ nearest-falls to
+    # the fp32 table cells (there are no standalone tf32 table rows).
+    "tf32",
     # NVFP4/MXFP4 are now WIRED for the dedicated fp4 ops (nvfp4_gemm/mxfp4_gemm)
     # on Blackwell (sm100+), so fp4 DOES appear in feasible cells. It stays listed
     # here because for every OTHER op (and on sm<100) a fp4 request still degrades

@@ -17,6 +17,9 @@ Run::
 
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 # dispatch is import-safe with no torch / CUDA / shared library.
@@ -156,6 +159,15 @@ def test_dtype_gating(monkeypatch):
     assert dispatch.which("attention_prefill", dtype="bf16") == "flash-attn"
     # flash-attn dtypes string is "fp16, bf16"; fp8 isn't covered -> falls back.
     assert dispatch.which("attention_prefill", dtype="fp8") == KERNEL_SET
+
+
+def test_tf32_arch_gating():
+    from kernel_set.backends import dtype_arch_ok, normalize_dtype
+
+    assert normalize_dtype("tf32") == "tf32"
+    assert dtype_arch_ok("tf32", 75) is False
+    assert dtype_arch_ok("tf32", 80) is True
+    assert dtype_arch_ok("fp32", 75) is True
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +333,90 @@ def test_sgl_kernel_import_check_is_sgl_kernel():
         for p in OPS[op].providers:
             if p.name == SGL_KERNEL:
                 assert p.import_check == "import sgl_kernel", op
+
+
+def test_sampling_dispatch_contract_returns_int_token_ids(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    probs = torch.tensor([[0.1, 0.8, 0.1], [0.2, 0.2, 0.6]],
+                         dtype=torch.float32)
+    sampling_providers = {p.name: p for p in OPS["sampling"].providers}
+
+    def assert_ids(ids):
+        assert tuple(ids.shape) == (2,)
+        assert ids.dtype in (torch.int32, torch.int64)
+
+    # FlashInfer selected: provider returns sampled ids.
+    monkeypatch.setattr(
+        sampling_providers["flashinfer"], "call",
+        lambda *_a, **_k: torch.tensor([1, 2], dtype=torch.int32))
+    _mock_available(monkeypatch, available_libs={"flashinfer.sampling"}, sm=90)
+    assert dispatch.which("sampling", dtype="fp32") == "flashinfer"
+    assert_ids(dispatch.sampling(probs, top_k=1, _dtype="fp32"))
+
+    # SGL selected: real adapter renorms then samples token ids.
+    dispatch.reset_cache()
+
+    class FakeSGL:
+        def top_k_renorm_prob(self, _probs, _top_k):
+            return torch.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                                dtype=torch.float32)
+
+        def top_p_renorm_prob(self, probs, _top_p):
+            return probs
+
+    monkeypatch.setattr(
+        _registry, "_imp",
+        lambda mod: FakeSGL() if mod == "sgl_kernel" else None)
+    _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=90)
+    assert dispatch.which("sampling", dtype="fp32") == SGL_KERNEL
+    ids = dispatch.sampling(probs, top_k=1, _dtype="fp32")
+    assert_ids(ids)
+    assert ids.tolist() == [1, 2]
+
+    # kernel-set fallback selected: provider returns sampled ids.
+    dispatch.reset_cache()
+    monkeypatch.setattr(
+        sampling_providers[KERNEL_SET], "call",
+        lambda *_a, **_k: torch.tensor([2, 0], dtype=torch.int32))
+    _mock_available(monkeypatch, available_libs=set(), sm=90)
+    assert dispatch.which("sampling", dtype="fp32") == KERNEL_SET
+    assert_ids(dispatch.sampling(probs, top_k=1, _dtype="fp32"))
+
+
+def test_import_probe_checks_from_import_attributes(monkeypatch):
+    from kernel_set.backends import _probe
+
+    _probe._IMPORT_CACHE.clear()
+    mod = types.ModuleType("fake_kernel_set_probe_mod")
+    monkeypatch.setitem(sys.modules, "fake_kernel_set_probe_mod", mod)
+    assert _probe.can_import(
+        "from fake_kernel_set_probe_mod import missing_attr") is False
+
+    _probe._IMPORT_CACHE.clear()
+    mod.present_attr = object()
+    assert _probe.can_import(
+        "from fake_kernel_set_probe_mod import present_attr") is True
+
+
+def test_new_flashinfer_import_checks_are_specific():
+    assert next(p for p in OPS["nvfp4_gemm"].providers
+                if p.name == "flashinfer").import_check == \
+        "from flashinfer.gemm import mm_fp4"
+    assert next(p for p in OPS["mxfp4_gemm"].providers
+                if p.name == "flashinfer").import_check == \
+        "from flashinfer.gemm import mm_fp4"
+    assert next(p for p in OPS["sampling"].providers
+                if p.name == "flashinfer").import_check == \
+        "import flashinfer.sampling"
+
+
+def test_mxfp4_providers_are_blackwell_only():
+    providers = {p.name: p for p in OPS["mxfp4_gemm"].providers}
+    assert providers["flashinfer"].min_sm == 100
+    assert providers["vllm"].min_sm == 100
+    assert providers["torchao"].min_sm == 100
 
 
 # =========================================================================== #

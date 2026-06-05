@@ -56,7 +56,7 @@ _GPU_SM_FALLBACK: Dict[str, int] = {
 _DTYPE_ALIASES_FALLBACK = {
     "float16": "fp16", "half": "fp16", "f16": "fp16",
     "bfloat16": "bf16", "bf16": "bf16",
-    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "tf32",
     "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
     "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
     "int8": "int8", "i8": "int8", "w8a8": "int8",
@@ -88,7 +88,7 @@ _SM_FAMILY_ALIASES_FALLBACK: Dict[int, int] = {
 # Map a normalized dtype gate token -> the capability key it requires. Tokens
 # absent here (fp16/fp32/int8/int4) have no arch threshold.
 _DTYPE_CAP_KEY: Dict[str, str] = {
-    "bf16": "bf16", "fp8": "fp8", "fp4": "fp4",
+    "bf16": "bf16", "tf32": "tf32", "fp8": "fp8", "fp4": "fp4",
 }
 
 
@@ -192,7 +192,7 @@ def resolve_sm(gpu: Optional[str]) -> Optional[int]:
 # --------------------------------------------------------------------------- #
 def normalize_dtype(dtype) -> Optional[str]:
     """Normalize a dtype request (str or torch.dtype) to a short token
-    (fp16/bf16/fp32/fp8/int8/int4/fp4) or ``None`` if unknown/absent."""
+    (fp16/bf16/fp32/tf32/fp8/int8/int4/fp4) or ``None`` if unknown/absent."""
     if dtype is None:
         return None
     name = str(getattr(dtype, "name", dtype))  # torch.dtype -> "torch.float16"
@@ -212,6 +212,7 @@ def dtype_ok(requested: Optional[str], supported_str: str) -> bool:
         "fp16": ("fp16", "float16", "f16", "half"),
         "bf16": ("bf16", "bfloat16"),
         "fp32": ("fp32", "float32", "tf32", "f32"),
+        "tf32": ("tf32",),
         "fp8": ("fp8", "e4m3", "e5m2", "float8"),
         "int8": ("int8", "i8", "w8a8"),
         "int4": ("int4", "i4", "w4a16", "uint4", "awq", "gptq", "nf4"),
@@ -222,8 +223,9 @@ def dtype_ok(requested: Optional[str], supported_str: str) -> bool:
 
 # --------------------------------------------------------------------------- #
 # Import probing. ``import_check`` is a registry-style snippet like
-# "from flash_attn import flash_attn_func". We only need to know whether the
-# *module(s)* import; we do NOT exec arbitrary attribute access (no GPU calls).
+# "from flash_attn import flash_attn_func". We import modules and, for
+# ``from ... import name`` snippets, verify the named attribute/submodule exists;
+# we never call provider functions.
 # --------------------------------------------------------------------------- #
 _IMPORT_CACHE: Dict[str, bool] = {}
 
@@ -247,23 +249,58 @@ def _module_names(import_check: str) -> Iterable[str]:
     return mods
 
 
+def _import_requirements(import_check: str):
+    """Parse import snippets into ``(module, attr-or-None)`` requirements.
+
+    ``from pkg.mod import fn`` means ``pkg.mod`` must import and expose ``fn``
+    either as an attribute or as an importable submodule. ``import pkg.mod`` only
+    requires that module. Plain module paths are accepted for direct calls.
+    """
+    reqs = []
+    for stmt in str(import_check).split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        if stmt.startswith("from ") and " import " in stmt:
+            mod, names = stmt[len("from "):].split(" import ", 1)
+            mod = mod.strip()
+            for raw in names.split(","):
+                name = raw.strip().split(" as ")[0].strip()
+                if name and name != "*":
+                    reqs.append((mod, name))
+        elif stmt.startswith("import "):
+            for raw in stmt[len("import "):].split(","):
+                mod = raw.strip().split(" as ")[0].strip()
+                if mod:
+                    reqs.append((mod, None))
+        elif stmt:
+            reqs.append((stmt, None))
+    return reqs
+
+
+def _has_import_requirement(mod: str, attr: Optional[str]) -> bool:
+    try:
+        module = importlib.import_module(mod)
+    except Exception:
+        return False
+    if attr is None:
+        return True
+    try:
+        importlib.import_module(f"{mod}.{attr}")
+        return True
+    except Exception:
+        return hasattr(module, attr)
+
+
 def can_import(module_or_check: str) -> bool:
     """True if the library behind a registry ``import_check`` (or a plain module
-    path) can be imported. Cached; never raises. We try the most specific module
-    path first, falling back to the top-level package."""
+    path) can be imported and any named ``from`` attributes exist. Cached; never
+    raises."""
     if module_or_check in _IMPORT_CACHE:
         return _IMPORT_CACHE[module_or_check]
-    mods = sorted(_module_names(module_or_check), key=len, reverse=True)
-    if not mods:
-        mods = [module_or_check.strip()]
-    ok = False
-    for m in mods:
-        try:
-            importlib.import_module(m)
-            ok = True
-            break
-        except Exception:
-            continue
+    reqs = _import_requirements(module_or_check)
+    ok = bool(reqs) and all(_has_import_requirement(mod, attr)
+                            for mod, attr in reqs)
     _IMPORT_CACHE[module_or_check] = ok
     return ok
 

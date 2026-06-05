@@ -142,6 +142,9 @@ def test_selector_probe_generator_thresholds_agree():
     for key in ("bf16", "tf32", "fp8", "fp4"):
         assert O._SM_THRESHOLDS[key] == _probe._SM_THRESHOLDS[key]
         assert gen._SM_THRESHOLDS[key] == _probe._SM_THRESHOLDS[key]
+    assert _probe.normalize_dtype("tf32") == "tf32"
+    assert _probe.dtype_arch_ok("tf32", 75) is False
+    assert _probe.dtype_arch_ok("tf32", 80) is True
 
 
 def test_sm120_folds_to_sm100_for_selector_and_dispatch():
@@ -268,6 +271,17 @@ def test_infeasible_dtype_never_leaks_into_other_dtype_cell():
     # bf16 on sm75 (rmsnorm has an fp16 cell) must also go straight to ks.
     r = O.select_optimal("rmsnorm", 75, "bf16")
     assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
+    # tf32 on sm75 must not alias to fp32 and borrow an fp32 cell.
+    r = O.select_optimal("gemm", 75, "tf32")
+    assert r["provider"] == KERNEL_SET and r["source"] == "fallback"
+
+
+def test_tf32_on_ampere_uses_fp32_table_cell_after_gate():
+    # Once the sm80+ TF32 capability gate passes, selector can use the fp32 table
+    # cell because TF32 is an fp32 GEMM compute mode rather than a storage dtype.
+    r = O.select_optimal("gemm", 80, "tf32")
+    assert r["provider"] == "torch"
+    assert r["dtype"] == "fp32"
 
 
 def test_fp4_does_not_borrow_the_int4_cell():

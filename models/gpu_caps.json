@@ -113,10 +113,10 @@
   },
 
   "probe_dtype_aliases": {
-    "_doc": "bindings/.../backends/_probe.py _DTYPE_ALIASES: torch/free-form dtype -> short gate token (fp16/bf16/fp32/fp8/int8/int4/fp4).",
+    "_doc": "bindings/.../backends/_probe.py _DTYPE_ALIASES: torch/free-form dtype -> short gate token (fp16/bf16/fp32/tf32/fp8/int8/int4/fp4).",
     "float16": "fp16", "half": "fp16", "f16": "fp16",
     "bfloat16": "bf16", "bf16": "bf16",
-    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "fp32",
+    "float32": "fp32", "float": "fp32", "f32": "fp32", "tf32": "tf32",
     "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
     "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
     "int8": "int8", "i8": "int8", "w8a8": "int8",

@@ -139,16 +139,17 @@ def _attn_decode_flashinfer(q, k_cache, v_cache, block_tables, seq_lens, *,
     fi = _imp("flashinfer")
     num_seqs, qh, hd = q.shape
     kvh = k_cache.shape[1]
+    device = q.device
     # ks layout (nb, kvh, page, hd) -> flashinfer NHD (nb, page, kvh, hd)
     k_fi = k_cache.permute(0, 2, 1, 3).contiguous()
     v_fi = v_cache.permute(0, 2, 1, 3).contiguous()
-    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
     wrapper = fi.decode.BatchDecodeWithPagedKVCacheWrapper(
         workspace, kv_layout="NHD")
     bps = max_blocks_per_seq
     kv_indptr = torch.arange(0, (num_seqs + 1) * bps, bps,
-                             device="cuda", dtype=torch.int32)
-    kv_indices = torch.arange(num_seqs * bps, device="cuda", dtype=torch.int32)
+                             device=device, dtype=torch.int32)
+    kv_indices = torch.arange(num_seqs * bps, device=device, dtype=torch.int32)
     last = (seq_lens - (bps - 1) * block_size).clamp(min=1).to(torch.int32)
     wrapper.plan(kv_indptr, kv_indices, last, qh, kvh, hd, block_size,
                  pos_encoding_mode="NONE", data_type=q.dtype, q_data_type=q.dtype)
@@ -193,7 +194,7 @@ def _fp8_gemm_deepgemm(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     dg = _imp("deep_gemm")
     m = a8.shape[0]
     n = b8.shape[0]
-    out = torch.empty(m, n, device="cuda",
+    out = torch.empty(m, n, device=a8.device,
                       dtype=out_dtype or torch.bfloat16)
     dg.fp8_gemm_nt((a8, a_scale), (b8, b_scale), out)
     return out
@@ -213,7 +214,7 @@ def _fp8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     import torch
     m, k = a8.shape
     n = b8.shape[0]
-    c = torch.empty(m, n, device="cuda", dtype=out_dtype or torch.bfloat16)
+    c = torch.empty(m, n, device=a8.device, dtype=out_dtype or torch.bfloat16)
     gemm.gemm(c, a8.to(c.dtype), b8.to(c.dtype).t().contiguous(),
               m=m, n=n, k=k)
     return c
@@ -228,7 +229,7 @@ def _fp8_gemm_blockwise_ks(a8, b8, a_scale, b_scale, *, block_n=128,
     import torch
     m, k = a8.shape
     n = b8.shape[1]
-    out = torch.empty(m, n, device="cuda", dtype=out_dtype or torch.bfloat16)
+    out = torch.empty(m, n, device=a8.device, dtype=out_dtype or torch.bfloat16)
     gemm.gemm_fp8_blockwise(out, a8, b8, a_scale, b_scale, m=m, n=n, k=k,
                             block_n=block_n, block_k=block_k)
     return out
@@ -242,8 +243,8 @@ def _per_token_group_quant_ks(x, *, group_size=128, fp8_dtype=None, **_):
     import torch
     rows, cols = x.shape
     ngroups = (cols + group_size - 1) // group_size
-    out = torch.empty(rows, cols, device="cuda", dtype=torch.float8_e4m3fn)
-    scale = torch.empty(rows, ngroups, device="cuda", dtype=torch.float32)
+    out = torch.empty(rows, cols, device=x.device, dtype=torch.float8_e4m3fn)
+    scale = torch.empty(rows, ngroups, device=x.device, dtype=torch.float32)
     quant.quantize_fp8_group(out, scale, x, rows=rows, cols=cols,
                              group_size=group_size,
                              fp8_dtype=fp8_dtype or DType.F8E4M3)
@@ -641,14 +642,15 @@ def _sampling_sgl(probs, *, top_k=None, top_p=None, **_):
     # sgl_kernel exports the fused renorm-by-threshold sampling primitives on the
     # CUDA path: top_k_renorm_prob(probs, top_k) and top_p_renorm_prob(probs,
     # top_p). Together with categorical sampling these realize top-k/top-p
-    # filtering (top_k_first order). We return the renormalized probs.
+    # filtering (top_k_first order). Public dispatch returns sampled token ids.
+    import torch
     sk = _imp("sgl_kernel")
     out = probs
     if top_k is not None:
         out = sk.top_k_renorm_prob(out, top_k)
     if top_p is not None:
         out = sk.top_p_renorm_prob(out, top_p)
-    return out
+    return torch.multinomial(out, num_samples=1).squeeze(-1).to(torch.int32)
 
 
 def _sampling_flashinfer(probs, *, top_k=None, top_p=None, **_):
@@ -869,13 +871,14 @@ def _mla_decode_flashinfer(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
     import torch
     fi = _imp("flashinfer")
     num_seqs = q_nope.shape[0]
-    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
+    device = q_nope.device
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
     wrapper = fi.mla.BatchMLAPagedAttentionWrapper(workspace, backend="auto")
     bps = max_blocks_per_seq
-    q_indptr = torch.arange(num_seqs + 1, device="cuda", dtype=torch.int32)
+    q_indptr = torch.arange(num_seqs + 1, device=device, dtype=torch.int32)
     kv_indptr = torch.arange(0, (num_seqs + 1) * bps, bps,
-                             device="cuda", dtype=torch.int32)
-    kv_indices = torch.arange(num_seqs * bps, device="cuda", dtype=torch.int32)
+                             device=device, dtype=torch.int32)
+    kv_indices = torch.arange(num_seqs * bps, device=device, dtype=torch.int32)
     wrapper.plan(q_indptr, kv_indptr, kv_indices, seq_lens.to(torch.int32),
                  heads, lora, rope_dim, block_size,
                  False, _scale(lora + rope_dim, softmax_scale),
@@ -945,13 +948,13 @@ _OPS_RAW: List[Op] = [
                  "import torch",
                  _attn_prefill_sdpa, "PyTorch SDPA flash/efficient backend"),
         Provider("flashinfer", 4, 75, "fp16, bf16, fp8",
-                 "import flashinfer",
+                 "from flashinfer.prefill import single_prefill_with_kv_cache",
                  _attn_prefill_flashinfer, "NVIDIA serving kernels (b==1)"),
         _ks_provider(_attn_prefill_ks, "ks_flash_attn"),
     ]),
     Op("attention_decode", "attention", None, [
         Provider("flashinfer", 1, 75, "fp16, bf16, fp8 KV",
-                 "import flashinfer",
+                 "from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper",
                  _attn_decode_flashinfer, "paged decode plan/run, FA-class"),
         _sgl_provider(2, _attn_decode_sgl, min_sm=90,
                       note="SGLang FA3 paged decode (flash_attn_with_kvcache)"),
@@ -965,7 +968,7 @@ _OPS_RAW: List[Op] = [
         # — wired at rank 2 (sm80+) so Ampere/Ada no longer drop to the ~1%-BW
         # ks fallback. On sm90 it sits behind FlashMLA; on sm80/89 it wins.
         Provider("flashinfer", 2, 80, "fp16, bf16, fp8 KV",
-                 "import flashinfer",
+                 "from flashinfer.mla import BatchMLAPagedAttentionWrapper",
                  _mla_decode_flashinfer,
                  "FlashInfer MLA paged decode (portable sm80+)"),
         _ks_provider(_mla_decode_ks, "ks_mla_decode",
@@ -1061,7 +1064,7 @@ _OPS_RAW: List[Op] = [
     # fp32 global). No portable ks kernel — Blackwell + FlashInfer/vLLM only.
     Op("nvfp4_gemm", "gemm-quant", None, [
         Provider("flashinfer", 1, 100, "fp4 nvfp4 e2m1",
-                 "import flashinfer",
+                 "from flashinfer.gemm import mm_fp4",
                  _nvfp4_gemm_flashinfer, "FlashInfer NVFP4 mm_fp4 (Blackwell)"),
         Provider("vllm", 2, 100, "fp4 nvfp4",
                  "from vllm import _custom_ops",
@@ -1072,11 +1075,11 @@ _OPS_RAW: List[Op] = [
     # MXFP4 GEMM (OCP microscaling 4-bit: e2m1 + E8M0 block-32 scale). gpt-oss.
     Op("mxfp4_gemm", "gemm-quant", None, [
         Provider("flashinfer", 1, 100, "fp4 mxfp4 e2m1",
-                 "import flashinfer",
+                 "from flashinfer.gemm import mm_fp4",
                  _mxfp4_gemm_flashinfer, "FlashInfer MXFP4 mm_fp4 (Blackwell)"),
-        Provider("vllm", 2, 80, "fp4 mxfp4",
+        Provider("vllm", 2, 100, "fp4 mxfp4",
                  "from vllm import _custom_ops",
-                 _mxfp4_gemm_vllm, "vLLM Marlin-MXFP4 (sm80+ emulation)"),
+                 _mxfp4_gemm_vllm, "vLLM Marlin-MXFP4 (Blackwell)"),
         Provider("torchao", 3, 100, "fp4 mxfp4",
                  "import torchao",
                  _mxfp4_gemm_torchao, "torchao MXFP4 inference"),
@@ -1218,10 +1221,10 @@ _OPS_RAW: List[Op] = [
     ]),
     Op("sampling", "sampling-logitproc", "ks_sample", [
         Provider("flashinfer", 1, 75, "fp32 probs",
-                 "import flashinfer",
+                 "import flashinfer.sampling",
                  _sampling_flashinfer, "FlashInfer fused top-k/top-p sampling"),
         _sgl_provider(2, _sampling_sgl, dtypes="fp32 probs",
-                      note="SGLang top_k_renorm_prob / top_p_renorm_prob"),
+                      note="SGLang renorm + categorical sampling"),
         _ks_provider(_sampling_ks, "ks_sample",
                      "fused temp/top-k/top-p sampler"),
     ]),

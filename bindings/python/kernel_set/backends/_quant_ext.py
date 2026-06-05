@@ -158,11 +158,10 @@ def _mxfp4_gemm_vllm(a, qweight, scales, *, num_bits=4, size_m=None,
                      size_n=None, size_k=None, workspace=None, **_):
     """vLLM Marlin-MXFP4 GEMM (registry rank 3).
 
-    GPT-OSS MXFP4 on pre-Blackwell is served via the Marlin path:
-    ``ops.gptq_marlin_gemm`` with an mxfp4 ScalarType (FlashInfer/CUTLASS fp4 is
-    used on native-Blackwell). ``a`` is the fp16/bf16 activation (M, K);
-    ``qweight`` the Marlin-prepacked MXFP4 weight; ``scales`` the ue8m0 block
-    scales. Marlin MXFP4 emulation runs on sm80+; native fp4 on sm100.
+    GPT-OSS MXFP4 is served through the Blackwell-gated Marlin/CUTLASS path:
+    ``ops.gptq_marlin_gemm`` with an mxfp4 ScalarType. ``a`` is the fp16/bf16
+    activation (M, K); ``qweight`` the Marlin-prepacked MXFP4 weight; ``scales``
+    the ue8m0 block scales.
     """
     import torch
     from vllm import _custom_ops as ops
