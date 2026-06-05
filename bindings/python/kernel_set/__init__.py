@@ -77,6 +77,7 @@ try:
         elementwise,
         embedding,
         gemm,
+        linear_attn,
         loss,
         moe,
         norm,

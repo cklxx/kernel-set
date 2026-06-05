@@ -611,6 +611,63 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    // ===== linear_attn.h ===================================================
+
+    pub fn ks_gated_delta_rule(
+        out: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        g: *const c_void,
+        beta: *const c_void,
+        batch: i64,
+        seqlen: i64,
+        heads: i64,
+        k_dim: i64,
+        v_dim: i64,
+        g_is_vector: c_int,
+        use_qk_l2norm: c_int,
+        scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_gated_linear_attn(
+        out: *mut c_void,
+        q: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        g: *const c_void,
+        head_decay: *const f32,
+        batch: i64,
+        seqlen: i64,
+        heads: i64,
+        k_dim: i64,
+        v_dim: i64,
+        gate_mode: c_int,
+        scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_rwkv_wkv7(
+        out: *mut c_void,
+        r: *const c_void,
+        w: *const c_void,
+        k: *const c_void,
+        v: *const c_void,
+        a: *const c_void,
+        b: *const c_void,
+        batch: i64,
+        seqlen: i64,
+        heads: i64,
+        k_dim: i64,
+        v_dim: i64,
+        scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     // ===== moe.h ===========================================================
 
     pub fn ks_moe_gate_softmax_topk(

@@ -305,6 +305,17 @@ export const ks_selective_scan_update = L.func(
   'ks_status_t ks_selective_scan_update(ks_devptr state, ks_devptr out, ks_devptr x, ks_devptr dt, ks_devptr A, ks_devptr B, ks_devptr C, ks_devptr D, ks_devptr z, ks_devptr dt_bias, int delta_softplus, int batch, int dim, int dstate, ks_dtype_t dtype, ks_stream_t stream)',
 );
 
+/* ============================ linear_attn.h ============================ */
+export const ks_gated_delta_rule = L.func(
+  'ks_status_t ks_gated_delta_rule(ks_devptr out, ks_devptr q, ks_devptr k, ks_devptr v, ks_devptr g, ks_devptr beta, int64 batch, int64 seqlen, int64 heads, int64 k_dim, int64 v_dim, int g_is_vector, int use_qk_l2norm, float scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_gated_linear_attn = L.func(
+  'ks_status_t ks_gated_linear_attn(ks_devptr out, ks_devptr q, ks_devptr k, ks_devptr v, ks_devptr g, ks_devptr head_decay, int64 batch, int64 seqlen, int64 heads, int64 k_dim, int64 v_dim, int gate_mode, float scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_rwkv_wkv7 = L.func(
+  'ks_status_t ks_rwkv_wkv7(ks_devptr out, ks_devptr r, ks_devptr w, ks_devptr k, ks_devptr v, ks_devptr a, ks_devptr b, int64 batch, int64 seqlen, int64 heads, int64 k_dim, int64 v_dim, float scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
+
 /* ============================== moe.h ================================= */
 
 export const ks_moe_gate_softmax_topk = L.func(

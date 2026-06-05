@@ -10,6 +10,9 @@ logical_ops:
   - attn_decode
   - conv1d
   - ssm
+  - gated_delta
+  - linear_attn
+  - rwkv_wkv
   - qkv_proj
   - o_proj
   - ffn_norm
@@ -47,6 +50,9 @@ op_descriptions:
   optimizer: fused optimizer step (training)
   conv1d: short causal depthwise conv1d mixer (Mamba/LFM2)
   ssm: selective state-space scan token-mixer (Mamba selective_scan)
+  gated_delta: gated delta-rule linear attention (gated DeltaNet / KDA)
+  linear_attn: gated linear attention (GLA / lightning / simple-GLA)
+  rwkv_wkv: RWKV-7 WKV (free DPLR generalized delta rule)
 
 models:
   - id: llama-2
@@ -6069,6 +6075,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
+
 
     notes: "80B total / 3B active hybrid: 3x Gated DeltaNet (linear attn) : 1x Gated full attention (full_attention_interval=4). The 36 Gated-Attention layers map to ks_paged_attn_decode (GQA, 2 kv heads); the 12 Gated DeltaNet linear-attn layers need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped) and are NOT covered by the listed decode kernel. 512-expert top-10 + 1 shared MoE; partial RoPE 0.25, theta=1e7; MTP head. Config-verified."
     examples:
@@ -6178,6 +6188,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
 
 
     notes: "397B total / 17B active native-multimodal flagship. Carries Qwen3-Next hybrid 3x Gated DeltaNet : 1x Gated full attention (interval=4); full-attn layers -> ks_paged_attn_decode (GQA, 2 kv heads), the linear Gated DeltaNet layers need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped). 512-expert top-10 + 1 shared MoE; M-RoPE interleaved (sections [11,11,10]); SigLIP-style vision encoder (depth 27) path unmapped (Wave-2 vision). 201 languages. Config-verified."
@@ -6383,6 +6397,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
 
 
     notes: "456B total / 45.9B active, 1M context. Hybrid: Lightning Attention (linear) interleaved with periodic softmax attention (7:1). The 1-in-8 softmax layers map to ks_paged_attn_decode; the 7-in-8 Lightning (linear/transnormer) layers need ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). 32-expert top-2 MoE. World's first open large-scale hybrid-attention reasoning model (arXiv 2506.13585). head_dim approximate."
@@ -9744,6 +9762,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
+
 
     notes: "456B total / 45.9B active, 1M native context. Lightning (linear/transnormer) attention with one softmax block per ~8 (softmax-attn at layer indices [7,15,...,79]). Softmax layers -> ks_paged_attn_decode; the Lightning linear-attn layers need ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). 32-expert top-2 MoE. CISPO RL. (M2 reverted to full attention.) head_dim approximate. Config-verified."
     examples:
@@ -9850,6 +9872,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
+
 
     notes: "48B total / 3B active, 1M context. Hybrid 3:1 KDA:MLA -> 20 Kimi Delta Attention (linear) layers + 7 full-attention MLA layers (at [4,8,12,16,20,24,27]). The MLA layers -> ks_mla_decode (kv_lora=512, v=128); the 20 KDA linear-attn layers (gated delta rule, DPLR transition, conv kernel 4) need ks_ssm_scan / ks_gated_delta_rule (Wave-2, unmapped). 256-expert top-8 + 1 shared MoE every layer. arXiv 2510.26692. Config-verified."
     examples:
@@ -9955,6 +9981,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
 
 
     notes: "1T total / 63B active, 128K native (256K YaRN, up to 1M). 'World's first hybrid linear-architecture thinking model': 1 MLA per 7 Lightning Linear layers. MLA layers -> ks_mla_decode; the Lightning Linear (linear-attn) majority needs ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). Sparse MoE (Ling 2.0 lineage) -> ks_moe_grouped_gemm. QK-Norm, partial RoPE. Exact layer/expert counts not in parsed config -> dims 0, medium confidence."
@@ -10106,18 +10136,6 @@ models:
         fn: ks_rms_norm_residual
         dtype: model
 
-      rope:
-        fn: ks_rope_gather
-        dtype: model
-
-      attn_prefill:
-        fn: ks_flash_attn_varlen
-        dtype: model
-
-      attn_decode:
-        fn: ks_paged_attn_decode
-        dtype: model
-
       qkv_proj:
         fn: ks_gemm
         dtype: model
@@ -10151,6 +10169,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      rwkv_wkv:
+        fn: ks_rwkv_wkv7
+        dtype: model
 
 
     notes: "2.9B pure RNN, attention-free, linear-time / constant-memory (NO KV cache). RWKV-7 generalizes the delta rule with vector-valued gating (Dynamic State Evolution). There is NO softmax attention: the entire token-mix (time-mix) is a recurrent state update that needs ks_ssm_scan / ks_rwkv_wkv7 (Wave-2, unmapped) -> attn_prefill/attn_decode/rope/qkv/o_proj are placeholders only and NOT load-bearing for this model. LayerNorm; channel-mix FFN (sqrelu) -> ks_gelu placeholder. No RoPE. arXiv 2503.14456. Config-verified."
@@ -11045,6 +11067,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
+
 
     notes: "~4B dense-hybrid small member of Qwen3.5. Layout 8x(3x Gated DeltaNet -> FFN, 1x Gated full attention -> FFN): the Gated-Attention layers map to ks_paged_attn_decode (GQA, 4 kv heads, head_dim 256); the linear Gated DeltaNet layers (16 QK / 32 V heads, head_dim 128, conv kernel 4) need ks_gated_delta_rule / ks_selective_scan + ks_causal_conv1d (now exist; not yet wired into the decode op slot). Dense SwiGLU (no MoE). RoPE dim 64, theta=1e7, YaRN to ~1M; QK-norm; MTP-trained. Apache 2.0. Config-verified."
     examples:
@@ -11149,6 +11175,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
 
 
     notes: "35B total / 3B active. Qwen3.6 builds on the Qwen3.5 hybrid Gated DeltaNet (linear) + Gated full attention + ultra-sparse MoE; agentic-coding / repo-level reasoning / 'thinking preservation' focus. Full-attn layers -> ks_paged_attn_decode; Gated DeltaNet linear layers need ks_gated_delta_rule / ks_selective_scan (Wave-2). Full config (hidden/heads/experts/inter) NOT fully published yet -> arch fields TEMPLATED from Qwen3-Next/3.5 35B-A3B conventions; medium confidence / specs partial. Companion dense Qwen3.6-27B released 2026-04-22."
@@ -12359,6 +12389,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
+
 
     notes: "~1T total / ~50B active (some sources ~63B), 128K native (256K YaRN). model_type bailing_hybrid (BailingMoeV2_5): hybrid attention interleaving MLA (QK-Norm, partial RoPE) with Lightning/linear-attention layers. The MLA layers -> ks_mla_decode; the Lightning Linear majority needs ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). Sparse MoE 256 experts top-8 + 1 shared -> ks_moe_grouped_gemm. Adjustable reasoning intensity, Async RL + IcePop. MIT. config heads 64/64 reflect the GQA/MLA-layer settings."
     examples:
@@ -12466,6 +12500,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
 
 
     notes: "104B total (~107B on disk) / 7.4B active, 256K context. model_type bailing_hybrid (BailingMoeV2_5): hybrid linear 1:7 MLA + Lightning Linear attention (upgraded from Ling 2.x GQA via incremental training). MLA layers -> ks_mla_decode; the Lightning Linear majority needs ks_ssm_scan / ks_linear_attn (Wave-2, unmapped). Highly sparse MoE 256 experts top-8 + 1 shared -> ks_moe_grouped_gemm. Partial RoPE (factor 0.5) + YaRN 2.0, theta 6e6. Efficiency-focused (~340 tok/s on 4x H20). MIT. config heads 32/32 reflect the attention-layer settings."
@@ -15112,6 +15150,10 @@ models:
         fn: ks_sample
         dtype: f32
 
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
+
 
     notes: "7B brain-inspired LLM converted from Qwen2.5-7B-base (~150B continual-pretrain tokens), 128K context. NOVEL ARCH (spiking-neuron + gated-linear-attention hybrid) absent from registry. Inter-layer sequential hybrid: Gated Linear Attention (GLA) layers interleaved 1:1 with Sliding-Window Attention (SWA) layers -> overall linear complexity; the GLA layers need ks_ssm_scan / ks_linear_attn (Wave-2 unmapped), the SWA layers need sliding-window paged attention (ks_paged_attn_decode placeholder). Adaptive-threshold spiking neurons (binary/ternary/bitwise) on activations (~69% micro-sparsity). SwiGLU (dense, from base). >100x TTFT speedup at 4M tokens. arXiv:2509.05276. Layer/hidden/head/vocab inferred from Qwen2.5-7B base."
     examples:
@@ -15220,6 +15262,10 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      linear_attn:
+        fn: ks_gated_linear_attn
+        dtype: model
 
 
     notes: "76B total / 12B active (~15% per token), 128K context. MoE upcycled from Qwen2.5-7B base. NOVEL ARCH (spiking + parallel-hybrid-attention MoE) absent from registry. Intra-layer parallel hybrid combining linear attention + SWA + full softmax attention within mixer blocks (LA+FA at layers [7,14,21,28], LA+SWA elsewhere; 128 learnable attention-sink tokens) -> the linear-attn branch needs ks_ssm_scan / ks_linear_attn (Wave-2 unmapped), SWA/full -> ks_paged_attn_decode. Sparse MoE 16 routed top-1 + 1 shared per MoE layer (7 dense FFN layers preserved, 21 MoE) -> ks_moe_grouped_gemm. Adaptive-threshold spiking on activations. arXiv:2509.05276. hidden/heads/layers from tech report -> medium confidence."
@@ -15523,6 +15569,14 @@ models:
         fn: ks_sample
         dtype: f32
 
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
+
+      conv1d:
+        fn: ks_causal_conv1d
+        dtype: model
+
 
     notes: "4B hardware-aware PostNAS retrofit of a pretrained Transformer, up to 256K context. NOVEL ARCH (JetBlock linear attention) absent from registry. Mostly JetBlock linear-attention blocks (linear attention with dynamic convolution, found via Post Neural Architecture Search) -> need ks_ssm_scan / ks_linear_attn + ks_causal_conv1d (Wave-2 unmapped); interleaved with a small number of retained full-attention layers -> ks_paged_attn_decode. SwiGLU (from base). Up to ~53.6x decode throughput vs full-attn peers. arXiv:2508.15884; weights on HF (jet-ai). Exact per-layer counts/hidden/layers/vocab in paper not card -> dims unpublished, medium confidence."
     examples:
@@ -15617,6 +15671,14 @@ models:
       sampling:
         fn: ks_sample
         dtype: f32
+
+      gated_delta:
+        fn: ks_gated_delta_rule
+        dtype: model
+
+      conv1d:
+        fn: ks_causal_conv1d
+        dtype: model
 
 
     notes: "2B smaller Jet-Nemotron, up to 256K context. NOVEL ARCH absent from registry. JetBlock linear-attention (dynamic-convolution) blocks + a few retained full-attention layers, derived via Post Neural Architecture Search. Linear-attn blocks -> ks_ssm_scan / ks_linear_attn + ks_causal_conv1d (Wave-2 unmapped); full-attn layers -> ks_paged_attn_decode. SwiGLU. arXiv:2508.15884; weights on HF (jet-ai). Detailed dims in paper not card -> dims unpublished, medium confidence."

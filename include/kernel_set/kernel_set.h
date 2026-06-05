@@ -21,6 +21,7 @@
 #include "kernel_set/elementwise.h"
 #include "kernel_set/embedding.h"
 #include "kernel_set/gemm.h"
+#include "kernel_set/linear_attn.h"
 #include "kernel_set/loss.h"
 #include "kernel_set/moe.h"
 #include "kernel_set/norm.h"

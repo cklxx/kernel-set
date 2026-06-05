@@ -1170,6 +1170,42 @@ ks_status_t ks_selective_scan_update(void* state, void* out, const void* x,
   return KS_SUCCESS;
 }
 
+/* ---- linear_attn.h -------------------------------------------------- */
+ks_status_t ks_gated_delta_rule(void* out, const void* q, const void* k,
+                                const void* v, const void* g, const void* beta,
+                                int64_t batch, int64_t seqlen, int64_t heads,
+                                int64_t k_dim, int64_t v_dim, int g_is_vector,
+                                int use_qk_l2norm, float scale, ks_dtype_t dtype,
+                                ks_stream_t stream) {
+  (void)out; (void)q; (void)k; (void)v; (void)g; (void)beta; (void)batch;
+  (void)seqlen; (void)heads; (void)k_dim; (void)v_dim; (void)g_is_vector;
+  (void)use_qk_l2norm; (void)scale; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_gated_linear_attn(void* out, const void* q, const void* k,
+                                 const void* v, const void* g,
+                                 const float* head_decay, int64_t batch,
+                                 int64_t seqlen, int64_t heads, int64_t k_dim,
+                                 int64_t v_dim, int gate_mode, float scale,
+                                 ks_dtype_t dtype, ks_stream_t stream) {
+  (void)out; (void)q; (void)k; (void)v; (void)g; (void)head_decay; (void)batch;
+  (void)seqlen; (void)heads; (void)k_dim; (void)v_dim; (void)gate_mode;
+  (void)scale; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_rwkv_wkv7(void* out, const void* r, const void* w, const void* k,
+                         const void* v, const void* a, const void* b,
+                         int64_t batch, int64_t seqlen, int64_t heads,
+                         int64_t k_dim, int64_t v_dim, float scale,
+                         ks_dtype_t dtype, ks_stream_t stream) {
+  (void)out; (void)r; (void)w; (void)k; (void)v; (void)a; (void)b; (void)batch;
+  (void)seqlen; (void)heads; (void)k_dim; (void)v_dim; (void)scale; (void)dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
 /* ===================================================================== */
 /* gemm.h — native FP8 GEMM (added with the fp8 ABI)                      */
 /* ===================================================================== */

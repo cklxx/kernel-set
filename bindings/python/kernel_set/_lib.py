@@ -565,6 +565,38 @@ _decl(
     ],
 )
 
+# ---- linear_attn.h --------------------------------------------------------
+
+_decl(
+    "ks_gated_delta_rule",
+    [
+        _VP, _VP, _VP, _VP,                 # out, q, k, v
+        _VP, _VP,                          # g, beta
+        c_int64, c_int64, c_int64, c_int64, c_int64,  # batch,seqlen,heads,k,v
+        c_int, c_int, c_float,             # g_is_vector, use_qk_l2norm, scale
+        _DTYPE, _STREAM,                   # dtype, stream
+    ],
+)
+_decl(
+    "ks_gated_linear_attn",
+    [
+        _VP, _VP, _VP, _VP,                 # out, q, k, v
+        _VP, POINTER(c_float),             # g, head_decay
+        c_int64, c_int64, c_int64, c_int64, c_int64,  # batch,seqlen,heads,k,v
+        c_int, c_float,                    # gate_mode, scale
+        _DTYPE, _STREAM,                   # dtype, stream
+    ],
+)
+_decl(
+    "ks_rwkv_wkv7",
+    [
+        _VP, _VP, _VP, _VP, _VP, _VP, _VP, # out, r, w, k, v, a, b
+        c_int64, c_int64, c_int64, c_int64, c_int64,  # batch,seqlen,heads,k,v
+        c_float,                           # scale
+        _DTYPE, _STREAM,                   # dtype, stream
+    ],
+)
+
 # ---- moe.h ----------------------------------------------------------------
 
 _decl(
