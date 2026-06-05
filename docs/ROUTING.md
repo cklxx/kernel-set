@@ -96,6 +96,7 @@ else installed.
 | `backends/_registry.py` | 2 | the runnable subset of the above, with lazy call adapters (derived from it) |
 | `benchmarks/baselines.yaml` | (bench) | rank-1 baseline per op, **generated** from `providers/registry.json` by `scripts/gen_baselines.py` |
 | `docs/OPERATOR_CATALOG.md` | (docs) | the full human-readable ranked per-op catalog |
+| `docs/OPTIMAL_SELECTION.md` | 2 | compute-bound decision matrix: optimal provider per op×arch×dtype, what dispatch selects, and the adopt-external vs self-develop call |
 
 **Why not one engine?** Tier 1 answers *model → single ABI symbol + rationale*
 (a static plan); Tier 2 answers *op → ranked chain of installed providers* (a

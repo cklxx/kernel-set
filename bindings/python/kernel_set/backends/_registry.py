@@ -97,6 +97,14 @@ def _attn_prefill_flashinfer(q, k, v, *, causal=True, softmax_scale=None, **_):
         sm_scale=softmax_scale).unsqueeze(0)
 
 
+def _attn_prefill_fa4(q, k, v, *, causal=True, softmax_scale=None, **_):
+    # FlashAttention-4 (Blackwell sm100): the CuTe-DSL kernel exported as
+    # flash_attn.cute.flash_attn_func. Same dense (b, s, h, d) ergonomics as FA2.
+    fac = _imp("flash_attn.cute")
+    return fac.flash_attn_func(q, k, v, causal=causal,
+                               softmax_scale=softmax_scale)
+
+
 def _attn_prefill_ks(q, k, v, *, causal=True, softmax_scale=None, **_):
     from .. import attention
     import torch
@@ -200,7 +208,40 @@ def _fp8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
 
 # =========================================================================== #
 # W4A16 GEMM. a: fp16/bf16 (M,K); packed int4 weights + group scales/zeros.
+# vLLM owns the SOTA mixed-input INT4xFP16 kernels: GPTQ/AWQ-Marlin (sm80+) and
+# Machete (sm90a, CUTLASS TMA+WGMMA weight-prepack — beats Marlin on Hopper).
 # =========================================================================== #
+def _w4a16_marlin(a, b_packed, scales, zeros, *, group_size=128,
+                  workspace=None, **_):
+    # vLLM GPTQ-Marlin: ops.gptq_marlin_gemm(a, b_q_weight, b_scales, b_zeros,
+    #   g_idx, perm, workspace, num_bits=4, size_m, size_n, size_k, is_k_full=...)
+    # The weights must already be Marlin-prepacked (gptq_marlin_repack); callers
+    # supply the prepacked `b_packed` + `scales` (+ optional `zeros`).
+    import torch
+    from vllm import _custom_ops as ops
+    m, k = a.shape
+    n = scales.shape[1]
+    if workspace is None:
+        workspace = torch.zeros(n // 64 * 16, device=a.device, dtype=torch.int32)
+    return ops.gptq_marlin_gemm(
+        a, b_packed, scales, zeros, workspace, num_bits=4,
+        size_m=m, size_n=n, size_k=k, is_k_full=True)
+
+
+def _w4a16_machete(a, b_packed, scales, zeros, *, group_size=128, **_):
+    # vLLM Machete (sm90a): CUTLASS TMA+WGMMA mixed-input GEMM with weight
+    # pre-packing — the Hopper-optimal W4A16/W4A8 path (beats Marlin on sm90).
+    # ops.machete_mm(a, b_q, b_type, b_group_scales, b_group_zeros,
+    #   b_group_size, ...). Weights are machete_prepack_B-packed by the caller.
+    import torch
+    from vllm import _custom_ops as ops
+    from vllm.scalar_type import scalar_types
+    return ops.machete_mm(
+        a=a, b_q=b_packed, b_type=scalar_types.uint4b8,
+        b_group_scales=scales, b_group_zeros=zeros,
+        b_group_size=group_size, out_type=a.dtype)
+
+
 def _w4a16_ks(a, b_packed, scales, zeros, *, group_size=128, **_):
     from .. import gemm
     import torch
@@ -471,6 +512,31 @@ def _int8_gemm_sgl(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
                              out_dtype or torch.bfloat16)
 
 
+def _int8_gemm_vllm(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
+    # vLLM CUTLASS INT8 W8A8 (SmoothQuant / compressed-tensors, symmetric +
+    # azp): ops.cutlass_scaled_mm(a, b, scale_a, scale_b, out_dtype, bias=None).
+    # The registry's true rank-1 INT8 kernel across sm75-sm90. a8 int8 (M,K);
+    # b8 int8 (K,N) column-major.
+    import torch
+    from vllm import _custom_ops as ops
+    return ops.cutlass_scaled_mm(a8, b8, scale_a=a_scale, scale_b=b_scale,
+                                 out_dtype=out_dtype or torch.bfloat16)
+
+
+def _int8_gemm_marlin(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
+    # Marlin INT8 (vLLM) — the Blackwell (sm100) fallback where CUTLASS INT8 is
+    # unsupported. ops.gptq_marlin_24_gemm / marlin int8 path; weights are
+    # Marlin-prepacked. Exposed as the sm100 rank-1 int8 provider.
+    import torch
+    from vllm import _custom_ops as ops
+    m, k = a8.shape
+    n = b8.shape[1]
+    workspace = torch.zeros(n // 64 * 16, device=a8.device, dtype=torch.int32)
+    return ops.gptq_marlin_gemm(
+        a8, b8, b_scale, a_scale, workspace, num_bits=8,
+        size_m=m, size_n=n, size_k=k, is_k_full=True)
+
+
 def _int8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     from .. import gemm
     import torch
@@ -534,6 +600,39 @@ def _moe_group_gate_sgl(gating_output, bias, *, num_expert_group, topk_group,
                              apply_routed_scaling_factor_on_output)
 
 
+def _moe_gate_vllm(gating_output, *, top_k, renormalize=False, **_):
+    # vLLM fused softmax + top-k routing gate (rank-2 alignment target):
+    # ops.topk_softmax(topk_weights, topk_ids, token_expert_indices,
+    #   gating_output) writes the buffers in place.
+    import torch
+    from vllm import _custom_ops as ops
+    num_tokens = gating_output.shape[0]
+    topk_weights = torch.empty(num_tokens, top_k, device=gating_output.device,
+                               dtype=torch.float32)
+    topk_ids = torch.empty(num_tokens, top_k, device=gating_output.device,
+                           dtype=torch.int32)
+    token_expert_indices = torch.empty_like(topk_ids)
+    ops.topk_softmax(topk_weights, topk_ids, token_expert_indices,
+                     gating_output.float())
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    return topk_weights, topk_ids
+
+
+def _moe_group_gate_vllm(gating_output, bias, *, num_expert_group, topk_group,
+                         top_k, renormalize=True, routed_scaling_factor=1.0,
+                         **_):
+    # vLLM grouped (DeepSeek-V3 biased) top-k gate (rank-2):
+    # grouped_topk(hidden_states, gating_output, topk, renormalize,
+    #   num_expert_group, topk_group, scoring_func, e_score_correction_bias).
+    from vllm.model_executor.layers.fused_moe.fused_moe import grouped_topk
+    topk_weights, topk_ids = grouped_topk(
+        gating_output, gating_output, top_k, renormalize,
+        num_expert_group, topk_group, scoring_func="sigmoid",
+        e_score_correction_bias=bias)
+    return topk_weights, topk_ids
+
+
 def _moe_gate_ks(gating_output, *, top_k, renormalize=False, **_):
     from .. import moe
     import torch
@@ -581,19 +680,40 @@ def _sampling_ks(probs, *, top_k=None, top_p=None, **_):
     return out_tokens
 
 
-def _moe_sgl(a, b, expert_offsets, *, num_experts, n, k, **_):
-    # sgl-kernel's grouped-MoE path is the blockwise-fp8 grouped GEMM. The ks
-    # grouped_gemm ABI takes dense bf16/fp16 experts, so here we surface the
-    # SGLang topk gate + ks grouped GEMM is not API-compatible; this adapter is
-    # the grouped-GEMM-over-experts shape using SGLang's moe_sum reduction as a
-    # representative call path. Falls back to the ks grouped GEMM shape.
+def _moe_deepgemm(a, b, expert_offsets, *, num_experts, n, k,
+                  a_scale=None, b_scale=None, **_):
+    # DeepGEMM grouped (contiguous) FP8 GEMM — the reference MoE GEMM on
+    # Hopper/Blackwell (DeepSeek-V3 production, Mega-MoE). Contiguous-layout
+    # grouped fp8: m_grouped_fp8_gemm_nt_contiguous((a, a_s), (b, b_s), out,
+    # m_indices). `expert_offsets` is converted to the per-row m_indices map.
     import torch
-    sk = _imp("sgl_kernel")  # noqa: F841 - probe import; ensures availability
-    from .. import moe
+    dg = _imp("deep_gemm")
     total_rows = a.shape[0]
-    c = torch.empty(total_rows, n, device=a.device, dtype=a.dtype)
-    moe.grouped_gemm(c, a, b, expert_offsets, num_experts, total_rows, n, k)
-    return c
+    out = torch.empty(total_rows, n, device=a.device, dtype=torch.bfloat16)
+    # Build m_indices: expert id per row from the contiguous expert offsets.
+    m_indices = torch.empty(total_rows, device=a.device, dtype=torch.int32)
+    for e in range(num_experts):
+        lo = int(expert_offsets[e])
+        hi = int(expert_offsets[e + 1])
+        m_indices[lo:hi] = e
+    dg.m_grouped_fp8_gemm_nt_contiguous((a, a_scale), (b, b_scale), out,
+                                        m_indices)
+    return out
+
+
+def _moe_sgl(a, b, expert_offsets, *, num_experts, n, k,
+             a_scale=None, b_scale=None, **_):
+    # SGLang CUTLASS blockwise-fp8 grouped GEMM (the stated alignment target):
+    # sgl_kernel.fp8_blockwise_scaled_grouped_mm(out, a, b, a_scale, b_scale,
+    #   stride/offset tensors, expert_offsets, ...). This is the *real* sgl
+    # grouped GEMM, not a delegation to the ks kernel.
+    import torch
+    sk = _imp("sgl_kernel")
+    total_rows = a.shape[0]
+    out = torch.empty(total_rows, n, device=a.device, dtype=torch.bfloat16)
+    sk.fp8_blockwise_scaled_grouped_mm(
+        out, a, b, a_scale, b_scale, expert_offsets, num_experts)
+    return out
 
 
 def _attn_prefill_sgl(q, k, v, *, causal=True, softmax_scale=None, **_):
@@ -646,6 +766,31 @@ def _mla_decode_ks(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
     return out
 
 
+def _mla_decode_flashinfer(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
+                           heads, lora, rope_dim, block_size,
+                           max_blocks_per_seq, softmax_scale=None, **_):
+    # FlashInfer MLA paged decode (BatchMLAPagedAttentionWrapper). Portable
+    # across sm80+ (A100/L4/H100/B200) — the only SOTA MLA path pre-Hopper, where
+    # FlashMLA (sm90) is gated out. Absorbed-MLA: ckv (lora) + kpe (rope_dim).
+    import torch
+    fi = _imp("flashinfer")
+    num_seqs = q_nope.shape[0]
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device="cuda")
+    wrapper = fi.mla.BatchMLAPagedAttentionWrapper(workspace, backend="auto")
+    bps = max_blocks_per_seq
+    q_indptr = torch.arange(num_seqs + 1, device="cuda", dtype=torch.int32)
+    kv_indptr = torch.arange(0, (num_seqs + 1) * bps, bps,
+                             device="cuda", dtype=torch.int32)
+    kv_indices = torch.arange(num_seqs * bps, device="cuda", dtype=torch.int32)
+    wrapper.plan(q_indptr, kv_indptr, kv_indices, seq_lens.to(torch.int32),
+                 heads, lora, rope_dim, block_size,
+                 False, _scale(lora + rope_dim, softmax_scale),
+                 q_nope.dtype, kv_cache.dtype)
+    ckv = kv_cache[..., :lora].contiguous()
+    kpe = kv_cache[..., lora:lora + rope_dim].contiguous()
+    return wrapper.run(q_nope, q_pe, ckv, kpe)
+
+
 def _mla_decode_sgl(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
                     heads, lora, rope_dim, block_size, max_blocks_per_seq,
                     softmax_scale=None, **_):
@@ -689,10 +834,17 @@ def _sgl_provider(rank, call, *, min_sm=80, dtypes="fp16, bf16",
 
 _OPS_RAW: List[Op] = [
     Op("attention_prefill", "attention", None, [
+        # FA4 (CuTe-DSL) is the Blackwell-optimal path; gated sm100 so it only
+        # outranks FA2/FA3 on B200. flash-attn (FA2 sm80/89, FA3 auto on sm90)
+        # remains rank-1 for Ampere/Ada/Hopper.
+        Provider("flash-attn-cute", 0, 100, "fp16, bf16",
+                 "import flash_attn.cute",
+                 _attn_prefill_fa4,
+                 "FlashAttention-4 CuTe-DSL (Blackwell sm100)"),
         Provider("flash-attn", 1, 80, "fp16, bf16",
                  "from flash_attn import flash_attn_func",
                  _attn_prefill_flash_attn,
-                 "industry-standard exact attention (FA2/FA3)"),
+                 "industry-standard exact attention (FA2 sm80/89, FA3 sm90)"),
         _sgl_provider(2, _attn_prefill_sgl, min_sm=90,
                       note="SGLang FA3 (flash_attn_varlen_func, sm90)"),
         Provider("torch-sdpa", 3, 80, "fp16, bf16, fp32",
@@ -712,16 +864,30 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_attn_decode_ks, "ks_paged_attn_decode"),
     ]),
     Op("mla_decode", "attention", None, [
+        # Hopper/Blackwell: FlashMLA (DeepSeek official, sm90) is unbeatable.
         _sgl_provider(1, _mla_decode_sgl, min_sm=90,
                       note="SGLang FlashMLA (flash_mla_with_kvcache, sm90)"),
+        # Pre-Hopper (A100 sm80 / L4 sm89): FlashInfer MLA is the only SOTA path
+        # — wired at rank 2 (sm80+) so Ampere/Ada no longer drop to the ~1%-BW
+        # ks fallback. On sm90 it sits behind FlashMLA; on sm80/89 it wins.
+        Provider("flashinfer", 2, 80, "fp16, bf16, fp8 KV",
+                 "import flashinfer",
+                 _mla_decode_flashinfer,
+                 "FlashInfer MLA paged decode (portable sm80+)"),
         _ks_provider(_mla_decode_ks, "ks_mla_decode",
                      "kernel-set absorbed-MLA decode"),
     ]),
     Op("gemm", "gemm-dense", "ks_gemm", [
+        # Dense fp16/bf16/tf32 GEMM is the most NVIDIA-tuned primitive there is;
+        # cuBLAS/cuBLASLt (via torch @) is the optimal provider on EVERY arch
+        # (A100/L4/H100/B200 — it auto-selects the WGMMA/tcgen05 path per arch).
+        # CUTLASS only wins when you need a fused epilogue (not exposed here).
+        # ks is the rank-99 portable fallback ONLY (measured 0.03-0.10x cuBLAS).
         Provider("torch", 1, 70, "fp16, bf16, fp32, tf32",
                  "import torch",
-                 _gemm_torch, "cuBLASLt / cuBLAS tensor-core GEMM"),
-        _ks_provider(_gemm_ks, "ks_gemm"),
+                 _gemm_torch, "cuBLAS/cuBLASLt tensor-core GEMM (arch-optimal)"),
+        _ks_provider(_gemm_ks, "ks_gemm",
+                     "portable C-ABI fallback (slow; correctness only)"),
     ]),
     Op("fp8_gemm", "gemm-quant", "ks_gemm_w8a8", [
         Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 block scales",
@@ -736,16 +902,35 @@ _OPS_RAW: List[Op] = [
                      "no native fp8; dense-cast fallback"),
     ]),
     Op("int8_gemm", "gemm-quant", "ks_gemm_w8a8", [
-        _sgl_provider(1, _int8_gemm_sgl, min_sm=80, dtypes="int8 w8a8",
+        # Blackwell (sm100): CUTLASS INT8 is unsupported, so Marlin-int8 (vLLM)
+        # is the rank-0 sm100 path; gated sm100 so it only wins on B200.
+        Provider("vllm-marlin-int8", 0, 100, "int8 w8a8",
+                 "from vllm import _custom_ops",
+                 _int8_gemm_marlin, "Marlin INT8 (vLLM, Blackwell sm100)"),
+        # Registry true rank-1 across sm75-sm90: vLLM CUTLASS INT8 W8A8
+        # (SmoothQuant / compressed-tensors, symmetric + azp).
+        Provider("vllm", 1, 80, "int8 w8a8",
+                 "from vllm import _custom_ops",
+                 _int8_gemm_vllm, "vLLM CUTLASS int8 W8A8 (SmoothQuant)"),
+        # sgl-kernel int8_scaled_mm is the rank-2 alignment target.
+        _sgl_provider(2, _int8_gemm_sgl, min_sm=80, dtypes="int8 w8a8",
                       note="SGLang CUTLASS int8_scaled_mm"),
         _ks_provider(_int8_gemm_ks, "ks_gemm_w8a8",
-                     "int8 W8A8 scaled-mm"),
+                     "int8 W8A8 scaled-mm (native ABI; portable fallback)"),
     ]),
     Op("w4a16", "gemm-quant", "ks_gemm_w4a16", [
+        # Hopper (sm90a): Machete (CUTLASS TMA+WGMMA weight-prepack) beats
+        # Marlin — rank-0, gated sm90 so it only outranks Marlin on Hopper+.
+        Provider("vllm-machete", 0, 90, "int4 weights, fp16/bf16 acts",
+                 "from vllm import _custom_ops",
+                 _w4a16_machete, "Machete W4A16/W4A8 (vLLM, Hopper sm90a)"),
+        # Ampere/Ada/Blackwell: GPTQ/AWQ-Marlin is the de-facto W4A16 kernel
+        # (~4x over fp16). Now WIRED (was call=None) so it actually dispatches.
         Provider("vllm-marlin", 1, 80, "int4 weights, fp16/bf16 acts",
                  "from vllm import _custom_ops",
-                 None, "GPTQ-Marlin (Ampere+); Machete on sm90a"),
-        _ks_provider(_w4a16_ks, "ks_gemm_w4a16"),
+                 _w4a16_marlin, "GPTQ/AWQ-Marlin (Ampere+; NVFP4-Marlin sm100)"),
+        _ks_provider(_w4a16_ks, "ks_gemm_w4a16",
+                     "portable INT4 fallback (correctness only)"),
     ]),
     Op("rmsnorm", "norm-act-rope", "ks_rmsnorm", [
         Provider("flashinfer", 1, 75, "fp16, bf16",
@@ -816,32 +1001,42 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_ce_ks, "ks_cross_entropy"),
     ]),
     Op("moe", "moe-comm", "ks_moe_grouped_gemm", [
-        _sgl_provider(1, _moe_sgl, dtypes="bf16, fp16, fp8",
-                      note="SGLang grouped-MoE path (specialty)"),
-        Provider("vllm", 2, 80, "bf16, fp16, fp8",
+        # Hopper/Blackwell: DeepGEMM grouped FP8 (DeepSeek-V3 production,
+        # Mega-MoE) is the reference MoE GEMM — rank-1, gated sm90.
+        Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 block scales",
+                 "import deep_gemm",
+                 _moe_deepgemm,
+                 "DeepGEMM grouped FP8 (contiguous, Hopper/Blackwell)"),
+        # sgl-kernel CUTLASS blockwise-fp8 grouped GEMM — the stated alignment
+        # target (rank-2, sm90). Now calls the REAL sgl grouped mm (was a stub
+        # that delegated to the ks kernel).
+        _sgl_provider(2, _moe_sgl, min_sm=90, dtypes="fp8 e4m3",
+                      note="SGLang CUTLASS grouped FP8 (fp8_blockwise_..._mm)"),
+        # Ampere/Ada (no FP8 hw): vLLM Triton fused_experts (bf16/INT4 grouped).
+        Provider("vllm", 3, 80, "bf16, fp16, fp8",
                  "from vllm.model_executor.layers.fused_moe.fused_moe import "
                  "fused_experts",
-                 _moe_vllm, "vLLM fused_experts (full MoE FFN)"),
+                 _moe_vllm, "vLLM fused_experts / fused_moe (Triton, sm80+)"),
         _ks_provider(_moe_ks, "ks_moe_grouped_gemm",
-                     "grouped GEMM over experts"),
+                     "grouped GEMM over experts (portable fallback)"),
     ]),
     Op("moe_gate", "moe-comm", "ks_moe_gate_softmax_topk", [
         _sgl_provider(1, _moe_gate_sgl, dtypes="fp16, bf16, fp32",
                       note="SGLang topk_softmax fused gate (specialty)"),
         Provider("vllm", 2, 80, "fp16, bf16, fp32",
                  "from vllm import _custom_ops",
-                 None, "vLLM topk_softmax gate"),
+                 _moe_gate_vllm, "vLLM topk_softmax gate"),
         _ks_provider(_moe_gate_ks, "ks_moe_gate_softmax_topk",
-                     "softmax + top-k gate"),
+                     "softmax + top-k gate (near-parity fallback)"),
     ]),
     Op("moe_group_gate", "moe-comm", "ks_moe_gate_sigmoid_group_topk", [
         _sgl_provider(1, _moe_group_gate_sgl, dtypes="fp16, bf16, fp32",
                       note="SGLang moe_fused_gate grouped-topk (specialty)"),
         Provider("vllm", 2, 80, "fp16, bf16, fp32",
                  "from vllm import _custom_ops",
-                 None, "vLLM grouped_topk gate"),
+                 _moe_group_gate_vllm, "vLLM grouped_topk gate"),
         _ks_provider(_moe_group_gate_ks, "ks_moe_gate_sigmoid_group_topk",
-                     "sigmoid + group-limited top-k gate"),
+                     "sigmoid + group-limited top-k gate (near-parity)"),
     ]),
     Op("sampling", "sampling-logitproc", "ks_sample", [
         Provider("flashinfer", 1, 75, "fp32 probs",

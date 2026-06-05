@@ -218,19 +218,50 @@ def test_which_alias():
 # sgl-kernel: the hard-op alignment target. Ranked #1 for the MoE gate ops and
 # grouped-MoE; competitive elsewhere. Verify selection + arch gating.
 # --------------------------------------------------------------------------- #
-def test_sgl_kernel_wins_moe_ops_when_available(monkeypatch):
-    # On an sm80 Ampere device, sgl-kernel (rank 1) wins the MoE specialty ops.
+def test_sgl_kernel_wins_moe_gate_ops_when_available(monkeypatch):
+    # sgl-kernel (rank 1) wins the MoE *gate* specialty ops on any sm80+ arch
+    # (its fused softmax/sigmoid group-topk gate is best-in-class everywhere).
     _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=80)
-    assert dispatch.which("moe") == SGL_KERNEL
     assert dispatch.which("moe_gate") == SGL_KERNEL
     assert dispatch.which("moe_group_gate") == SGL_KERNEL
+    # The sgl-kernel grouped-MoE GEMM (CUTLASS blockwise-fp8) is sm90, so on an
+    # Ampere sm80 host with nothing else it correctly drops to kernel-set.
+    assert dispatch.which("moe") == KERNEL_SET
 
 
-def test_sgl_kernel_beats_vllm_for_moe(monkeypatch):
-    # Both sgl-kernel (rank 1) and vllm (rank 2) installed -> sgl-kernel wins.
-    _mock_available(monkeypatch, available_libs={"sgl_kernel", "vllm"}, sm=90)
+def test_deepgemm_wins_moe_grouped_gemm_on_hopper(monkeypatch):
+    # On sm90 DeepGEMM grouped FP8 is the rank-1 MoE GEMM (DeepSeek-V3 path).
+    _mock_available(monkeypatch, available_libs={"deep_gemm"}, sm=90)
+    assert dispatch.which("moe") == "deep_gemm"
+    # sgl-kernel grouped GEMM is the rank-2 alignment target on sm90.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=90)
     assert dispatch.which("moe") == SGL_KERNEL
-    assert dispatch.which("moe_gate") == SGL_KERNEL
+    # DeepGEMM + sgl + vllm all present on sm90 -> DeepGEMM (rank 1) wins.
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "sgl_kernel", "vllm"}, sm=90)
+    assert dispatch.which("moe") == "deep_gemm"
+
+
+def test_vllm_fused_moe_on_ampere(monkeypatch):
+    # Ampere/Ada have no FP8 hw: DeepGEMM/sgl grouped GEMM gate out (sm90); the
+    # optimal grouped path is vLLM Triton fused_experts (sm80+).
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "sgl_kernel", "vllm"}, sm=80)
+    assert dispatch.which("moe") == "vllm"
+    # Nothing external -> kernel-set portable fallback.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs=set(), sm=80)
+    assert dispatch.which("moe") == KERNEL_SET
+
+
+def test_moe_gate_vllm_rank2_wired(monkeypatch):
+    # The vLLM rank-2 gate adapters are now wired (were call=None): with only
+    # vLLM present they are selected over the kernel-set fallback.
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("moe_gate") == "vllm"
+    assert dispatch.which("moe_group_gate") == "vllm"
 
 
 def test_sgl_kernel_competitive_rank_on_norms(monkeypatch):
@@ -259,7 +290,9 @@ def test_sgl_kernel_mla_and_attention_need_sm90(monkeypatch):
     assert dispatch.which("mla_decode") == SGL_KERNEL
 
 
-def test_sgl_kernel_int8_gemm_rank1(monkeypatch):
+def test_sgl_kernel_int8_gemm_selected_when_only_sgl(monkeypatch):
+    # sgl-kernel int8_scaled_mm is the rank-2 alignment target; when it is the
+    # only INT8 provider installed it still wins over the kernel-set fallback.
     _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=80)
     assert dispatch.which("int8_gemm", dtype="int8") == SGL_KERNEL
 
@@ -288,6 +321,180 @@ def test_sgl_kernel_import_check_is_sgl_kernel():
         for p in OPS[op].providers:
             if p.name == SGL_KERNEL:
                 assert p.import_check == "import sgl_kernel", op
+
+
+# =========================================================================== #
+# COMPUTE-BOUND OPTIMAL SELECTION (docs/OPTIMAL_SELECTION.md).
+#
+# Strategy: for every compute-bound op the dispatcher must (a) pick an *external*
+# best-in-class provider whenever one is installed & arch/dtype-compatible, and
+# (b) fall back to kernel-set ONLY when no external provider is available for the
+# arch. kernel-set must NEVER be preferred over an available external provider on
+# these ops, and must always be the LAST entry in the chain.
+# =========================================================================== #
+
+# The compute-bound ops kernel-set adopts external kernels for. (Memory-bound
+# ops — norm/rope/act/sampling — are validated separately above; ks is SOTA-class
+# there and is a legitimate competitive provider, not merely a fallback.)
+COMPUTE_BOUND_OPS = [
+    "gemm", "fp8_gemm", "int8_gemm", "w4a16",
+    "attention_prefill", "attention_decode", "mla_decode",
+    "moe",
+]
+
+
+def test_compute_bound_kernel_set_is_always_last():
+    # For every compute-bound op, kernel-set must be the final (fallback) entry.
+    for op in COMPUTE_BOUND_OPS:
+        chain = dispatch.providers(op)
+        assert chain[-1] == KERNEL_SET, op
+        assert chain.count(KERNEL_SET) == 1, op
+        # ...and it must NOT be the rank-1 entry (an external provider leads).
+        assert chain[0] != KERNEL_SET, op
+
+
+def test_compute_bound_prefers_external_when_available(monkeypatch):
+    # With the rank-1 external provider installed (on a suitable arch), the
+    # dispatcher must pick it — never kernel-set.
+    cases = [
+        # (op, libs, sm, dtype, expected_external)
+        ("gemm", {"torch"}, 80, "bf16", "torch"),
+        ("fp8_gemm", {"deep_gemm"}, 90, "fp8", "deep_gemm"),
+        ("fp8_gemm", {"torch"}, 89, "fp8", "torch-scaled-mm"),
+        ("int8_gemm", {"vllm"}, 80, "int8", "vllm"),
+        ("int8_gemm", {"sgl_kernel"}, 80, "int8", SGL_KERNEL),
+        ("w4a16", {"vllm"}, 80, "int4", "vllm-marlin"),
+        ("w4a16", {"vllm"}, 90, "int4", "vllm-machete"),
+        ("attention_prefill", {"flash_attn"}, 80, "bf16", "flash-attn"),
+        ("attention_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
+        ("mla_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("moe", {"deep_gemm"}, 90, None, "deep_gemm"),
+        ("moe", {"vllm"}, 80, None, "vllm"),
+    ]
+    for op, libs, sm, dtype, expected in cases:
+        dispatch.reset_cache()
+        _mock_available(monkeypatch, available_libs=libs, sm=sm)
+        got = dispatch.which(op, dtype=dtype)
+        assert got == expected, f"{op} sm{sm} {dtype}: {got} != {expected}"
+        assert got != KERNEL_SET, op
+
+
+def test_compute_bound_falls_back_to_ks_when_nothing_external(monkeypatch):
+    # On every arch, with NO external provider installed, each compute-bound op
+    # falls back to kernel-set (the portable C-ABI path) — and only then.
+    for sm in (80, 89, 90, 100):
+        for op in COMPUTE_BOUND_OPS:
+            dispatch.reset_cache()
+            _mock_available(monkeypatch, available_libs=set(), sm=sm)
+            assert dispatch.which(op) == KERNEL_SET, f"{op} sm{sm}"
+
+
+def test_gemm_optimal_is_cublas_torch_every_arch(monkeypatch):
+    # Dense GEMM optimal = cuBLAS/cuBLASLt via torch on A100/L4/H100/B200.
+    for sm in (80, 89, 90, 100):
+        dispatch.reset_cache()
+        _mock_available(monkeypatch, available_libs={"torch"}, sm=sm)
+        assert dispatch.which("gemm", dtype="bf16") == "torch", f"sm{sm}"
+
+
+def test_fp8_gemm_arch_gating_full_ladder(monkeypatch):
+    # sm90/sm100: DeepGEMM rank-1. sm89: DeepGEMM gated out -> torch._scaled_mm.
+    # sm80 (no FP8 tensor cores): DeepGEMM + sgl gated; torch-scaled-mm is sm89
+    # so it too gates out -> kernel-set bf16-cast fallback (no FP8 hw on Ampere).
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "torch", "sgl_kernel"}, sm=90)
+    assert dispatch.which("fp8_gemm", dtype="fp8") == "deep_gemm"
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "torch", "sgl_kernel"}, sm=100)
+    assert dispatch.which("fp8_gemm", dtype="fp8") == "deep_gemm"
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "torch", "sgl_kernel"}, sm=89)
+    assert dispatch.which("fp8_gemm", dtype="fp8") == "torch-scaled-mm"
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"deep_gemm", "torch", "sgl_kernel"}, sm=80)
+    assert dispatch.which("fp8_gemm", dtype="fp8") == KERNEL_SET
+
+
+def test_int8_gemm_rank_order_vllm_then_sgl(monkeypatch):
+    # Registry true rank-1 is vLLM CUTLASS int8; sgl-kernel is rank-2.
+    _mock_available(monkeypatch, available_libs={"vllm", "sgl_kernel"}, sm=80)
+    assert dispatch.which("int8_gemm", dtype="int8") == "vllm"
+    # On Blackwell sm100 CUTLASS int8 is unsupported -> Marlin-int8 leads.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm", "sgl_kernel"}, sm=100)
+    assert dispatch.which("int8_gemm", dtype="int8") == "vllm-marlin-int8"
+
+
+def test_w4a16_marlin_wired_and_machete_on_hopper(monkeypatch):
+    # The vllm-marlin adapter is now wired (was call=None) -> selectable.
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("w4a16", dtype="int4") == "vllm-marlin"
+    assert dispatch.which("w4a16", dtype="int4") != KERNEL_SET
+    # On Hopper sm90 Machete outranks Marlin.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
+    assert dispatch.which("w4a16", dtype="int4") == "vllm-machete"
+    # Machete is sm90-gated: on sm80 it drops, Marlin leads.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("w4a16", dtype="int4") == "vllm-marlin"
+
+
+def test_fa4_blackwell_only(monkeypatch):
+    # FlashAttention-4 (flash_attn.cute) is the rank-0 sm100 prefill path; on
+    # Hopper/Ampere it gates out and FA2/FA3 (flash-attn) leads.
+    _mock_available(monkeypatch, available_libs={"flash_attn"}, sm=90)
+    assert dispatch.which("attention_prefill", dtype="bf16") == "flash-attn"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"flash_attn"}, sm=80)
+    assert dispatch.which("attention_prefill", dtype="bf16") == "flash-attn"
+
+
+def test_mla_decode_portable_flashinfer_pre_hopper(monkeypatch):
+    # Pre-Hopper (A100 sm80 / L4 sm89): FlashMLA is sm90-gated; FlashInfer MLA
+    # is now wired (sm80+) so MLA decode has a real SOTA path, not the ks 1%-BW
+    # fallback.
+    for sm in (80, 89):
+        dispatch.reset_cache()
+        _mock_available(
+            monkeypatch, available_libs={"sgl_kernel", "flashinfer"}, sm=sm)
+        assert dispatch.which("mla_decode") == "flashinfer", f"sm{sm}"
+    # On Hopper FlashMLA (rank 1) beats FlashInfer (rank 2).
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"sgl_kernel", "flashinfer"}, sm=90)
+    assert dispatch.which("mla_decode") == SGL_KERNEL
+
+
+def test_no_compute_bound_op_has_unwired_rank1(monkeypatch):
+    # Regression for the old call=None gaps (vllm-marlin / vllm gate). For every
+    # compute-bound op, the rank-1 (lowest-rank) external provider must have a
+    # wired call adapter — otherwise it can never actually dispatch.
+    for op in COMPUTE_BOUND_OPS:
+        externals = [p for p in OPS[op].providers if p.name != KERNEL_SET]
+        assert externals, op
+        lead = min(externals, key=lambda p: p.rank)
+        assert lead.call is not None, f"{op} rank-{lead.rank} {lead.name} unwired"
+
+
+def test_arch_gates_preserved_for_sm90_providers():
+    # DeepGEMM / FlashMLA / Machete must stay sm90-gated; Marlin sm80; FA4 sm100.
+    def gate(op, name):
+        return next(p.min_sm for p in OPS[op].providers if p.name == name)
+    assert gate("fp8_gemm", "deep_gemm") == 90
+    assert gate("moe", "deep_gemm") == 90
+    assert gate("mla_decode", SGL_KERNEL) == 90
+    assert gate("w4a16", "vllm-machete") == 90
+    assert gate("w4a16", "vllm-marlin") == 80
+    assert gate("int8_gemm", "vllm") == 80
+    assert gate("int8_gemm", "vllm-marlin-int8") == 100
+    assert gate("attention_prefill", "flash-attn-cute") == 100
+    assert gate("attention_prefill", "flash-attn") == 80
+    assert gate("mla_decode", "flashinfer") == 80
 
 
 # --------------------------------------------------------------------------- #
