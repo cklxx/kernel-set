@@ -172,6 +172,8 @@ def test_table_logical_ops_match_dispatch_op_order():
     # The two ops the review flagged as missing are now present.
     assert "gemma_rmsnorm" in table_ops
     assert "sampling" in table_ops
+    assert "selective_scan" in table_ops
+    assert "causal_conv1d" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +239,24 @@ def test_heuristic_fill_moe_fp8_hopper():
     assert r["provider"] == "deep_gemm"
     assert r["source"] == "heuristic"
     assert r["fallback_chain"][-1] == KERNEL_SET
+
+
+def test_heuristic_fill_ssm_and_conv_sm80_plus():
+    for sm in (80, 86, 89, 90, 100):
+        scan = O.select_optimal("selective_scan", sm, "bf16")
+        assert scan["provider"] == "mamba-ssm"
+        assert scan["source"] == "heuristic"
+        assert scan["fallback_chain"] == ["mamba-ssm", KERNEL_SET]
+
+        conv = O.select_optimal("causal_conv1d", sm, "fp16")
+        assert conv["provider"] == "causal-conv1d"
+        assert conv["source"] == "heuristic"
+        assert conv["fallback_chain"] == ["causal-conv1d", KERNEL_SET]
+
+    assert O.select_optimal("selective_scan", 75, "fp16")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("causal_conv1d", 75, "bf16")["provider"] == \
+        KERNEL_SET
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +476,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "flashinfer": "flashinfer", "liger": "liger_kernel",
         "flash-attn": "flash_attn", "sgl-kernel": "sgl_kernel",
         "vllm": "vllm", "torch": "torch", "deep_gemm": "deep_gemm",
+        "mamba-ssm": "mamba_ssm", "causal-conv1d": "causal_conv1d",
     }
     samples = [
         # L4 (sm89) fp16 measured winners.
@@ -467,6 +488,8 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         # Heuristic fills (no measurement).
         ("rope", 90, "bf16"),         # heuristic -> flashinfer
         ("moe_grouped_gemm", 90, "fp8"),  # heuristic -> deep_gemm
+        ("ssm", 80, "bf16"),          # heuristic -> mamba-ssm
+        ("conv1d", 80, "fp16"),       # heuristic -> causal-conv1d
     ]
     for plan_op, sm, scheme in samples:
         cell = sel.optimal_cell(plan_op, sm, scheme)
@@ -513,3 +536,19 @@ def test_planner_quantized_dense_gemm_annotations_use_quantized_optimal_ops():
         assert entry["optimal_provider"] == expected["provider"]
         if expected["provider"] != dense["provider"]:
             assert entry["optimal_provider"] != dense["provider"]
+
+
+def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    assert sel.optimal_lookup_op("ssm", "bf16") == "selective_scan"
+    assert sel.optimal_lookup_op("conv1d", "fp16") == "causal_conv1d"
+    assert sel.optimal_lookup_op("qkv_proj", "mxfp4") == "mxfp4_gemm"
+    assert sel.optimal_lookup_op("moe_grouped_gemm", "mxfp4") == "mxfp4_gemm"

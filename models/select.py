@@ -103,6 +103,8 @@ _PLAN_OP_TO_OPTIMAL = {
     "mlp_act": "swiglu",
     "moe_gate": "moe_gate",
     "moe_grouped_gemm": "moe",
+    "ssm": "selective_scan",
+    "conv1d": "causal_conv1d",
     "cross_entropy": "cross_entropy",
 }
 
@@ -151,6 +153,8 @@ def _optimal_table_sm(sm):
 
 def optimal_lookup_op(plan_op, scheme):
     """Planner op -> optimal-table op, accounting for quantized GEMM schemes."""
+    if plan_op in GEMM_OPS and scheme == "mxfp4":
+        return "mxfp4_gemm"
     if plan_op in DENSE_GEMM_OPS:
         if scheme == "fp8":
             return "fp8_gemm"

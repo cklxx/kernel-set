@@ -84,6 +84,8 @@ __all__ = [
     "moe_gate",
     "moe_group_gate",
     "sampling",
+    "selective_scan",
+    "causal_conv1d",
     # introspection
     "which",
     "which_provider",
@@ -354,6 +356,27 @@ def sampling(probs, *, top_k=None, top_p=None, **kw):
     renorm-by-threshold sampling or the kernel-set fused sampler."""
     return _dispatch("sampling", (probs,),
                      dict(top_k=top_k, top_p=top_p, **kw))
+
+
+def selective_scan(out, x, dt, A, B, C, D=None, z=None, dt_bias=None, *,
+                   delta_softplus=False, batch=None, dim=None, seqlen=None,
+                   dstate=None, dtype=None, stream=None, **kw):
+    """Mamba selective scan. Signature mirrors ``kernel_set.ssm.selective_scan``."""
+    return _dispatch(
+        "selective_scan", (out, x, dt, A, B, C),
+        dict(D=D, z=z, dt_bias=dt_bias, delta_softplus=delta_softplus,
+             batch=batch, dim=dim, seqlen=seqlen, dstate=dstate, dtype=dtype,
+             stream=stream, **kw))
+
+
+def causal_conv1d(out, x, weight, bias=None, *, batch=None, dim=None,
+                  seqlen=None, width=None, silu=False, dtype=None, stream=None,
+                  **kw):
+    """Depthwise causal conv1d. Signature mirrors ``kernel_set.ssm.causal_conv1d``."""
+    return _dispatch(
+        "causal_conv1d", (out, x, weight),
+        dict(bias=bias, batch=batch, dim=dim, seqlen=seqlen, width=width,
+             silu=silu, dtype=dtype, stream=stream, **kw))
 
 
 # --------------------------------------------------------------------------- #

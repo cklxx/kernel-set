@@ -435,7 +435,7 @@ def test_mxfp4_providers_are_blackwell_only():
 COMPUTE_BOUND_OPS = [
     "gemm", "fp8_gemm", "int8_gemm", "w4a16",
     "attention_prefill", "attention_decode", "mla_decode",
-    "moe",
+    "moe", "selective_scan", "causal_conv1d",
 ]
 
 
@@ -467,6 +467,8 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("mla_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
         ("moe", {"deep_gemm"}, 90, None, "deep_gemm"),
         ("moe", {"vllm"}, 80, None, "vllm"),
+        ("selective_scan", {"mamba_ssm"}, 80, "bf16", "mamba-ssm"),
+        ("causal_conv1d", {"causal_conv1d"}, 80, "bf16", "causal-conv1d"),
     ]
     for op, libs, sm, dtype, expected in cases:
         dispatch.reset_cache()
@@ -566,6 +568,27 @@ def test_mla_decode_portable_flashinfer_pre_hopper(monkeypatch):
     assert dispatch.which("mla_decode") == SGL_KERNEL
 
 
+def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
+    _mock_available(
+        monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=75)
+    assert dispatch.which("selective_scan", dtype="fp16") == KERNEL_SET
+    assert dispatch.which("causal_conv1d", dtype="fp16") == KERNEL_SET
+
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=80)
+    assert dispatch.which("selective_scan", dtype="fp16") == "mamba-ssm"
+    assert dispatch.which("selective_scan", dtype="bf16") == "mamba-ssm"
+    assert dispatch.which("causal_conv1d", dtype="fp16") == "causal-conv1d"
+    assert dispatch.which("causal_conv1d", dtype="bf16") == "causal-conv1d"
+
+    dispatch.reset_cache()
+    _mock_available(
+        monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=80)
+    assert dispatch.which("selective_scan", dtype="fp32") == KERNEL_SET
+    assert dispatch.which("causal_conv1d", dtype="fp32") == KERNEL_SET
+
+
 def test_no_compute_bound_op_has_unwired_rank1(monkeypatch):
     # Regression for the old call=None gaps (vllm-marlin / vllm gate). For every
     # compute-bound op, the rank-1 (lowest-rank) external provider must have a
@@ -591,6 +614,8 @@ def test_arch_gates_preserved_for_sm90_providers():
     assert gate("attention_prefill", "flash-attn-cute") == 100
     assert gate("attention_prefill", "flash-attn") == 80
     assert gate("mla_decode", "flashinfer") == 80
+    assert gate("selective_scan", "mamba-ssm") == 80
+    assert gate("causal_conv1d", "causal-conv1d") == 80
 
 
 # --------------------------------------------------------------------------- #

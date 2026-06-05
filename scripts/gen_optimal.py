@@ -872,6 +872,23 @@ HEURISTIC = {
         {"logical_op": "cross_entropy", "sm": 100, "dtype": "bf16",
          "provider": "liger",
          "fallback_chain": ["liger", "torch", "kernel-set"]},
+        # --- SSM / causal conv front-end for Mamba-style blocks. External
+        #     libraries are CUDA sm80+ and support fp16/bf16; below sm80 the
+        #     selector falls back to the kernel-set terminal by omission.
+        *[
+            {"logical_op": "selective_scan", "sm": sm, "dtype": dtype,
+             "provider": "mamba-ssm",
+             "fallback_chain": ["mamba-ssm", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
+        *[
+            {"logical_op": "causal_conv1d", "sm": sm, "dtype": dtype,
+             "provider": "causal-conv1d",
+             "fallback_chain": ["causal-conv1d", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         # --- sampling: fused temp/top-k/top-p over fp32 probs (dtype-agnostic
         #     downstream of the logits). flashinfer leads (sm75+); sgl woven in
         #     (sm80+). ---------------------------------------------------------

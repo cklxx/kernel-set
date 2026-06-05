@@ -776,6 +776,52 @@ def _sampling_ks(probs, *, top_k=None, top_p=None, **_):
     return out_tokens
 
 
+def _copy_result_to_out(out, result):
+    if isinstance(result, (tuple, list)):
+        result = result[0]
+    if result is out:
+        return out
+    if hasattr(out, "copy_"):
+        out.copy_(result)
+        return out
+    raise TypeError("external provider returned a tensor but out is not copyable")
+
+
+def _selective_scan_mamba(out, x, dt, A, B, C, D=None, z=None, dt_bias=None,
+                          *, delta_softplus=False, **_):
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+    result = selective_scan_fn(
+        x, dt, A, B, C, D=D, z=z, delta_bias=dt_bias,
+        delta_softplus=delta_softplus)
+    return _copy_result_to_out(out, result)
+
+
+def _selective_scan_ks(out, x, dt, A, B, C, D=None, z=None, dt_bias=None,
+                       *, delta_softplus=False, batch=None, dim=None,
+                       seqlen=None, dstate=None, dtype=None, stream=None, **_):
+    from .. import ssm
+    return ssm.selective_scan(
+        out, x, dt, A, B, C, D=D, z=z, dt_bias=dt_bias,
+        delta_softplus=delta_softplus, batch=batch, dim=dim, seqlen=seqlen,
+        dstate=dstate, dtype=dtype, stream=stream)
+
+
+def _causal_conv1d_external(out, x, weight, bias=None, *, silu=False, **_):
+    from causal_conv1d import causal_conv1d_fn
+    result = causal_conv1d_fn(
+        x, weight, bias, activation="silu" if silu else None)
+    return _copy_result_to_out(out, result)
+
+
+def _causal_conv1d_ks(out, x, weight, bias=None, *, batch=None, dim=None,
+                      seqlen=None, width=None, silu=False, dtype=None,
+                      stream=None, **_):
+    from .. import ssm
+    return ssm.causal_conv1d(
+        out, x, weight, bias=bias, batch=batch, dim=dim, seqlen=seqlen,
+        width=width, silu=silu, dtype=dtype, stream=stream)
+
+
 def _moe_deepgemm(a, b, expert_offsets, *, num_experts, n, k,
                   a_scale=None, b_scale=None, **_):
     # DeepGEMM grouped (contiguous) FP8 GEMM — the reference MoE GEMM on
@@ -1227,6 +1273,21 @@ _OPS_RAW: List[Op] = [
                       note="SGLang renorm + categorical sampling"),
         _ks_provider(_sampling_ks, "ks_sample",
                      "fused temp/top-k/top-p sampler"),
+    ]),
+    Op("selective_scan", "ssm", "ks_selective_scan", [
+        Provider("mamba-ssm", 1, 80, "fp16, bf16",
+                 "from mamba_ssm.ops.selective_scan_interface import "
+                 "selective_scan_fn",
+                 _selective_scan_mamba, "Mamba selective_scan_fn"),
+        _ks_provider(_selective_scan_ks, "ks_selective_scan",
+                     "portable selective scan"),
+    ]),
+    Op("causal_conv1d", "ssm", "ks_causal_conv1d", [
+        Provider("causal-conv1d", 1, 80, "fp16, bf16",
+                 "from causal_conv1d import causal_conv1d_fn",
+                 _causal_conv1d_external, "causal-conv1d fused kernel"),
+        _ks_provider(_causal_conv1d_ks, "ks_causal_conv1d",
+                     "portable causal depthwise conv1d"),
     ]),
 ]
 
