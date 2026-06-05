@@ -156,6 +156,18 @@ def _attn_decode_flashinfer(q, k_cache, v_cache, block_tables, seq_lens, *,
     return wrapper.run(q, (k_fi, v_fi))
 
 
+def _attn_decode_fa3(q, k_cache, v_cache, block_tables, seq_lens, *,
+                     block_size, max_blocks_per_seq, softmax_scale=None, **_):
+    from flash_attn_interface import flash_attn_with_kvcache
+    qf = q.unsqueeze(1)
+    k_fa = k_cache.permute(0, 2, 1, 3).contiguous()
+    v_fa = v_cache.permute(0, 2, 1, 3).contiguous()
+    out = flash_attn_with_kvcache(
+        qf, k_fa, v_fa, page_table=block_tables, cache_seqlens=seq_lens,
+        softmax_scale=softmax_scale, causal=False)
+    return out.reshape_as(q)
+
+
 def _attn_decode_ks(q, k_cache, v_cache, block_tables, seq_lens, *,
                     block_size, max_blocks_per_seq, softmax_scale=None, **_):
     from .. import attention
@@ -205,6 +217,23 @@ def _fp8_gemm_torch(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     return torch._scaled_mm(a8, b8.t(), scale_a=a_scale, scale_b=b_scale,
                             out_dtype=out_dtype or torch.bfloat16,
                             use_fast_accum=True)
+
+
+def _fp8_gemm_vllm_cutlass(a8, b8, a_scale, b_scale, *, out_dtype=None,
+                           bias=None, **_):
+    # vLLM CUTLASS scaled-mm. Public fp8_gemm uses the DeepGEMM NT weight layout
+    # (B as [N,K]); vLLM expects the column-major [K,N] operand.
+    import torch
+    from vllm import _custom_ops as ops
+    b_arg = b8.t().contiguous() if getattr(b8, "ndim", 0) == 2 else b8
+    return ops.cutlass_scaled_mm(a8, b_arg, a_scale, b_scale,
+                                 out_dtype or torch.bfloat16, bias)
+
+
+def _fp8_gemm_fbgemm(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
+    import fbgemm_gpu.experimental.gen_ai  # noqa: F401 - registers torch.ops
+    import torch
+    return torch.ops.fbgemm.f8f8bf16_rowwise(a8, b8, a_scale, b_scale)
 
 
 def _fp8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
@@ -265,40 +294,110 @@ def _ks_unsupported(label):
     return _raise
 
 
+def _vllm_scalar_type(name: str):
+    from vllm.scalar_type import scalar_types
+    return getattr(scalar_types, name)
+
+
+def _marlin_workspace(n: int, device):
+    import torch
+    return torch.zeros(max(1, n // 64 * 16), device=device, dtype=torch.int32)
+
+
 # =========================================================================== #
 # W4A16 GEMM. a: fp16/bf16 (M,K); packed int4 weights + group scales/zeros.
 # vLLM owns the SOTA mixed-input INT4xFP16 kernels: GPTQ/AWQ-Marlin (sm80+) and
 # Machete (sm90a, CUTLASS TMA+WGMMA weight-prepack — beats Marlin on Hopper).
 # =========================================================================== #
 def _w4a16_marlin(a, b_packed, scales, zeros, *, group_size=128,
-                  workspace=None, **_):
-    # vLLM GPTQ-Marlin: ops.gptq_marlin_gemm(a, b_q_weight, b_scales, b_zeros,
-    #   g_idx, perm, workspace, num_bits=4, size_m, size_n, size_k, is_k_full=...)
-    # The weights must already be Marlin-prepacked (gptq_marlin_repack); callers
-    # supply the prepacked `b_packed` + `scales` (+ optional `zeros`).
-    import torch
+                  workspace=None, g_idx=None, perm=None, is_zp_float=False, **_):
+    # Unified vLLM Marlin. GPTQ symmetric weights use uint4b8; AWQ/zero-point
+    # weights use uint4 and pass b_zeros. Weights are already Marlin-prepacked.
     from vllm import _custom_ops as ops
     m, k = a.shape
     n = scales.shape[1]
     if workspace is None:
-        workspace = torch.zeros(n // 64 * 16, device=a.device, dtype=torch.int32)
-    return ops.gptq_marlin_gemm(
-        a, b_packed, scales, zeros, workspace, num_bits=4,
-        size_m=m, size_n=n, size_k=k, is_k_full=True)
+        workspace = _marlin_workspace(n, a.device)
+    b_q_type = _vllm_scalar_type("uint4" if zeros is not None else "uint4b8")
+    return ops.marlin_gemm(
+        a, None, b_packed, None, scales, None, None, zeros, g_idx, perm,
+        workspace, b_q_type, m, n, k, True, False, False, is_zp_float)
 
 
 def _w4a16_machete(a, b_packed, scales, zeros, *, group_size=128, **_):
     # vLLM Machete (sm90a): CUTLASS TMA+WGMMA mixed-input GEMM with weight
     # pre-packing — the Hopper-optimal W4A16/W4A8 path (beats Marlin on sm90).
-    # ops.machete_mm(a, b_q, b_type, b_group_scales, b_group_zeros,
-    #   b_group_size, ...). Weights are machete_prepack_B-packed by the caller.
+    # ops.machete_mm(A, B, b_type, out_type, group_scales, group_zeros,
+    #   group_size, channel_scales, token_scales, schedule). Weights are
+    # machete_prepack_B-packed by the caller.
+    from vllm import _custom_ops as ops
+    return ops.machete_mm(
+        a, b_packed, _vllm_scalar_type("uint4b8"), a.dtype,
+        scales, zeros, group_size, None, None, None)
+
+
+def _w4a16_gemlite(a, b_packed, scales, zeros, *, group_size=128, bias=None,
+                   out_dtype=None, **_):
+    import torch
+    try:
+        from gemlite import DType
+    except Exception:
+        DType = None
+    from gemlite.core import GemLiteLinear
+    m, k = a.shape
+    n = scales.shape[1] if getattr(scales, "ndim", 0) >= 2 else b_packed.shape[0]
+    if DType is not None:
+        dt = DType.BF16 if a.dtype is torch.bfloat16 else DType.FP16
+        kwargs = {"input_dtype": dt, "output_dtype": dt}
+    else:
+        kwargs = {"input_dtype": a.dtype, "output_dtype": out_dtype or a.dtype}
+    layer = GemLiteLinear(W_nbits=4, group_size=group_size, in_features=k,
+                          out_features=n, **kwargs)
+    layer.pack(b_packed, scales, zeros, bias)
+    return layer(a.reshape(-1, k)).reshape(*a.shape[:-1], n)
+
+
+def _w4a16_torchao_int4(a, b_packed, scales, zeros=None, *, group_size=128,
+                        **_):
+    import torch
+    from torchao.quantization import Int4WeightOnlyConfig, quantize_  # noqa: F401
+    if zeros is not None:
+        raise NotImplementedError(
+            "torchao-int4 expects prepacked scales_and_zeros in `scales`")
+    return torch.ops.aten._weight_int4pack_mm(a, b_packed, group_size, scales)
+
+
+def _w4a8_machete(a8, b_packed, b_scales=None, a_scales=None, *,
+                  b_zeros=None, group_size=None, out_dtype=None,
+                  b_channel_scales=None, a_token_scales=None, schedule=None,
+                  **_):
+    # Machete W4A8: int4 weight with fp8/int8 activation and token/channel scales.
     import torch
     from vllm import _custom_ops as ops
-    from vllm.scalar_type import scalar_types
+    channel_scales = b_channel_scales if b_channel_scales is not None else b_scales
+    token_scales = a_token_scales if a_token_scales is not None else a_scales
     return ops.machete_mm(
-        a=a, b_q=b_packed, b_type=scalar_types.uint4b8,
-        b_group_scales=scales, b_group_zeros=zeros,
-        b_group_size=group_size, out_type=a.dtype)
+        a8, b_packed, _vllm_scalar_type("int4"),
+        out_dtype or torch.bfloat16, None, b_zeros, group_size,
+        channel_scales, token_scales, schedule)
+
+
+def _w4a8_marlin(a8, b_packed, b_scales, a_scales=None, *, global_scale=None,
+                 workspace=None, size_m=None, size_n=None, size_k=None,
+                 **_):
+    # Unified Marlin QQQ/W4A8: signed int4 weights + int8/fp8 activations.
+    from vllm import _custom_ops as ops
+    m, k = a8.shape
+    size_m = size_m or m
+    size_k = size_k or k
+    size_n = size_n or (b_scales.shape[-1] if b_scales is not None
+                        else b_packed.shape[1])
+    if workspace is None:
+        workspace = _marlin_workspace(size_n, a8.device)
+    return ops.marlin_gemm(
+        a8, None, b_packed, None, b_scales, a_scales, global_scale,
+        None, None, None, workspace, _vllm_scalar_type("int4"),
+        size_m, size_n, size_k, True, False, False, False)
 
 
 def _w4a16_ks(a, b_packed, scales, zeros, *, group_size=128, **_):
@@ -318,6 +417,11 @@ def _w4a16_ks(a, b_packed, scales, zeros, *, group_size=128, **_):
 def _rmsnorm_flashinfer(x, w, *, eps=1e-6, **_):
     from flashinfer.norm import rmsnorm as fi_rms
     return fi_rms(x, w, eps=eps)
+
+
+def _rmsnorm_quack(x, w, *, eps=1e-6, **_):
+    from quack import rmsnorm
+    return rmsnorm(x, w, eps)
 
 
 def _rmsnorm_vllm(x, w, *, eps=1e-6, **_):
@@ -473,6 +577,12 @@ def _ce_liger(logits, targets, *, ignore_index=-100, **_):
     return out[0] if isinstance(out, (tuple, list)) else out
 
 
+def _ce_quack(logits, targets, *, ignore_index=-100, **_):
+    from quack import cross_entropy
+    out = cross_entropy(logits, targets, ignore_index=ignore_index)
+    return out[0] if isinstance(out, (tuple, list)) else out
+
+
 def _ce_torch(logits, targets, *, ignore_index=-100, **_):
     import torch
     return torch.nn.functional.cross_entropy(
@@ -496,6 +606,14 @@ def _ce_ks(logits, targets, *, ignore_index=-100, **_):
 def _moe_vllm(hidden, w1, w2, topk_weights, topk_ids, **_):
     from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts
     return fused_experts(hidden, w1, w2, topk_weights, topk_ids, inplace=False)
+
+
+def _moe_flashinfer_cutlass(hidden, w1, w2, topk_weights, topk_ids, *,
+                            out_dtype=None, quant_scales=None, **kw):
+    from flashinfer.fused_moe import cutlass_fused_moe
+    return cutlass_fused_moe(
+        hidden, topk_ids, topk_weights, w1, w2, out_dtype,
+        quant_scales=quant_scales, **kw)
 
 
 def _moe_ks(a, b, expert_offsets, *, num_experts, n, k, **_):
@@ -608,17 +726,25 @@ def _int8_gemm_vllm(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
 
 
 def _int8_gemm_marlin(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
-    # Marlin INT8 (vLLM) — the Blackwell (sm100) fallback where CUTLASS INT8 is
-    # unsupported. ops.gptq_marlin_24_gemm / marlin int8 path; weights are
-    # Marlin-prepacked. Exposed as the sm100 rank-1 int8 provider.
-    import torch
+    # Unified vLLM Marlin INT8. a8 is int8/Char with per-token a_scale; b8 is the
+    # Marlin-prepacked signed-int8 weight with per-channel/group b_scale.
     from vllm import _custom_ops as ops
     m, k = a8.shape
     n = b8.shape[1]
-    workspace = torch.zeros(n // 64 * 16, device=a8.device, dtype=torch.int32)
-    return ops.gptq_marlin_gemm(
-        a8, b8, b_scale, a_scale, workspace, num_bits=8,
-        size_m=m, size_n=n, size_k=k, is_k_full=True)
+    workspace = _marlin_workspace(n, a8.device)
+    return ops.marlin_gemm(
+        a8, None, b8, None, b_scale, a_scale, None, None, None, None,
+        workspace, _vllm_scalar_type("int8"), m, n, k, True, False, False,
+        False)
+
+
+def _int8_gemm_gemlite(a8, b8, a_scale=None, b_scale=None, *, out_dtype=None,
+                       **kw):
+    helper = _imp("gemlite.helper")
+    if hasattr(helper, "A8W8_INT8_dynamic"):
+        return helper.A8W8_INT8_dynamic(
+            a8, b8, a_scale=a_scale, b_scale=b_scale, out_dtype=out_dtype, **kw)
+    raise NotImplementedError("gemlite A8W8_INT8_dynamic helper is unavailable")
 
 
 def _int8_gemm_ks(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
@@ -801,7 +927,21 @@ def _fla_scale(scale):
 
 
 def _selective_scan_mamba(out, x, dt, A, B, C, D=None, z=None, dt_bias=None,
-                          *, delta_softplus=False, **_):
+                          *, delta_softplus=False, state=None, chunk_size=None,
+                          decode=False, use_ssd=False, **kw):
+    if decode or state is not None:
+        from mamba_ssm.ops.triton.selective_state_update import (
+            selective_state_update)
+        result = selective_state_update(
+            state, x, dt, A, B, C, D=D, z=z, dt_bias=dt_bias,
+            dt_softplus=delta_softplus, **kw)
+        return _copy_result_to_out(out, result)
+    if use_ssd or chunk_size is not None:
+        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        result = mamba_chunk_scan_combined(
+            x, dt, A, B, C, chunk_size=chunk_size, D=D, z=z,
+            dt_bias=dt_bias, dt_softplus=delta_softplus, **kw)
+        return _copy_result_to_out(out, result)
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
     result = selective_scan_fn(
         x, dt, A, B, C, D=D, z=z, delta_bias=dt_bias,
@@ -819,7 +959,13 @@ def _selective_scan_ks(out, x, dt, A, B, C, D=None, z=None, dt_bias=None,
         dstate=dstate, dtype=dtype, stream=stream)
 
 
-def _causal_conv1d_external(out, x, weight, bias=None, *, silu=False, **_):
+def _causal_conv1d_external(out, x, weight, bias=None, *, silu=False,
+                            conv_state=None, decode=False, **_):
+    if decode or conv_state is not None:
+        from causal_conv1d import causal_conv1d_update
+        result = causal_conv1d_update(
+            x, conv_state, weight, bias, activation="silu" if silu else None)
+        return _copy_result_to_out(out, result)
     from causal_conv1d import causal_conv1d_fn
     result = causal_conv1d_fn(
         x, weight, bias, activation="silu" if silu else None)
@@ -840,7 +986,14 @@ def _gated_delta_rule_fla(q, k, v, g, beta, *, g_is_vector=0,
                           output_final_state=False, state_v_first=False,
                           cu_seqlens=None, cu_seqlens_cpu=None,
                           use_beta_sigmoid_in_kernel=False,
-                          allow_neg_eigval=False, **kw):
+                          allow_neg_eigval=False, recurrent=False, **kw):
+    if recurrent:
+        from fla.ops import fused_recurrent_gated_delta_rule
+        result = fused_recurrent_gated_delta_rule(
+            q, k, v, g, beta, scale=_fla_scale(scale),
+            initial_state=initial_state, output_final_state=output_final_state,
+            cu_seqlens=cu_seqlens, **kw)
+        return _first_result(result)
     from fla.ops import chunk_gated_delta_rule, chunk_kda
     is_vector_gate = bool(g_is_vector) or getattr(g, "ndim", 0) == 4
     fn = chunk_kda if is_vector_gate else chunk_gated_delta_rule
@@ -882,7 +1035,17 @@ def _gated_linear_attn_fla(q, k, v, g=None, head_decay=None, *, gate_mode=0,
                            scale=0.0, initial_state=None,
                            output_final_state=False, state_v_first=False,
                            cu_seqlens=None, cu_seqlens_cpu=None,
-                           layer_idx=None, num_layers=None, **_):
+                           layer_idx=None, num_layers=None, recurrent=False,
+                           **_):
+    if recurrent:
+        from fla.ops import fused_recurrent_gla, fused_recurrent_simple_gla
+        fn = (fused_recurrent_simple_gla if gate_mode in (1, "simple") or
+              g is None or head_decay is not None else fused_recurrent_gla)
+        result = fn(
+            q, k, v, g if g is not None else head_decay, scale=_fla_scale(scale),
+            initial_state=initial_state, output_final_state=output_final_state,
+            cu_seqlens=cu_seqlens)
+        return _first_result(result)
     from fla.ops import chunk_gla, chunk_lightning_attn, chunk_simple_gla
     if gate_mode in (2, "lightning") or layer_idx is not None or num_layers is not None:
         if layer_idx is None or num_layers is None:
@@ -932,7 +1095,15 @@ def _gated_linear_attn_ks(q, k, v, g=None, head_decay=None, *, batch=None,
 
 def _rwkv_wkv7_fla(r, w, k, v, a, b, *, scale=0.0, initial_state=None,
                    output_final_state=False, cu_seqlens=None,
-                   cu_seqlens_cpu=None, safe_gate=False, chunk_size=None, **_):
+                   cu_seqlens_cpu=None, safe_gate=False, chunk_size=None,
+                   recurrent=False, **_):
+    if recurrent:
+        from fla.ops import fused_recurrent_rwkv7
+        result = fused_recurrent_rwkv7(
+            r, w, k, v, a, b, scale=1.0 if _fla_scale(scale) is None else scale,
+            initial_state=initial_state, output_final_state=output_final_state,
+            cu_seqlens=cu_seqlens)
+        return _first_result(result)
     from fla.ops import chunk_rwkv7
     result = chunk_rwkv7(
         r, w, k, v, a, b, scale=1.0 if _fla_scale(scale) is None else scale,
@@ -963,16 +1134,21 @@ def _rwkv_wkv7_ks(r, w, k, v, a, b, *, batch=None, seqlen=None, heads=None,
     return out
 
 
-def _moe_deepgemm(a, b, expert_offsets, *, num_experts, n, k,
-                  a_scale=None, b_scale=None, **_):
-    # DeepGEMM grouped (contiguous) FP8 GEMM — the reference MoE GEMM on
-    # Hopper/Blackwell (DeepSeek-V3 production, Mega-MoE). Contiguous-layout
-    # grouped fp8: m_grouped_fp8_gemm_nt_contiguous((a, a_s), (b, b_s), out,
-    # m_indices). `expert_offsets` is converted to the per-row m_indices map.
+def _moe_deepgemm(a, b, expert_offsets=None, *, num_experts=None, n, k,
+                  a_scale=None, b_scale=None, masked_m=None, expected_m=None,
+                  **_):
+    # DeepGEMM grouped FP8 GEMM. If masked_m is supplied, use the CUDA-graph
+    # decode path; otherwise use the contiguous prefill path.
     import torch
     dg = _imp("deep_gemm")
     total_rows = a.shape[0]
     out = torch.empty(total_rows, n, device=a.device, dtype=torch.bfloat16)
+    if masked_m is not None:
+        dg.m_grouped_fp8_gemm_nt_masked(
+            (a, a_scale), (b, b_scale), out, masked_m, expected_m)
+        return out
+    if expert_offsets is None or num_experts is None:
+        raise ValueError("DeepGEMM contiguous MoE needs expert_offsets/num_experts")
     # Build m_indices: expert id per row from the contiguous expert offsets.
     m_indices = torch.empty(total_rows, device=a.device, dtype=torch.int32)
     for e in range(num_experts):
@@ -997,6 +1173,25 @@ def _moe_sgl(a, b, expert_offsets, *, num_experts, n, k,
     sk.fp8_blockwise_scaled_grouped_mm(
         out, a, b, a_scale, b_scale, expert_offsets, num_experts)
     return out
+
+
+def _reshape_and_cache_fp8_flashinfer(key, value, key_cache, value_cache,
+                                      slot_mapping, k_scale=None, v_scale=None,
+                                      *, kv_layout="NHD", **kw):
+    from flashinfer.page import append_paged_kv_cache
+    append_paged_kv_cache(
+        key, value, key_cache, value_cache, slot_mapping,
+        kv_layout=kv_layout, k_scale=k_scale, v_scale=v_scale, **kw)
+    return key_cache, value_cache
+
+
+def _reshape_and_cache_fp8_sgl(key, value, key_cache, value_cache, slot_mapping,
+                               k_scale=None, v_scale=None, *,
+                               kv_cache_dtype="fp8", **_):
+    sk = _imp("sgl_kernel")
+    sk.reshape_and_cache_flash(key, value, key_cache, value_cache, slot_mapping,
+                               kv_cache_dtype, k_scale, v_scale)
+    return key_cache, value_cache
 
 
 def _attn_prefill_sgl(q, k, v, *, causal=True, softmax_scale=None, **_):
@@ -1075,6 +1270,22 @@ def _mla_decode_flashinfer(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
     return wrapper.run(q_nope, q_pe, ckv, kpe)
 
 
+def _mla_decode_flash_mla(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
+                          heads, lora, rope_dim, block_size,
+                          max_blocks_per_seq, softmax_scale=None, **_):
+    import torch
+    from flash_mla import flash_mla_with_kvcache, get_mla_metadata
+    h_kv = 1
+    tile_md, num_splits = get_mla_metadata(seq_lens, heads // h_kv, h_kv)
+    q_cat = torch.cat([q_nope, q_pe], dim=-1).to(torch.bfloat16).unsqueeze(1)
+    kcache = kv_cache.reshape(
+        kv_cache.shape[0], block_size, h_kv, lora + rope_dim).to(torch.bfloat16)
+    out, _lse = flash_mla_with_kvcache(
+        q_cat, kcache, block_tables, seq_lens, lora, tile_md, num_splits,
+        softmax_scale=_scale(lora + rope_dim, softmax_scale), causal=True)
+    return out
+
+
 def _mla_decode_sgl(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
                     heads, lora, rope_dim, block_size, max_blocks_per_seq,
                     softmax_scale=None, **_):
@@ -1116,6 +1327,9 @@ def _sgl_provider(rank, call, *, min_sm=80, dtypes="fp16, bf16",
                     import_check="import sgl_kernel", call=call, note=note)
 
 
+# TODO(P2): defer 2:4-sparse, BitNet, W8A16-FP8, and fused-linear-CE wiring.
+
+
 _OPS_RAW: List[Op] = [
     Op("attention_prefill", "attention", None, [
         # FA4 (CuTe-DSL) is the Blackwell-optimal path; gated sm100 so it only
@@ -1145,6 +1359,10 @@ _OPS_RAW: List[Op] = [
                  _attn_decode_flashinfer, "paged decode plan/run, FA-class"),
         _sgl_provider(2, _attn_decode_sgl, min_sm=90,
                       note="SGLang FA3 paged decode (flash_attn_with_kvcache)"),
+        Provider("flash-attn-3", 3, 90, "fp16, bf16, fp8 e4m3",
+                 "from flash_attn_interface import flash_attn_with_kvcache",
+                 _attn_decode_fa3,
+                 "native FlashAttention-3 paged decode (Hopper+)"),
         _ks_provider(_attn_decode_ks, "ks_paged_attn_decode"),
     ]),
     Op("mla_decode", "attention", None, [
@@ -1158,6 +1376,10 @@ _OPS_RAW: List[Op] = [
                  "from flashinfer.mla import BatchMLAPagedAttentionWrapper",
                  _mla_decode_flashinfer,
                  "FlashInfer MLA paged decode (portable sm80+)"),
+        Provider("flash-mla", 3, 90, "bf16, fp8 e4m3 KV",
+                 "from flash_mla import flash_mla_with_kvcache, get_mla_metadata",
+                 _mla_decode_flash_mla,
+                 "native DeepSeek FlashMLA package (Hopper+)"),
         _ks_provider(_mla_decode_ks, "ks_mla_decode",
                      "kernel-set absorbed-MLA decode"),
     ]),
@@ -1177,6 +1399,16 @@ _OPS_RAW: List[Op] = [
         Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 block scales",
                  "import deep_gemm",
                  _fp8_gemm_deepgemm, "DeepGEMM blockwise fp8 (Hopper/Blackwell)"),
+        Provider("vllm-cutlass", 2, 89, "fp8 e4m3/e5m2",
+                 "from vllm import _custom_ops as ops; ops.cutlass_scaled_mm; "
+                 "ops.scaled_fp8_quant",
+                 _fp8_gemm_vllm_cutlass,
+                 "vLLM CUTLASS scaled fp8 mm (dynamic/per-token scales)"),
+        Provider("fbgemm", 2, 90, "fp8 e4m3, bf16 out",
+                 "import torch; import fbgemm_gpu.experimental.gen_ai; "
+                 "torch.ops.fbgemm.f8f8bf16_rowwise",
+                 _fp8_gemm_fbgemm,
+                 "FBGEMM GenAI rowwise fp8 GEMM"),
         Provider("torch-scaled-mm", 2, 89, "fp8 e4m3/e5m2",
                  "import torch",
                  _fp8_gemm_torch, "torch._scaled_mm fp8 tensor cores (Ada+)"),
@@ -1189,7 +1421,8 @@ _OPS_RAW: List[Op] = [
         # Blackwell (sm100): CUTLASS INT8 is unsupported, so Marlin-int8 (vLLM)
         # is the rank-0 sm100 path; gated sm100 so it only wins on B200.
         Provider("vllm-marlin-int8", 0, 100, "int8 w8a8",
-                 "from vllm import _custom_ops",
+                 "from vllm import _custom_ops as ops; ops.marlin_gemm; "
+                 "ops.gptq_marlin_repack",
                  _int8_gemm_marlin, "Marlin INT8 (vLLM, Blackwell sm100)"),
         # Registry true rank-1 across sm75-sm90: vLLM CUTLASS INT8 W8A8
         # (SmoothQuant / compressed-tensors, symmetric + azp).
@@ -1199,6 +1432,10 @@ _OPS_RAW: List[Op] = [
         # sgl-kernel int8_scaled_mm is the rank-2 alignment target.
         _sgl_provider(2, _int8_gemm_sgl, min_sm=80, dtypes="int8 w8a8",
                       note="SGLang CUTLASS int8_scaled_mm"),
+        Provider("gemlite", 3, 80, "int8 w8a8",
+                 "from gemlite.core import GemLiteLinear",
+                 _int8_gemm_gemlite,
+                 "GemLite Triton INT8 split-K fallback"),
         _ks_provider(_int8_gemm_ks, "ks_gemm_w8a8",
                      "int8 W8A8 scaled-mm (native ABI; portable fallback)"),
     ]),
@@ -1206,15 +1443,37 @@ _OPS_RAW: List[Op] = [
         # Hopper (sm90a): Machete (CUTLASS TMA+WGMMA weight-prepack) beats
         # Marlin — rank-0, gated sm90 so it only outranks Marlin on Hopper+.
         Provider("vllm-machete", 0, 90, "int4 weights, fp16/bf16 acts",
-                 "from vllm import _custom_ops",
+                 "from vllm import _custom_ops as ops; ops.machete_mm; "
+                 "ops.machete_prepack_B",
                  _w4a16_machete, "Machete W4A16/W4A8 (vLLM, Hopper sm90a)"),
         # Ampere/Ada/Blackwell: GPTQ/AWQ-Marlin is the de-facto W4A16 kernel
         # (~4x over fp16). Now WIRED (was call=None) so it actually dispatches.
         Provider("vllm-marlin", 1, 80, "int4 weights, fp16/bf16 acts",
-                 "from vllm import _custom_ops",
+                 "from vllm import _custom_ops as ops; ops.marlin_gemm; "
+                 "ops.gptq_marlin_repack; ops.awq_marlin_repack",
                  _w4a16_marlin, "GPTQ/AWQ-Marlin (Ampere+; NVFP4-Marlin sm100)"),
+        Provider("gemlite", 2, 80, "int4 weights, fp16/bf16 acts",
+                 "from gemlite.core import GemLiteLinear",
+                 _w4a16_gemlite,
+                 "GemLite Triton low-bit fallback (portable, batch-friendly)"),
+        Provider("torchao-int4", 3, 80, "int4 weight, bf16 act",
+                 "from torchao.quantization import quantize_, Int4WeightOnlyConfig",
+                 _w4a16_torchao_int4,
+                 "torchao tinygemm int4 weight-only path"),
         _ks_provider(_w4a16_ks, "ks_gemm_w4a16",
                      "portable INT4 fallback (correctness only)"),
+    ]),
+    Op("w4a8", "gemm-quant", None, [
+        Provider("vllm-machete", 0, 90, "int4 weights, int8/fp8 acts",
+                 "from vllm import _custom_ops as ops; ops.machete_mm; "
+                 "ops.machete_prepack_B",
+                 _w4a8_machete, "Machete W4A8 (Hopper+)"),
+        Provider("vllm-marlin", 1, 80, "int4 weights, int8/fp8 acts",
+                 "from vllm import _custom_ops as ops; ops.marlin_gemm; "
+                 "ops.gptq_marlin_repack",
+                 _w4a8_marlin, "Marlin QQQ/W4A8 (Ampere/Ada)"),
+        _ks_provider(_ks_unsupported("w4a8 GEMM"), "",
+                     "no portable W4A8 kernel; needs vLLM Machete/Marlin"),
     ]),
     # FP8 BLOCKWISE GEMM (DeepSeek-V3 128x128 weight / 1x128 act recipe). DeepGEMM
     # is the Hopper/Blackwell reference; kernel-set's ks_gemm_fp8_blockwise is the
@@ -1294,10 +1553,20 @@ _OPS_RAW: List[Op] = [
                  "from vllm import _custom_ops",
                  _reshape_and_cache_fp8_vllm,
                  "vLLM reshape_and_cache_flash (fp8 KV, quantize-on-write)"),
+        Provider("flashinfer", 2, 89, "fp8 e4m3 KV, nvfp4 KV",
+                 "from flashinfer.page import append_paged_kv_cache",
+                 _reshape_and_cache_fp8_flashinfer,
+                 "FlashInfer paged KV append / quant-on-write"),
+        _sgl_provider(3, _reshape_and_cache_fp8_sgl, min_sm=89,
+                      dtypes="fp8 e4m3 KV",
+                      note="SGLang reshape_and_cache_flash fp8 KV write"),
         _ks_provider(_ks_unsupported("fp8 KV-cache quant"), "",
                      "ks_reshape_and_cache is dtype-preserving; needs vLLM"),
     ]),
     Op("rmsnorm", "norm-act-rope", "ks_rmsnorm", [
+        Provider("quack", 0, 90, "fp16, bf16, fp32",
+                 "from quack import rmsnorm",
+                 _rmsnorm_quack, "Quack CuTe-DSL speed-of-light RMSNorm"),
         Provider("flashinfer", 1, 75, "fp16, bf16",
                  "from flashinfer.norm import rmsnorm",
                  _rmsnorm_flashinfer, "FlashInfer fused RMSNorm"),
@@ -1359,6 +1628,9 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_swiglu_ks, "ks_silu_and_mul"),
     ]),
     Op("cross_entropy", "loss-optim-misc", "ks_cross_entropy", [
+        Provider("quack", 0, 90, "fp32, bf16, fp16",
+                 "from quack import cross_entropy",
+                 _ce_quack, "Quack CuTe-DSL cross-entropy"),
         Provider("liger", 1, 70, "fp32, bf16, fp16",
                  "from liger_kernel.transformers.functional import "
                  "liger_cross_entropy",
@@ -1372,14 +1644,19 @@ _OPS_RAW: List[Op] = [
         # Hopper/Blackwell: DeepGEMM grouped FP8 (DeepSeek-V3 production,
         # Mega-MoE) is the reference MoE GEMM — rank-1, gated sm90.
         Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 block scales",
-                 "import deep_gemm",
+                 "import deep_gemm; from deep_gemm import "
+                 "m_grouped_fp8_gemm_nt_masked",
                  _moe_deepgemm,
-                 "DeepGEMM grouped FP8 (contiguous, Hopper/Blackwell)"),
+                 "DeepGEMM grouped FP8 (contiguous/masked, Hopper/Blackwell)"),
         # sgl-kernel CUTLASS blockwise-fp8 grouped GEMM — the stated alignment
         # target (rank-2, sm90). Now calls the REAL sgl grouped mm (was a stub
         # that delegated to the ks kernel).
         _sgl_provider(2, _moe_sgl, min_sm=90, dtypes="fp8 e4m3",
                       note="SGLang CUTLASS grouped FP8 (fp8_blockwise_..._mm)"),
+        Provider("flashinfer-cutlass-moe", 2, 89, "fp16, bf16, fp8, nvfp4",
+                 "from flashinfer.fused_moe import cutlass_fused_moe",
+                 _moe_flashinfer_cutlass,
+                 "FlashInfer CUTLASS fused MoE (gather+GEMM+scatter)"),
         # Ampere/Ada (no FP8 hw): vLLM Triton fused_experts (bf16/INT4 grouped).
         Provider("vllm", 3, 80, "bf16, fp16, fp8, int4",
                  "from vllm.model_executor.layers.fused_moe.fused_moe import "
@@ -1416,41 +1693,51 @@ _OPS_RAW: List[Op] = [
                      "fused temp/top-k/top-p sampler"),
     ]),
     Op("selective_scan", "ssm", "ks_selective_scan", [
-        Provider("mamba-ssm", 1, 80, "fp16, bf16",
+        Provider("mamba-ssm", 1, 80, "fp16, bf16, fp32",
                  "from mamba_ssm.ops.selective_scan_interface import "
-                 "selective_scan_fn",
-                 _selective_scan_mamba, "Mamba selective_scan_fn"),
+                 "selective_scan_fn; "
+                 "from mamba_ssm.ops.triton.ssd_combined import "
+                 "mamba_chunk_scan_combined; "
+                 "from mamba_ssm.ops.triton.selective_state_update import "
+                 "selective_state_update",
+                 _selective_scan_mamba,
+                 "Mamba selective_scan_fn + SSD chunk/update"),
         _ks_provider(_selective_scan_ks, "ks_selective_scan",
                      "portable selective scan"),
     ]),
     Op("causal_conv1d", "ssm", "ks_causal_conv1d", [
-        Provider("causal-conv1d", 1, 80, "fp16, bf16",
-                 "from causal_conv1d import causal_conv1d_fn",
-                 _causal_conv1d_external, "causal-conv1d fused kernel"),
+        Provider("causal-conv1d", 1, 80, "fp16, bf16, fp32",
+                 "from causal_conv1d import causal_conv1d_fn, "
+                 "causal_conv1d_update",
+                 _causal_conv1d_external,
+                 "causal-conv1d fused prefill/update kernels"),
         _ks_provider(_causal_conv1d_ks, "ks_causal_conv1d",
                      "portable causal depthwise conv1d"),
     ]),
     Op("gated_delta_rule", "linear-attn", "ks_gated_delta_rule", [
         Provider("flash-linear-attention", 1, 80, "fp16, bf16",
-                 "from fla.ops import chunk_gated_delta_rule",
+                 "from fla.ops import chunk_gated_delta_rule, chunk_kda, "
+                 "fused_recurrent_gated_delta_rule",
                  _gated_delta_rule_fla,
-                 "FLA chunk gated delta rule / KDA"),
+                 "FLA chunk/recurrent gated delta rule / KDA"),
         _ks_provider(_gated_delta_rule_ks, "ks_gated_delta_rule",
                      "portable gated delta rule"),
     ]),
     Op("gated_linear_attn", "linear-attn", "ks_gated_linear_attn", [
         Provider("flash-linear-attention", 1, 80, "fp16, bf16",
-                 "from fla.ops import chunk_gla",
+                 "from fla.ops import chunk_gla, chunk_simple_gla, "
+                 "chunk_lightning_attn, fused_recurrent_gla, "
+                 "fused_recurrent_simple_gla",
                  _gated_linear_attn_fla,
-                 "FLA chunk GLA / simple GLA / lightning attention"),
+                 "FLA chunk/recurrent GLA / simple GLA / lightning"),
         _ks_provider(_gated_linear_attn_ks, "ks_gated_linear_attn",
                      "portable gated linear attention"),
     ]),
     Op("rwkv_wkv7", "linear-attn", "ks_rwkv_wkv7", [
         Provider("flash-linear-attention", 1, 80, "fp16, bf16",
-                 "from fla.ops import chunk_rwkv7",
+                 "from fla.ops import chunk_rwkv7, fused_recurrent_rwkv7",
                  _rwkv_wkv7_fla,
-                 "FLA chunk RWKV-7 WKV"),
+                 "FLA chunk/recurrent RWKV-7 WKV"),
         _ks_provider(_rwkv_wkv7_ks, "ks_rwkv_wkv7",
                      "portable RWKV-7 WKV"),
     ]),

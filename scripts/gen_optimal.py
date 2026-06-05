@@ -245,6 +245,23 @@ HEURISTIC = {
         {"logical_op": "w4a16", "sm": 100, "dtype": "int4",
          "provider": "vllm-machete",
          "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
+        # W4A8 / QQQ: int4 weights with int8/fp8 activations. Marlin covers
+        # Ampere/Ada; Machete is the Hopper/Blackwell winner.
+        {"logical_op": "w4a8", "sm": 80, "dtype": "int4",
+         "provider": "vllm-marlin",
+         "fallback_chain": ["vllm-marlin", "kernel-set"]},
+        {"logical_op": "w4a8", "sm": 86, "dtype": "int4",
+         "provider": "vllm-marlin",
+         "fallback_chain": ["vllm-marlin", "kernel-set"]},
+        {"logical_op": "w4a8", "sm": 89, "dtype": "int4",
+         "provider": "vllm-marlin",
+         "fallback_chain": ["vllm-marlin", "kernel-set"]},
+        {"logical_op": "w4a8", "sm": 90, "dtype": "int4",
+         "provider": "vllm-machete",
+         "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
+        {"logical_op": "w4a8", "sm": 100, "dtype": "int4",
+         "provider": "vllm-machete",
+         "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
         # FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe). sm89 has no fp8 HW provider, so
         # kernel-set's portable blockwise kernel IS the winner there (chain
         # collapses to ["kernel-set"]); DeepGEMM wins on Hopper/Blackwell.

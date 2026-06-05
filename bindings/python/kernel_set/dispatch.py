@@ -69,6 +69,7 @@ __all__ = [
     "fp8_gemm_blockwise",
     "int8_gemm",
     "w4a16",
+    "w4a8",
     "per_token_group_quant",
     "nvfp4_gemm",
     "mxfp4_gemm",
@@ -250,6 +251,15 @@ def w4a16(a, b_packed, scales, zeros, *, group_size=128, **kw):
     """W4A16 GEMM: fp16/bf16 acts x packed int4 weights with group scales."""
     return _dispatch("w4a16", (a, b_packed, scales, zeros),
                      dict(group_size=group_size, **kw))
+
+
+def w4a8(a8, b_packed, b_scales, a_scales=None, *, global_scale=None,
+         group_size=None, out_dtype=None, **kw):
+    """W4A8 GEMM: int8/fp8 acts x packed int4 weights with token/channel scales."""
+    return _dispatch(
+        "w4a8", (a8, b_packed, b_scales, a_scales),
+        dict(global_scale=global_scale, group_size=group_size,
+             out_dtype=out_dtype, **kw))
 
 
 def fp8_gemm_blockwise(a8, b8, a_scale, b_scale, *, block_n=128, block_k=128,

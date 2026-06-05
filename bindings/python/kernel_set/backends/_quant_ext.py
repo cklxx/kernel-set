@@ -155,11 +155,11 @@ def _mxfp4_gemm_torchao(x, weight, *, block_size=32, **_):
 
 
 def _mxfp4_gemm_vllm(a, qweight, scales, *, num_bits=4, size_m=None,
-                     size_n=None, size_k=None, workspace=None, **_):
+                     size_n=None, size_k=None, workspace=None, alpha=None, **_):
     """vLLM Marlin-MXFP4 GEMM (registry rank 3).
 
     GPT-OSS MXFP4 is served through the Blackwell-gated Marlin/CUTLASS path:
-    ``ops.gptq_marlin_gemm`` with an mxfp4 ScalarType. ``a`` is the fp16/bf16
+    ``ops.marlin_gemm`` with an mxfp4 ScalarType. ``a`` is the fp16/bf16
     activation (M, K); ``qweight`` the Marlin-prepacked MXFP4 weight; ``scales``
     the ue8m0 block scales.
     """
@@ -173,9 +173,10 @@ def _mxfp4_gemm_vllm(a, qweight, scales, *, num_bits=4, size_m=None,
     if workspace is None:
         workspace = torch.zeros(size_n // 64 * 16, device=a.device,
                                 dtype=torch.int32)
-    return ops.gptq_marlin_gemm(
-        a, qweight, scales, scalar_types.float4_e2m1f, workspace,
-        size_m=size_m, size_n=size_n, size_k=size_k, is_k_full=True)
+    return ops.marlin_gemm(
+        a, None, qweight, None, scales, None, alpha, None, None, None,
+        workspace, scalar_types.float4_e2m1f, size_m, size_n, size_k,
+        True, False, False, False)
 
 
 # =========================================================================== #
@@ -230,7 +231,7 @@ def _repack_awq_marlin_vllm(qweight, size_k, size_n, *, num_bits=4,
     """vLLM AWQ->Marlin weight repack.
 
     ``ops.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits, is_a_8bit)``
-    -> Marlin-layout packed weight Tensor (then served via gptq_marlin_gemm).
+    -> Marlin-layout packed weight Tensor (then served via marlin_gemm).
     ``qweight`` is the AWQ-packed int4/int8 weight; no GPTQ-style ``perm`` (AWQ
     has no g_idx permutation). sm80+.
     """

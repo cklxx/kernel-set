@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 282,
+    "total": 287,
     "measured": 13,
-    "heuristic": 269
+    "heuristic": 274
   },
   "cells": [
     {
@@ -3333,6 +3333,63 @@
     },
     {
       "logical_op": "w4a16",
+      "sm": 100,
+      "dtype": "int4",
+      "provider": "vllm-machete",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm-machete",
+        "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a8",
+      "sm": 80,
+      "dtype": "int4",
+      "provider": "vllm-marlin",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a8",
+      "sm": 86,
+      "dtype": "int4",
+      "provider": "vllm-marlin",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a8",
+      "sm": 89,
+      "dtype": "int4",
+      "provider": "vllm-marlin",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a8",
+      "sm": 90,
+      "dtype": "int4",
+      "provider": "vllm-machete",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm-machete",
+        "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a8",
       "sm": 100,
       "dtype": "int4",
       "provider": "vllm-machete",

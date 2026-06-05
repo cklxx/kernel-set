@@ -80,6 +80,8 @@ def _install_fake_fla(monkeypatch, calls):
     for name in (
         "chunk_gated_delta_rule", "chunk_kda", "chunk_gla",
         "chunk_simple_gla", "chunk_lightning_attn", "chunk_rwkv7",
+        "fused_recurrent_gated_delta_rule", "fused_recurrent_gla",
+        "fused_recurrent_simple_gla", "fused_recurrent_rwkv7",
     ):
         setattr(ops, name, record(name))
     fla.ops = ops
@@ -239,11 +241,13 @@ def test_chain_detail_view(monkeypatch):
     _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
     rows = dispatch.chain("rmsnorm")
     names = [r["name"] for r in rows]
-    assert names == ["flashinfer", "sgl-kernel", "vllm", "liger", KERNEL_SET]
+    assert names == [
+        "flashinfer", "sgl-kernel", "vllm", "liger", "quack", KERNEL_SET]
     sel = {r["name"]: r["selectable"] for r in rows}
     assert sel["flashinfer"] is False   # not installed in this mock
     assert sel["sgl-kernel"] is False   # not installed in this mock
     assert sel["vllm"] is True
+    assert sel["quack"] is False
     assert sel[KERNEL_SET] is True      # always selectable
     # which() must agree with the first selectable in chain()
     first_selectable = next(r["name"] for r in rows if r["selectable"])
@@ -427,6 +431,16 @@ def test_import_probe_checks_from_import_attributes(monkeypatch):
     assert _probe.can_import(
         "from fake_kernel_set_probe_mod import present_attr") is True
 
+    _probe._IMPORT_CACHE.clear()
+    pkg = types.ModuleType("fake_kernel_set_probe_pkg")
+    sub = types.ModuleType("fake_kernel_set_probe_pkg.ops")
+    sub.kernel = object()
+    pkg.ops = sub
+    monkeypatch.setitem(sys.modules, "fake_kernel_set_probe_pkg", pkg)
+    monkeypatch.setitem(sys.modules, "fake_kernel_set_probe_pkg.ops", sub)
+    assert _probe.can_import(
+        "from fake_kernel_set_probe_pkg import ops as ops; ops.kernel") is True
+
 
 def test_new_flashinfer_import_checks_are_specific():
     assert next(p for p in OPS["nvfp4_gemm"].providers
@@ -438,6 +452,9 @@ def test_new_flashinfer_import_checks_are_specific():
     assert next(p for p in OPS["sampling"].providers
                 if p.name == "flashinfer").import_check == \
         "import flashinfer.sampling"
+    assert next(p for p in OPS["fp8_kv_cache"].providers
+                if p.name == "flashinfer").import_check == \
+        "from flashinfer.page import append_paged_kv_cache"
 
 
 def test_mxfp4_providers_are_blackwell_only():
@@ -461,7 +478,7 @@ def test_mxfp4_providers_are_blackwell_only():
 # ops — norm/rope/act/sampling — are validated separately above; ks is SOTA-class
 # there and is a legitimate competitive provider, not merely a fallback.)
 COMPUTE_BOUND_OPS = [
-    "gemm", "fp8_gemm", "int8_gemm", "w4a16",
+    "gemm", "fp8_gemm", "int8_gemm", "w4a16", "w4a8",
     "attention_prefill", "attention_decode", "mla_decode",
     "moe", "selective_scan", "causal_conv1d",
     "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
@@ -490,6 +507,8 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("int8_gemm", {"sgl_kernel"}, 80, "int8", SGL_KERNEL),
         ("w4a16", {"vllm"}, 80, "int4", "vllm-marlin"),
         ("w4a16", {"vllm"}, 90, "int4", "vllm-machete"),
+        ("w4a8", {"vllm"}, 80, "int4", "vllm-marlin"),
+        ("w4a8", {"vllm"}, 90, "int4", "vllm-machete"),
         ("attention_prefill", {"flash_attn"}, 80, "bf16", "flash-attn"),
         ("attention_decode", {"flashinfer"}, 80, "fp16", "flashinfer"),
         ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
@@ -574,6 +593,61 @@ def test_w4a16_marlin_wired_and_machete_on_hopper(monkeypatch):
     assert dispatch.which("w4a16", dtype="int4") == "vllm-marlin"
 
 
+def test_w4a8_new_op_marlin_ampere_machete_hopper(monkeypatch):
+    assert "w4a8" in dispatch.ops()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=80)
+    assert dispatch.which("w4a8", dtype="int4") == "vllm-marlin"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
+    assert dispatch.which("w4a8", dtype="int4") == "vllm-machete"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs=set(), sm=90)
+    assert dispatch.which("w4a8", dtype="int4") == KERNEL_SET
+
+
+def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    calls = []
+    vllm = types.ModuleType("vllm")
+    ops = types.ModuleType("vllm._custom_ops")
+
+    def marlin_gemm(*args):
+        calls.append(args)
+        return "marlin_out"
+
+    ops.marlin_gemm = marlin_gemm
+    vllm._custom_ops = ops
+    scalar_mod = types.ModuleType("vllm.scalar_type")
+    scalar_mod.scalar_types = types.SimpleNamespace(
+        uint4b8="uint4b8", uint4="uint4", int8="int8", int4="int4")
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setitem(sys.modules, "vllm._custom_ops", ops)
+    monkeypatch.setitem(sys.modules, "vllm.scalar_type", scalar_mod)
+
+    a = torch.zeros(2, 4)
+    b = torch.zeros(1, 1, dtype=torch.int32)
+    scales = torch.ones(1, 8)
+    assert _registry._w4a16_marlin(a, b, scales, None) == "marlin_out"
+    assert calls[-1][11] == "uint4b8"
+    assert calls[-1][12:15] == (2, 8, 4)
+
+    zeros = torch.zeros_like(scales)
+    assert _registry._w4a16_marlin(a, b, scales, zeros) == "marlin_out"
+    assert calls[-1][7] is zeros
+    assert calls[-1][11] == "uint4"
+
+    a8 = torch.zeros(2, 4, dtype=torch.int8)
+    b8 = torch.zeros(4, 8, dtype=torch.int8)
+    a_scale = torch.ones(2, 1)
+    b_scale = torch.ones(1, 8)
+    assert _registry._int8_gemm_marlin(a8, b8, a_scale, b_scale) == \
+        "marlin_out"
+    assert calls[-1][5] is a_scale
+    assert calls[-1][11] == "int8"
+
+
 def test_fa4_blackwell_only(monkeypatch):
     # FlashAttention-4 (flash_attn.cute) is the rank-0 sm100 prefill path; on
     # Hopper/Ampere it gates out and FA2/FA3 (flash-attn) leads.
@@ -617,8 +691,8 @@ def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
     dispatch.reset_cache()
     _mock_available(
         monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=80)
-    assert dispatch.which("selective_scan", dtype="fp32") == KERNEL_SET
-    assert dispatch.which("causal_conv1d", dtype="fp32") == KERNEL_SET
+    assert dispatch.which("selective_scan", dtype="fp32") == "mamba-ssm"
+    assert dispatch.which("causal_conv1d", dtype="fp32") == "causal-conv1d"
 
 
 def test_linear_attn_external_provider_is_sm80_gated(monkeypatch):
@@ -696,6 +770,8 @@ def test_arch_gates_preserved_for_sm90_providers():
     assert gate("mla_decode", SGL_KERNEL) == 90
     assert gate("w4a16", "vllm-machete") == 90
     assert gate("w4a16", "vllm-marlin") == 80
+    assert gate("w4a8", "vllm-machete") == 90
+    assert gate("w4a8", "vllm-marlin") == 80
     assert gate("int8_gemm", "vllm") == 80
     assert gate("int8_gemm", "vllm-marlin-int8") == 100
     assert gate("attention_prefill", "flash-attn-cute") == 100

@@ -177,6 +177,7 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "gated_delta_rule" in table_ops
     assert "gated_linear_attn" in table_ops
     assert "rwkv_wkv7" in table_ops
+    assert "w4a8" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -275,6 +276,19 @@ def test_heuristic_fill_linear_attn_sm80_plus():
 
     for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
         assert O.select_optimal(op, 75, "fp16")["provider"] == KERNEL_SET
+
+
+def test_heuristic_fill_w4a8_sm80_plus():
+    for sm in (80, 86, 89):
+        cell = O.select_optimal("w4a8", sm, "int4")
+        assert cell["provider"] == "vllm-marlin"
+        assert cell["fallback_chain"] == ["vllm-marlin", KERNEL_SET]
+    for sm in (90, 100):
+        cell = O.select_optimal("w4a8", sm, "int4")
+        assert cell["provider"] == "vllm-machete"
+        assert cell["fallback_chain"] == [
+            "vllm-machete", "vllm-marlin", KERNEL_SET]
+    assert O.select_optimal("w4a8", 75, "int4")["provider"] == KERNEL_SET
 
 
 # --------------------------------------------------------------------------- #
@@ -575,5 +589,7 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
     assert sel.optimal_lookup_op("gated_delta", "bf16") == "gated_delta_rule"
     assert sel.optimal_lookup_op("linear_attn", "fp16") == "gated_linear_attn"
     assert sel.optimal_lookup_op("rwkv_wkv", "bf16") == "rwkv_wkv7"
+    assert sel.optimal_lookup_op("w4a8", "bf16") == "w4a8"
+    assert sel.optimal_lookup_op("qkv_proj", "w4a8") == "w4a8"
     assert sel.optimal_lookup_op("qkv_proj", "mxfp4") == "mxfp4_gemm"
     assert sel.optimal_lookup_op("moe_grouped_gemm", "mxfp4") == "mxfp4_gemm"

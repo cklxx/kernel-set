@@ -108,6 +108,7 @@ _PLAN_OP_TO_OPTIMAL = {
     "gated_delta": "gated_delta_rule",
     "linear_attn": "gated_linear_attn",
     "rwkv_wkv": "rwkv_wkv7",
+    "w4a8": "w4a8",
     "cross_entropy": "cross_entropy",
 }
 
@@ -115,7 +116,8 @@ _PLAN_OP_TO_OPTIMAL = {
 _SCHEME_TO_DTYPE = {
     "bf16": "bf16", "fp16": "fp16", "fp32": "fp32", "tf32": "fp32",
     "fp8": "fp8", "fp8_e5m2": "fp8",
-    "w8a8": "int8", "w4a16": "int4", "mxfp4": "fp4",
+    "w8a8": "int8", "w4a16": "int4", "w4a8": "int4",
+    "mxfp4": "fp4",
 }
 
 # dtype-preference ladder for a graceful nearest-dtype lookup (mirrors the
@@ -159,6 +161,8 @@ def optimal_lookup_op(plan_op, scheme):
     if plan_op in GEMM_OPS and scheme == "mxfp4":
         return "mxfp4_gemm"
     if plan_op in DENSE_GEMM_OPS:
+        if scheme == "w4a8":
+            return "w4a8"
         if scheme == "fp8":
             return "fp8_gemm"
         if scheme == "w8a8":

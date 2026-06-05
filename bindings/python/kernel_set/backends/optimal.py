@@ -59,8 +59,8 @@ _DTYPE_ALIASES = {
     "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
     "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
     "int8": "int8", "i8": "int8", "w8a8": "int8",
-    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
-    "gptq": "int4", "nf4": "int4",
+    "int4": "int4", "i4": "int4", "w4a16": "int4", "w4a8": "int4",
+    "awq": "int4", "gptq": "int4", "nf4": "int4",
     "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4",
 }
 

@@ -60,8 +60,8 @@ _DTYPE_ALIASES_FALLBACK = {
     "float8_e4m3fn": "fp8", "float8_e4m3": "fp8", "fp8_e4m3": "fp8",
     "float8_e5m2": "fp8", "fp8_e5m2": "fp8", "fp8": "fp8",
     "int8": "int8", "i8": "int8", "w8a8": "int8",
-    "int4": "int4", "i4": "int4", "w4a16": "int4", "awq": "int4",
-    "gptq": "int4", "nf4": "int4",
+    "int4": "int4", "i4": "int4", "w4a16": "int4", "w4a8": "int4",
+    "awq": "int4", "gptq": "int4", "nf4": "int4",
     "fp4": "fp4", "nvfp4": "fp4", "mxfp4": "fp4",
 }
 
@@ -215,7 +215,8 @@ def dtype_ok(requested: Optional[str], supported_str: str) -> bool:
         "tf32": ("tf32",),
         "fp8": ("fp8", "e4m3", "e5m2", "float8"),
         "int8": ("int8", "i8", "w8a8"),
-        "int4": ("int4", "i4", "w4a16", "uint4", "awq", "gptq", "nf4"),
+        "int4": ("int4", "i4", "w4a16", "w4a8", "uint4", "awq",
+                 "gptq", "nf4"),
         "fp4": ("fp4", "nvfp4", "mxfp4"),
     }.get(req, (req,))
     return any(n in s for n in needles)
@@ -257,6 +258,7 @@ def _import_requirements(import_check: str):
     requires that module. Plain module paths are accepted for direct calls.
     """
     reqs = []
+    aliases = {}
     for stmt in str(import_check).split(";"):
         stmt = stmt.strip()
         if not stmt:
@@ -265,14 +267,33 @@ def _import_requirements(import_check: str):
             mod, names = stmt[len("from "):].split(" import ", 1)
             mod = mod.strip()
             for raw in names.split(","):
-                name = raw.strip().split(" as ")[0].strip()
+                parts = raw.strip().split(" as ", 1)
+                name = parts[0].strip()
                 if name and name != "*":
                     reqs.append((mod, name))
+                    if len(parts) == 2:
+                        alias = parts[1].strip()
+                        if alias:
+                            aliases[alias] = (mod, name)
         elif stmt.startswith("import "):
             for raw in stmt[len("import "):].split(","):
-                mod = raw.strip().split(" as ")[0].strip()
+                parts = raw.strip().split(" as ", 1)
+                mod = parts[0].strip()
                 if mod:
                     reqs.append((mod, None))
+                    aliases.setdefault(mod.split(".", 1)[0],
+                                       (mod.split(".", 1)[0], None))
+                    if len(parts) == 2:
+                        alias = parts[1].strip()
+                        if alias:
+                            aliases[alias] = (mod, None)
+        elif "." in stmt and stmt.split(".", 1)[0] in aliases:
+            alias, attr = stmt.split(".", 1)
+            mod, base_attr = aliases[alias]
+            if base_attr is None:
+                reqs.append((mod, attr))
+            else:
+                reqs.append((mod, f"{base_attr}.{attr}"))
         elif stmt:
             reqs.append((stmt, None))
     return reqs
@@ -285,11 +306,18 @@ def _has_import_requirement(mod: str, attr: Optional[str]) -> bool:
         return False
     if attr is None:
         return True
-    try:
-        importlib.import_module(f"{mod}.{attr}")
-        return True
-    except Exception:
-        return hasattr(module, attr)
+    cur = module
+    for part in attr.split("."):
+        try:
+            submod_name = f"{getattr(cur, '__name__', mod)}.{part}"
+            cur = importlib.import_module(submod_name)
+            continue
+        except Exception:
+            pass
+        if not hasattr(cur, part):
+            return False
+        cur = getattr(cur, part)
+    return True
 
 
 def can_import(module_or_check: str) -> bool:
