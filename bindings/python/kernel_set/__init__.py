@@ -28,7 +28,7 @@ Layout
 * :mod:`kernel_set.runtime`  — device/stream/memory + introspection.
 * op modules: :mod:`norm`, :mod:`activation`, :mod:`attention`, :mod:`gemm`,
   :mod:`moe`, :mod:`rope`, :mod:`quant`, :mod:`sampling`, :mod:`embedding`,
-  :mod:`elementwise`, :mod:`loss`, :mod:`optimizer`.
+  :mod:`elementwise`, :mod:`loss`, :mod:`optimizer`, :mod:`ssm`.
 """
 
 from __future__ import annotations
@@ -85,6 +85,7 @@ try:
         rope,
         runtime,
         sampling,
+        ssm,
     )
 
     # Frequently-used runtime functions promoted to the top level.
@@ -175,4 +176,5 @@ __all__ = [
     "elementwise",
     "loss",
     "optimizer",
+    "ssm",
 ]

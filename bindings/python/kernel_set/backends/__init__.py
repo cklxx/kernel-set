@@ -35,6 +35,12 @@ from ._registry import (  # noqa: F401
     SGL_KERNEL,
     Op,
     Provider,
+    optimal_order,
+)
+from .optimal import (  # noqa: F401
+    optimal_chain,
+    select_optimal,
+    table_meta,
 )
 
 __all__ = [
@@ -52,4 +58,8 @@ __all__ = [
     "dtype_ok",
     "can_import",
     "arch_ok",
+    "optimal_order",
+    "select_optimal",
+    "optimal_chain",
+    "table_meta",
 ]

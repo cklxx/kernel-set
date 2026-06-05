@@ -511,6 +511,49 @@ _decl(
         c_int, _DTYPE, _STREAM,            # group_size, dtype, stream
     ],
 )
+_decl(
+    "ks_gemm_fp8",
+    [
+        _VP, _VP, _VP,                     # out, a_fp8, b_fp8
+        POINTER(c_float), POINTER(c_float),  # a_scale, b_scale
+        c_int64, c_int64, c_int64,         # m, n, k
+        c_int, c_int,                      # a_mode, b_mode
+        _DTYPE, _DTYPE, _STREAM,           # fp8_dtype, out_dtype, stream
+    ],
+)
+
+# ---- ssm.h ----------------------------------------------------------------
+
+_decl(
+    "ks_causal_conv1d",
+    [
+        _VP, _VP, _VP, _VP,                # out, x, weight, bias
+        c_int, c_int, c_int, c_int,        # batch, dim, seqlen, width
+        c_int, _DTYPE, _STREAM,            # silu, dtype, stream
+    ],
+)
+_decl(
+    "ks_selective_scan",
+    [
+        _VP, _VP, _VP,                     # out, x, dt
+        _VP, _VP, _VP, _VP,                # A, B, C, D
+        _VP, _VP,                          # z, dt_bias
+        c_int,                             # delta_softplus
+        c_int, c_int, c_int, c_int,        # batch, dim, seqlen, dstate
+        _DTYPE, _STREAM,                   # dtype, stream
+    ],
+)
+_decl(
+    "ks_selective_scan_update",
+    [
+        _VP, _VP, _VP, _VP,                # state, out, x, dt
+        _VP, _VP, _VP, _VP,                # A, B, C, D
+        _VP, _VP,                          # z, dt_bias
+        c_int,                             # delta_softplus
+        c_int, c_int, c_int,               # batch, dim, dstate
+        _DTYPE, _STREAM,                   # dtype, stream
+    ],
+)
 
 # ---- moe.h ----------------------------------------------------------------
 

@@ -286,6 +286,21 @@ export const ks_gemm_w8a8 = L.func(
 export const ks_gemm_w4a16 = L.func(
   'ks_status_t ks_gemm_w4a16(ks_devptr c, ks_devptr a, ks_devptr b_packed, ks_devptr scales, ks_devptr zeros, ks_devptr bias, int64 m, int64 n, int64 k, int group_size, ks_dtype_t dtype, ks_stream_t stream)',
 );
+export const ks_gemm_fp8 = L.func(
+  'ks_status_t ks_gemm_fp8(ks_devptr out, ks_devptr a_fp8, ks_devptr b_fp8, ks_devptr a_scale, ks_devptr b_scale, int64 m, int64 n, int64 k, ks_quant_mode_t a_mode, ks_quant_mode_t b_mode, ks_dtype_t fp8_dtype, ks_dtype_t out_dtype, ks_stream_t stream)',
+);
+
+/* ============================== ssm.h ================================= */
+
+export const ks_causal_conv1d = L.func(
+  'ks_status_t ks_causal_conv1d(ks_devptr out, ks_devptr x, ks_devptr weight, ks_devptr bias, int batch, int dim, int seqlen, int width, int silu, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_selective_scan = L.func(
+  'ks_status_t ks_selective_scan(ks_devptr out, ks_devptr x, ks_devptr dt, ks_devptr A, ks_devptr B, ks_devptr C, ks_devptr D, ks_devptr z, ks_devptr dt_bias, int delta_softplus, int batch, int dim, int seqlen, int dstate, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_selective_scan_update = L.func(
+  'ks_status_t ks_selective_scan_update(ks_devptr state, ks_devptr out, ks_devptr x, ks_devptr dt, ks_devptr A, ks_devptr B, ks_devptr C, ks_devptr D, ks_devptr z, ks_devptr dt_bias, int delta_softplus, int batch, int dim, int dstate, ks_dtype_t dtype, ks_stream_t stream)',
+);
 
 /* ============================== moe.h ================================= */
 

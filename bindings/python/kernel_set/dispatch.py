@@ -54,6 +54,7 @@ from .backends import (
     arch_ok,
     can_import,
     dtype_ok,
+    optimal_order,
     resolve_sm,
 )
 
@@ -129,7 +130,7 @@ def select(op: str, gpu=None, dtype=None) -> Provider:
     if cached is not None:
         return cached
     chosen = None
-    for p in OPS[op].providers:  # rank order
+    for p in optimal_order(op, sm, dtype):  # optimal-table order (ks last)
         if _is_selectable(p, sm, dtype):
             chosen = p
             break
@@ -313,7 +314,7 @@ def available(gpu=None, dtype=None) -> "Dict[str, List[str]]":
     sm = resolve_sm(gpu)
     out: Dict[str, List[str]] = {}
     for op in OP_ORDER:
-        sel = [p.name for p in OPS[op].providers
+        sel = [p.name for p in optimal_order(op, sm, dtype)
                if _is_selectable(p, sm, dtype)]
         out[op] = sel
     return out
@@ -340,7 +341,7 @@ def chain(op: str, gpu=None, dtype=None) -> "List[dict]":
         raise KeyError(f"unknown dispatch op {op!r}")
     sm = resolve_sm(gpu)
     rows = []
-    for p in OPS[op].providers:
+    for p in optimal_order(op, sm, dtype):
         rows.append({
             "name": p.name,
             "rank": p.rank,

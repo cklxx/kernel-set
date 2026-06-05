@@ -136,6 +136,5 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           KERNEL_SET_LIB="$STUB" node bindings/verify/verify_ts.mjs
 
-      - name: Signature cross-check vs headers (informational)
-        continue-on-error: true   # ssm/fp8 ops not yet wrapped in all 4 bindings
+      - name: Signature cross-check vs headers (76/76 all bindings)
         run: python bindings/verify/xcheck_signatures.py

@@ -525,6 +525,76 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_gemm_fp8(
+        out: *mut c_void,
+        a_fp8: *const c_void,
+        b_fp8: *const c_void,
+        a_scale: *const f32,
+        b_scale: *const f32,
+        m: i64,
+        n: i64,
+        k: i64,
+        a_mode: ks_quant_mode_t,
+        b_mode: ks_quant_mode_t,
+        fp8_dtype: ks_dtype_t,
+        out_dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    // ===== ssm.h ===========================================================
+
+    pub fn ks_causal_conv1d(
+        out: *mut c_void,
+        x: *const c_void,
+        weight: *const c_void,
+        bias: *const c_void,
+        batch: c_int,
+        dim: c_int,
+        seqlen: c_int,
+        width: c_int,
+        silu: c_int,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_selective_scan(
+        out: *mut c_void,
+        x: *const c_void,
+        dt: *const c_void,
+        A: *const c_void,
+        B: *const c_void,
+        C: *const c_void,
+        D: *const c_void,
+        z: *const c_void,
+        dt_bias: *const c_void,
+        delta_softplus: c_int,
+        batch: c_int,
+        dim: c_int,
+        seqlen: c_int,
+        dstate: c_int,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_selective_scan_update(
+        state: *mut c_void,
+        out: *mut c_void,
+        x: *const c_void,
+        dt: *const c_void,
+        A: *const c_void,
+        B: *const c_void,
+        C: *const c_void,
+        D: *const c_void,
+        z: *const c_void,
+        dt_bias: *const c_void,
+        delta_softplus: c_int,
+        batch: c_int,
+        dim: c_int,
+        dstate: c_int,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     // ===== moe.h ===========================================================
 
     pub fn ks_moe_gate_softmax_topk(

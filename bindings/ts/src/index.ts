@@ -801,6 +801,129 @@ export function gemmW4a16(args: {
   );
 }
 
+/** FP8 GEMM: fp8 A x fp8 B -> outDtype C. Scales are fp32 device pointers. */
+export function gemmFp8(args: {
+  out: DevPtr;
+  aFp8: DevPtr;
+  bFp8: DevPtr;
+  aScale: DevPtr;
+  bScale: DevPtr;
+  m: bigint | number;
+  n: bigint | number;
+  k: bigint | number;
+  aMode: QuantMode;
+  bMode: QuantMode;
+  fp8Dtype: Dtype;
+  outDtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_gemm_fp8(
+      ptr(args.out), ptr(args.aFp8), ptr(args.bFp8), ptr(args.aScale), ptr(args.bScale),
+      args.m, args.n, args.k, args.aMode, args.bMode, args.fp8Dtype, args.outDtype, stream(args.stream),
+    ),
+    'ks_gemm_fp8',
+  );
+}
+
+// ===========================================================================
+// ssm.h
+// ===========================================================================
+
+/**
+ * Depthwise causal 1-D convolution over [batch, dim, seqlen].
+ * `weight` is [dim, width]; `bias` is an fp32 [dim] device pointer or null.
+ * If `silu` is true, a SiLU activation is applied to the result.
+ */
+export function causalConv1d(args: {
+  out: DevPtr;
+  x: DevPtr;
+  weight: DevPtr;
+  bias?: DevPtr | null;
+  batch: number;
+  dim: number;
+  seqlen: number;
+  width: number;
+  silu?: boolean;
+  dtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_causal_conv1d(
+      ptr(args.out), ptr(args.x), ptr(args.weight), ptr(args.bias ?? 0),
+      args.batch, args.dim, args.seqlen, args.width, args.silu ? 1 : 0, args.dtype, stream(args.stream),
+    ),
+    'ks_causal_conv1d',
+  );
+}
+
+/**
+ * Mamba selective scan (forward) over [batch, dim, seqlen].
+ * `A` ([dim, dstate]) is an fp32 device pointer; `D` and `dtBias` ([dim]) are
+ * fp32 device pointers or null. `z` is the optional SiLU gate ([batch, dim,
+ * seqlen]) or null.
+ */
+export function selectiveScan(args: {
+  out: DevPtr;
+  x: DevPtr;
+  dt: DevPtr;
+  a: DevPtr;
+  b: DevPtr;
+  c: DevPtr;
+  d?: DevPtr | null;
+  z?: DevPtr | null;
+  dtBias?: DevPtr | null;
+  deltaSoftplus?: boolean;
+  batch: number;
+  dim: number;
+  seqlen: number;
+  dstate: number;
+  dtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_selective_scan(
+      ptr(args.out), ptr(args.x), ptr(args.dt), ptr(args.a), ptr(args.b), ptr(args.c),
+      ptr(args.d ?? 0), ptr(args.z ?? 0), ptr(args.dtBias ?? 0), args.deltaSoftplus ? 1 : 0,
+      args.batch, args.dim, args.seqlen, args.dstate, args.dtype, stream(args.stream),
+    ),
+    'ks_selective_scan',
+  );
+}
+
+/**
+ * Single-step selective-scan decode update (seqlen == 1).
+ * `state` ([batch, dim, dstate], fp32) is read and written in place. `A` is an
+ * fp32 [dim, dstate] device pointer; `D`, `z`, and `dtBias` may be null.
+ */
+export function selectiveScanUpdate(args: {
+  state: DevPtr;
+  out: DevPtr;
+  x: DevPtr;
+  dt: DevPtr;
+  a: DevPtr;
+  b: DevPtr;
+  c: DevPtr;
+  d?: DevPtr | null;
+  z?: DevPtr | null;
+  dtBias?: DevPtr | null;
+  deltaSoftplus?: boolean;
+  batch: number;
+  dim: number;
+  dstate: number;
+  dtype: Dtype;
+  stream?: Stream;
+}): void {
+  check(
+    raw.ks_selective_scan_update(
+      ptr(args.state), ptr(args.out), ptr(args.x), ptr(args.dt), ptr(args.a), ptr(args.b),
+      ptr(args.c), ptr(args.d ?? 0), ptr(args.z ?? 0), ptr(args.dtBias ?? 0), args.deltaSoftplus ? 1 : 0,
+      args.batch, args.dim, args.dstate, args.dtype, stream(args.stream),
+    ),
+    'ks_selective_scan_update',
+  );
+}
+
 // ===========================================================================
 // moe.h
 // ===========================================================================

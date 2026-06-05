@@ -1713,6 +1713,46 @@ pub fn gemm_w4a16(
     })
 }
 
+/// FP8 GEMM: fp8 A/B -> `out_dtype` C, dequantized by fp32 scales.
+///
+/// Both operands are FP8 (`fp8_dtype` selects e4m3 / e5m2). `a_scale`/`b_scale`
+/// are fp32 device pointers (per-token `[M]`/per-channel `[N]` or `[1]` for
+/// per-tensor). Row-major, non-transposed (A row stride K, B row stride N).
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_fp8(
+    out: impl AsDevicePtrMut,
+    a_fp8: impl AsDevicePtr,
+    b_fp8: impl AsDevicePtr,
+    a_scale: impl AsDevicePtr,
+    b_scale: impl AsDevicePtr,
+    m: i64,
+    n: i64,
+    k: i64,
+    a_mode: QuantMode,
+    b_mode: QuantMode,
+    fp8_dtype: Dtype,
+    out_dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_gemm_fp8(
+            out.as_device_ptr_mut(),
+            a_fp8.as_device_ptr(),
+            b_fp8.as_device_ptr(),
+            a_scale.as_device_ptr() as *const f32,
+            b_scale.as_device_ptr() as *const f32,
+            m,
+            n,
+            k,
+            a_mode.into(),
+            b_mode.into(),
+            fp8_dtype.into(),
+            out_dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
 // ===========================================================================
 // moe.h
 // ===========================================================================
@@ -2648,6 +2688,139 @@ pub fn global_grad_norm(
             grads_ptr,
             sizes.as_ptr(),
             grads.len() as libc::c_int,
+            dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
+// ===========================================================================
+// ssm.h
+// ===========================================================================
+
+/// Depthwise causal 1-D convolution (+ optional SiLU), Mamba `(B, D, L)` layout.
+///
+/// `x`/`out` are `[batch, dim, seqlen]` and `weight` is `[dim, width]` in `dtype`.
+/// `bias` is an fp32 `[dim]` device pointer or [`DevicePtr::NULL`]. When `silu`
+/// is true a SiLU activation is applied to the convolution result.
+#[allow(clippy::too_many_arguments)]
+pub fn causal_conv1d(
+    out: impl AsDevicePtrMut,
+    x: impl AsDevicePtr,
+    weight: impl AsDevicePtr,
+    bias: impl AsDevicePtr,
+    batch: i32,
+    dim: i32,
+    seqlen: i32,
+    width: i32,
+    silu: bool,
+    dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_causal_conv1d(
+            out.as_device_ptr_mut(),
+            x.as_device_ptr(),
+            weight.as_device_ptr(),
+            bias.as_device_ptr(),
+            batch,
+            dim,
+            seqlen,
+            width,
+            silu as libc::c_int,
+            dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
+/// Mamba selective scan (forward) over `[batch, dim, seqlen]` activations.
+///
+/// `A` (`[dim, dstate]`), `D` (`[dim]`) and `dt_bias` (`[dim]`) are fp32 device
+/// pointers; `D`/`z`/`dt_bias` may be [`DevicePtr::NULL`]. `delta_softplus`
+/// enables the softplus on `dt`. `B`/`C` are `[batch, dstate, seqlen]`.
+#[allow(clippy::too_many_arguments)]
+pub fn selective_scan(
+    out: impl AsDevicePtrMut,
+    x: impl AsDevicePtr,
+    dt: impl AsDevicePtr,
+    a: impl AsDevicePtr,
+    b: impl AsDevicePtr,
+    c: impl AsDevicePtr,
+    d: impl AsDevicePtr,
+    z: impl AsDevicePtr,
+    dt_bias: impl AsDevicePtr,
+    delta_softplus: bool,
+    batch: i32,
+    dim: i32,
+    seqlen: i32,
+    dstate: i32,
+    dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_selective_scan(
+            out.as_device_ptr_mut(),
+            x.as_device_ptr(),
+            dt.as_device_ptr(),
+            a.as_device_ptr(),
+            b.as_device_ptr(),
+            c.as_device_ptr(),
+            d.as_device_ptr(),
+            z.as_device_ptr(),
+            dt_bias.as_device_ptr(),
+            delta_softplus as libc::c_int,
+            batch,
+            dim,
+            seqlen,
+            dstate,
+            dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
+/// Single-step selective-scan decode update (seqlen == 1).
+///
+/// Reads and writes the recurrent `state` (`[batch, dim, dstate]`, fp32) in
+/// place. `x`/`dt`/`out` are `[batch, dim]`; `B`/`C` are `[batch, dstate]`. `A`,
+/// `D` and `dt_bias` are fp32 device pointers; `D`/`z`/`dt_bias` may be
+/// [`DevicePtr::NULL`].
+#[allow(clippy::too_many_arguments)]
+pub fn selective_scan_update(
+    state: impl AsDevicePtrMut,
+    out: impl AsDevicePtrMut,
+    x: impl AsDevicePtr,
+    dt: impl AsDevicePtr,
+    a: impl AsDevicePtr,
+    b: impl AsDevicePtr,
+    c: impl AsDevicePtr,
+    d: impl AsDevicePtr,
+    z: impl AsDevicePtr,
+    dt_bias: impl AsDevicePtr,
+    delta_softplus: bool,
+    batch: i32,
+    dim: i32,
+    dstate: i32,
+    dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_selective_scan_update(
+            state.as_device_ptr_mut(),
+            out.as_device_ptr_mut(),
+            x.as_device_ptr(),
+            dt.as_device_ptr(),
+            a.as_device_ptr(),
+            b.as_device_ptr(),
+            c.as_device_ptr(),
+            d.as_device_ptr(),
+            z.as_device_ptr(),
+            dt_bias.as_device_ptr(),
+            delta_softplus as libc::c_int,
+            batch,
+            dim,
+            dstate,
             dtype.into(),
             stream.as_raw(),
         )

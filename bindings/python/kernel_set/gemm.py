@@ -22,6 +22,7 @@ __all__ = [
     "gemm_batched",
     "gemm_w8a8",
     "gemm_w4a16",
+    "gemm_fp8",
 ]
 
 _F32P = POINTER(c_float)
@@ -220,3 +221,57 @@ def gemm_w4a16(
         "ks_gemm_w4a16",
     )
     return c
+
+
+def gemm_fp8(
+    out: TensorLike,
+    a_fp8: TensorLike,
+    b_fp8: TensorLike,
+    a_scale: TensorLike,
+    b_scale: TensorLike,
+    m: int,
+    n: int,
+    k: int,
+    a_mode: int = QuantMode.PER_TOKEN,
+    b_mode: int = QuantMode.PER_CHANNEL,
+    fp8_dtype: int = None,
+    out_dtype: int = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """FP8 GEMM: fp8 ``A [M,K]`` x fp8 ``B [K,N]`` -> ``out_dtype`` ``C [M,N]``.
+
+    Both operands are FP8 (e4m3 or e5m2, selected by ``fp8_dtype``), dequantized
+    to fp32 by the supplied scales before the matmul::
+
+        C = (a_scale (x) b_scale) * (A_fp8 @ B_fp8)
+
+    ``a_scale``/``b_scale`` are fp32 device buffers ([M]/[N] or [1] for
+    per-tensor). Row-major, non-transposed (A row stride K, B row stride N).
+    ``fp8_dtype`` (a ``DType``: ``F8E4M3`` or ``F8E5M2``) is the operand dtype,
+    inferred from ``a_fp8`` when omitted; ``out_dtype`` (a ``DType``) is required
+    and is inferred from a torch ``out`` tensor when omitted.
+    """
+    if fp8_dtype is None:
+        fp8_dtype = infer_dtype(a_fp8, None)
+    if out_dtype is None:
+        # try to infer from the output tensor if it is a torch tensor
+        from ._tensor import _is_torch_tensor  # local import to avoid cycles
+
+        if _is_torch_tensor(out):
+            from ._tensor import dtype_to_ks
+
+            out_dtype = dtype_to_ks(out.dtype)
+        else:
+            raise ValueError("out_dtype is required for ks_gemm_fp8")
+    check(
+        lib.ks_gemm_fp8(
+            ptr(out, name="out"), ptr(a_fp8, name="a_fp8"),
+            ptr(b_fp8, name="b_fp8"),
+            _f32(a_scale, name="a_scale"), _f32(b_scale, name="b_scale"),
+            int(m), int(n), int(k),
+            int(a_mode), int(b_mode), int(fp8_dtype), int(out_dtype),
+            default_stream(stream, out if not isinstance(out, int) else a_fp8),
+        ),
+        "ks_gemm_fp8",
+    )
+    return out

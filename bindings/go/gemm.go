@@ -74,3 +74,22 @@ func GEMMW4A16(c, a, bPacked, scales, zeros, bias unsafe.Pointer,
 		C.ks_dtype_t(dtype), stream.c()))
 	return statusError(st, "ks_gemm_w4a16")
 }
+
+// GemmFP8 runs an FP8 GEMM: fp8 A [M,K] x fp8 B [K,N] -> outDtype C [M,N]
+// (bf16/fp16/fp32). Both operands are FP8 (e4m3 or e5m2, selected by fp8Dtype),
+// dequantized to fp32 by the supplied scales before the matmul:
+// C = (aScale (x) bScale) * (A_fp8 @ B_fp8).
+//
+//	aScale: per-token [M] (KS_QUANT_PER_TOKEN) or [1] (PER_TENSOR) fp32 device ptr
+//	bScale: per-channel [N] (KS_QUANT_PER_CHANNEL) or [1] (PER_TENSOR) fp32 device ptr
+//
+// Row-major, non-transposed (A row stride K, B row stride N). Wraps ks_gemm_fp8.
+func GemmFP8(out, aFP8, bFP8 unsafe.Pointer, aScale, bScale unsafe.Pointer,
+	m, n, k int64, aMode, bMode QuantMode, fp8Dtype, outDtype Dtype, stream Stream) error {
+	st := Status(C.ks_gemm_fp8(out, aFP8, bFP8,
+		(*C.float)(aScale), (*C.float)(bScale),
+		C.int64_t(m), C.int64_t(n), C.int64_t(k),
+		C.ks_quant_mode_t(aMode), C.ks_quant_mode_t(bMode),
+		C.ks_dtype_t(fp8Dtype), C.ks_dtype_t(outDtype), stream.c()))
+	return statusError(st, "ks_gemm_fp8")
+}
