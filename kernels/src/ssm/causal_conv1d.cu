@@ -103,13 +103,26 @@ ks_status_t ks_causal_conv1d(void* out, const void* x, const void* weight,
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
                     "ks_causal_conv1d: width exceeds supported maximum");
 
-  const unsigned grid_y =
-      static_cast<unsigned>((dim + ssm::kConvBlock - 1) / ssm::kConvBlock);
+  // The device row offset is (batch_id*dim + channel_id)*seqlen in int64; reject
+  // shapes whose total element count cannot be represented so that offset (and
+  // any read/write derived from it) can never overflow. batch,dim,seqlen are > 0.
+  constexpr int64_t kI64Max = 9223372036854775807LL;  // INT64_MAX
+  const int64_t batch64 = batch;
+  const int64_t dim64 = dim;
+  const int64_t seqlen64 = seqlen;
+  if (dim64 > kI64Max / batch64 ||
+      seqlen64 > kI64Max / (batch64 * dim64))
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_causal_conv1d: batch*dim*seqlen exceeds int64 range");
+
+  // Compute grid.y from int64 so dim+kConvBlock-1 cannot overflow before the cast.
+  const int64_t grid_y64 = (dim64 + ssm::kConvBlock - 1) / ssm::kConvBlock;
   // grid.x/grid.y are bounded by 65535 on all supported arches; fail cleanly
   // instead of letting the launch return an opaque InvalidConfiguration.
-  if (static_cast<unsigned>(batch) > 65535u || grid_y > 65535u)
+  if (batch64 > 65535 || grid_y64 > 65535)
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
                     "ks_causal_conv1d: batch/dim exceeds grid limit");
+  const unsigned grid_y = static_cast<unsigned>(grid_y64);
 
   const dim3 block(ssm::kConvBlock);
   const dim3 grid(static_cast<unsigned>(batch), grid_y);

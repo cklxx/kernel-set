@@ -216,6 +216,26 @@ ks_status_t ks_gemm_fp8(void* out, const void* a_fp8, const void* b_fp8,
   if (m <= 0 || n <= 0 || k <= 0)
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_gemm_fp8: bad shape");
 
+  // The kernel indexes A as gm*k+gk, B as gk*n+gn, C as gm*n+gn (all int64). For
+  // an int64 ABI those products can signed-overflow on pathological shapes, which
+  // would silently turn a valid-looking call into OOB access. Reject any shape
+  // whose index products cannot be represented in int64. (m,n,k are all > 0.)
+  constexpr int64_t kI64Max = 9223372036854775807LL;  // INT64_MAX
+  if (m > kI64Max / k || k > kI64Max / n || m > kI64Max / n)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_gemm_fp8: M*K / K*N / M*N exceeds int64 range");
+
+  // Tile counts feed the CUDA grid (grid.x = N tiles, grid.y = M tiles). Compute
+  // them in uint64 (so m+63 / n+63 cannot overflow) and reject anything past the
+  // conservative grid limits before the dim3 cast in launch_fp8.
+  constexpr uint64_t kMaxGridX = 2147483647ULL;  // grid.x bound (conservative)
+  constexpr uint64_t kMaxGridY = 65535ULL;       // grid.y bound
+  const uint64_t tiles_n = (static_cast<uint64_t>(n) + 63) / 64;
+  const uint64_t tiles_m = (static_cast<uint64_t>(m) + 63) / 64;
+  if (tiles_n > kMaxGridX || tiles_m > kMaxGridY)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_gemm_fp8: tile grid exceeds CUDA grid limits");
+
   // a_scale is per-token [M] for PER_TOKEN, else [1]; b_scale is per-channel [N]
   // for PER_CHANNEL, else [1]. Reject granularities this kernel can't honor
   // (mirrors ks_gemm_w8a8).

@@ -25,6 +25,34 @@ namespace moe {
 
 constexpr int kPermBlock = 256;
 
+// The routed-pair id space (token*top_k+k) is stored as int32 across the ABI:
+// sorted_token_ids holds flattened pair ids and expert_offsets/cursors are int32
+// (see headers). So num_pairs must fit in int32. CUDA grid.x is also bounded; we
+// use a conservative 2^31-1 limit shared with that constraint.
+constexpr int64_t kInt32Max = 2147483647LL;        // INT32_MAX
+constexpr int64_t kMaxGridX = 2147483647LL;        // conservative grid.x bound
+
+// Validate num_tokens*top_k against int32-overflow and the int32 pair-id ABI.
+// Returns the pair count in *num_pairs on success. `name` is the ABI fn name for
+// the error message. All callers share this so the routed-pair contract is one
+// place. (Trips only on pathological/huge shapes; normal LLM shapes are tiny.)
+inline ks_status_t validate_num_pairs(int64_t num_tokens, int top_k,
+                                      const char* name, int64_t* num_pairs) {
+  // Reject the multiply itself overflowing int64 before computing the product.
+  if (top_k > 0 && num_tokens > kInt32Max / top_k) {
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    std::string(name) + ": num_tokens*top_k exceeds int32 limit");
+  }
+  const int64_t pairs = num_tokens * static_cast<int64_t>(top_k);
+  // sorted_token_ids / expert_offsets are int32, so the count must fit in int32.
+  if (pairs > kInt32Max) {
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    std::string(name) + ": num routed pairs exceeds int32 limit");
+  }
+  *num_pairs = pairs;
+  return KS_SUCCESS;
+}
+
 // -------------------------------------------------------------------------
 // compute_permutation: counting sort over experts.
 // -------------------------------------------------------------------------
@@ -80,13 +108,23 @@ template <typename scalar_t>
 KS_GLOBAL void permute_kernel(scalar_t* __restrict__ permuted,
                               const scalar_t* __restrict__ input,
                               const int32_t* __restrict__ sorted_token_ids,
-                              int top_k, int64_t hidden) {
+                              int top_k, int64_t hidden, int64_t num_pairs) {
   const int64_t out_row = blockIdx.x;
+  scalar_t* dst = permuted + out_row * hidden;
+
+  // sorted_token_ids is a PUBLIC ABI input: a malformed/stale buffer or the -1
+  // sentinel left by a dropped routing id can put `pair` out of range. Guard the
+  // range (mirrors unpermute_inverse_kernel) so the gather never reads `input`
+  // out of bounds; an invalid row is zero-filled instead.
   const int32_t pair = sorted_token_ids[out_row];
+  if (pair < 0 || static_cast<int64_t>(pair) >= num_pairs) {
+    for (int64_t i = threadIdx.x; i < hidden; i += blockDim.x)
+      dst[i] = from_float<scalar_t>(0.f);
+    return;
+  }
   const int64_t src_token = static_cast<int64_t>(pair) / top_k;
 
   const scalar_t* src = input + src_token * hidden;
-  scalar_t* dst = permuted + out_row * hidden;
   for (int64_t i = threadIdx.x; i < hidden; i += blockDim.x) dst[i] = src[i];
 }
 
@@ -150,7 +188,13 @@ ks_status_t ks_moe_compute_permutation(int32_t* sorted_token_ids,
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT,
                     "ks_moe_compute_permutation: bad shape");
 
-  const int64_t num_pairs = num_tokens * static_cast<int64_t>(top_k);
+  int64_t num_pairs = 0;
+  {
+    ks_status_t vs = moe::validate_num_pairs(num_tokens, top_k,
+                                             "ks_moe_compute_permutation",
+                                             &num_pairs);
+    if (vs != KS_SUCCESS) return vs;
+  }
   auto s = to_stream(stream);
 
   // Internal scratch: per-expert counts (reused as a write cursor). num_experts
@@ -173,9 +217,17 @@ ks_status_t ks_moe_compute_permutation(int32_t* sorted_token_ids,
     KS_RETURN_ERROR(KS_ERROR_CUDA, "ks_moe_compute_permutation: memset");
   }
 
+  // Compute the block count in 64-bit and validate it against the grid.x limit
+  // before the dim3 cast so a huge num_pairs can never truncate or over-launch.
+  const int64_t blocks64 =
+      (num_pairs + moe::kPermBlock - 1) / moe::kPermBlock;
+  if (blocks64 > moe::kMaxGridX) {
+    ks::gpuFree(scratch);
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_moe_compute_permutation: grid exceeds CUDA limit");
+  }
   const dim3 block(moe::kPermBlock);
-  const dim3 grid(static_cast<unsigned>(
-      (num_pairs + moe::kPermBlock - 1) / moe::kPermBlock));
+  const dim3 grid(static_cast<unsigned>(blocks64));
 
   moe::perm_count_kernel<<<grid, block, 0, s>>>(counts, topk_indices, num_pairs,
                                                 num_experts);
@@ -205,7 +257,16 @@ ks_status_t ks_moe_permute(void* permuted, const void* input,
   if (num_tokens <= 0 || top_k <= 0 || hidden <= 0)
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_moe_permute: bad shape");
 
-  const int64_t out_rows = num_tokens * static_cast<int64_t>(top_k);
+  int64_t out_rows = 0;
+  {
+    ks_status_t vs =
+        moe::validate_num_pairs(num_tokens, top_k, "ks_moe_permute", &out_rows);
+    if (vs != KS_SUCCESS) return vs;
+  }
+  // One block per output row; validate the grid.x extent in 64-bit first.
+  if (out_rows > moe::kMaxGridX)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_moe_permute: grid exceeds CUDA limit");
   const dim3 grid(static_cast<unsigned>(out_rows));
   const dim3 block(moe::kPermBlock);
   auto s = to_stream(stream);
@@ -213,7 +274,8 @@ ks_status_t ks_moe_permute(void* permuted, const void* input,
   KS_DISPATCH_FLOATING_TYPES(dtype, "ks_moe_permute", {
     moe::permute_kernel<scalar_t><<<grid, block, 0, s>>>(
         static_cast<scalar_t*>(permuted),
-        static_cast<const scalar_t*>(input), sorted_token_ids, top_k, hidden);
+        static_cast<const scalar_t*>(input), sorted_token_ids, top_k, hidden,
+        out_rows);
   });
   KS_CHECK_LAUNCH();
   return KS_SUCCESS;
@@ -237,7 +299,17 @@ ks_status_t ks_moe_unpermute(void* out, const void* permuted,
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_DTYPE,
                     "ks_moe_unpermute: unsupported dtype");
 
-  const int64_t num_rows = num_tokens * static_cast<int64_t>(top_k);
+  int64_t num_rows = 0;
+  {
+    ks_status_t vs = moe::validate_num_pairs(num_tokens, top_k,
+                                             "ks_moe_unpermute", &num_rows);
+    if (vs != KS_SUCCESS) return vs;
+  }
+  // The gather launches one block per token; the inverse one block per kPermBlock
+  // rows. Validate both grid.x extents in 64-bit before any dim3 cast.
+  if (num_tokens > moe::kMaxGridX)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_moe_unpermute: grid exceeds CUDA limit");
   auto s = to_stream(stream);
 
   // Scratch holds the inverse permutation (pair -> permuted_row).
@@ -260,11 +332,27 @@ ks_status_t ks_moe_unpermute(void* out, const void* permuted,
     }
   }
 
+  const int64_t inv_blocks64 =
+      (num_rows + moe::kPermBlock - 1) / moe::kPermBlock;
+  if (inv_blocks64 > moe::kMaxGridX) {
+    ks::gpuFree(inverse);
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_moe_unpermute: grid exceeds CUDA limit");
+  }
   const dim3 inv_block(moe::kPermBlock);
-  const dim3 inv_grid(static_cast<unsigned>(
-      (num_rows + moe::kPermBlock - 1) / moe::kPermBlock));
+  const dim3 inv_grid(static_cast<unsigned>(inv_blocks64));
   moe::unpermute_inverse_kernel<<<inv_grid, inv_block, 0, s>>>(
       inverse, sorted_token_ids, num_rows);
+  // Capture a launch failure right away so it isn't masked by the later sync (and
+  // so we know which kernel failed); the stream is still synced before free.
+  ks::gpuError_t le = ks::gpuGetLastError();
+  if (le != ks::gpuSuccess) {
+    ks::gpuStreamSynchronize(s);
+    ks::gpuFree(inverse);
+    KS_RETURN_ERROR(KS_ERROR_CUDA,
+                    std::string("ks_moe_unpermute: inverse launch ") +
+                        ks::gpuGetErrorString(le));
+  }
 
   const dim3 grid(static_cast<unsigned>(num_tokens));
   const dim3 block(moe::kPermBlock);
@@ -274,13 +362,20 @@ ks_status_t ks_moe_unpermute(void* out, const void* permuted,
         static_cast<const scalar_t*>(permuted), inverse, routing_weights, top_k,
         hidden);
   });
+  le = ks::gpuGetLastError();
+  if (le != ks::gpuSuccess) {
+    ks::gpuStreamSynchronize(s);
+    ks::gpuFree(inverse);
+    KS_RETURN_ERROR(KS_ERROR_CUDA,
+                    std::string("ks_moe_unpermute: gather launch ") +
+                        ks::gpuGetErrorString(le));
+  }
 
   ks::gpuError_t se = ks::gpuStreamSynchronize(s);
   ks::gpuFree(inverse);
   if (se != ks::gpuSuccess)
     KS_RETURN_ERROR(KS_ERROR_CUDA, "ks_moe_unpermute: sync");
 
-  KS_CHECK_LAUNCH();
   return KS_SUCCESS;
 }
 

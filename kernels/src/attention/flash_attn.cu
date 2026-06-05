@@ -320,6 +320,21 @@ ks_status_t ks_flash_attn_varlen(
   auto s = to_stream(stream);
   (void)max_seqlen_k;
 
+  // Grid is (q_blocks, num_heads, batch). grid.y/z are capped at 65535 and grid.x
+  // has its own large bound; validate in 64-bit so an oversized config returns a
+  // deterministic error instead of a truncated dim3 / opaque launch failure.
+  {
+    constexpr int64_t kMaxGridX = 2147483647LL;
+    constexpr int64_t kMaxGridYZ = 65535LL;
+    const int64_t q_blocks64 =
+        (static_cast<int64_t>(max_seqlen_q) + attention::kBlockM - 1) /
+        attention::kBlockM;
+    if (q_blocks64 > kMaxGridX || static_cast<int64_t>(num_heads) > kMaxGridYZ ||
+        static_cast<int64_t>(batch) > kMaxGridYZ)
+      KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                      "ks_flash_attn_varlen: launch grid exceeds CUDA limits");
+  }
+
   // softmax_lse is [num_heads, total_q] where total_q == cu_seqlens_q[batch]
   // (the packed sum of query lengths). The kernel writes lse at the absolute
   // row index (q_start + qi), so it needs total_q as the row stride. That value
@@ -367,10 +382,36 @@ ks_status_t ks_flash_attn(void* out, void* softmax_lse, const void* q,
   const float scale = attention::resolve_scale(softmax_scale, head_dim);
   auto s = to_stream(stream);
 
+  // The dense path packs uniform prefix sums into int32 device arrays (cu_q/cu_k)
+  // and uses total_q as an int32 lse stride, so the packed totals must fit int32.
+  // Compute them in int64 first and reject pathological shapes before any int32
+  // arithmetic can wrap. batch+1 (the prefix-array length) must also not overflow.
+  constexpr int64_t kI32Max = 2147483647LL;  // INT32_MAX
+  const int64_t total_q64 = static_cast<int64_t>(batch) * seqlen_q;
+  const int64_t total_k64 = static_cast<int64_t>(batch) * seqlen_k;
+  if (total_q64 > kI32Max || total_k64 > kI32Max)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_flash_attn: batch*seqlen exceeds int32 prefix-sum range");
+  if (static_cast<int64_t>(batch) + 1 > kI32Max)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE, "ks_flash_attn: batch too large");
+
+  // Grid is (q_blocks, num_heads, batch). grid.x has a large bound; grid.y/z are
+  // limited to 65535 on all supported arches. Validate in 64-bit so a huge config
+  // fails cleanly instead of producing a truncated dim3 / opaque launch error.
+  constexpr int64_t kMaxGridX = 2147483647LL;
+  constexpr int64_t kMaxGridYZ = 65535LL;
+  const int64_t q_blocks64 =
+      (static_cast<int64_t>(seqlen_q) + attention::kBlockM - 1) /
+      attention::kBlockM;
+  if (q_blocks64 > kMaxGridX || static_cast<int64_t>(num_heads) > kMaxGridYZ ||
+      static_cast<int64_t>(batch) > kMaxGridYZ)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_flash_attn: launch grid exceeds CUDA limits");
+
   // Build uniform prefix-sum arrays on device so the dense path reuses the
   // varlen kernel verbatim: cu_q[i] = i*seqlen_q, cu_k[i] = i*seqlen_k.
-  // total_q for the lse stride is batch*seqlen_q.
-  const int total_q = batch * seqlen_q;
+  // total_q for the lse stride is batch*seqlen_q (validated to fit int32 above).
+  const int total_q = static_cast<int>(total_q64);
   int32_t* cu_q = nullptr;
   int32_t* cu_k = nullptr;
   const size_t n = static_cast<size_t>(batch + 1) * sizeof(int32_t);
@@ -406,9 +447,11 @@ ks_status_t ks_flash_attn(void* out, void* softmax_lse, const void* q,
       hq = heap_q;
       hk = heap_k;
     }
+    // Fill from int64 intermediates (the totals were range-checked to fit int32
+    // above) so the per-element products can never wrap before the int32 store.
     for (int i = 0; i <= batch; ++i) {
-      hq[i] = i * seqlen_q;
-      hk[i] = i * seqlen_k;
+      hq[i] = static_cast<int32_t>(static_cast<int64_t>(i) * seqlen_q);
+      hk[i] = static_cast<int32_t>(static_cast<int64_t>(i) * seqlen_k);
     }
     e = gpuMemcpyAsync(cu_q, hq, n, gpuMemcpyHostToDevice, s);
     if (e == gpuSuccess)
