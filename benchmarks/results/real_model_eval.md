@@ -93,3 +93,17 @@ rel-err 0.46, only 6/64 tokens matching. Routing GeGLU correctly fixed it.)
   hot path.
 - End-to-end gain from swapping only norm+activation is modest by design; the big
   levers (GEMM, attention) are already routed to cuBLAS/SDPA/FlashAttention.
+
+## More models (L4/sm89, bf16) — coverage sweep
+
+Hot-swapping kernel-set's RMSNorm/RoPE/SwiGLU into stock HF models across families;
+all **next-token top-1 correct**, all per-op faster than eager torch:
+
+| model | family | greedy match | rmsnorm | swiglu | rope | end-to-end |
+|---|---|---|---|---|---|---|
+| Qwen2.5-1.5B-Instruct | Qwen | top-1 ✓ | 3.76× | 1.68× | 2.80× | 1.05× |
+| SmolLM2-1.7B-Instruct | Llama-arch | **48/48 identical** | 7.68× | 1.57× | 3.93× | 1.06× |
+| Phi-3.5-mini-instruct | Phi | top-1 ✓ (29/48) | 11.74× | 1.59× | 3.70× | 1.07× |
+
+(Earlier: Qwen2.5-0.5B top-1 / 45-of-64; Gemma-2-2B **64/64 bit-identical** via the
+GeGLU path.) Per-op speedups are vs eager torch; SmolLM2 is bit-identical end-to-end.
