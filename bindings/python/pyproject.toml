@@ -35,8 +35,11 @@ Source = "https://github.com/cklxx/kernel-set"
 Issues = "https://github.com/cklxx/kernel-set/issues"
 
 [tool.setuptools]
-# Pure-Python package; ship the package dir as-is. No C extension is built.
-packages = ["kernel_set"]
+# Pure-Python package (ctypes); ship the package + all subpackages as-is. No C
+# extension is built. MUST list kernel_set.backends — the dispatch layer imports
+# it at import time, so a wheel missing it is broken (kernel_set.__init__ ->
+# dispatch -> backends).
+packages = ["kernel_set", "kernel_set.backends"]
 
 [tool.setuptools.package-data]
 # If a wheel vendors the prebuilt library next to the package, include it.
