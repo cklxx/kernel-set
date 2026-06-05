@@ -120,6 +120,24 @@ python3 models/ksctl table --gpu h100 --dtype auto --mode inference --md docs/MO
 | `rwkv-7-goose-2.9b` | none | 0/0 | 64 | layernorm | ALiBi/none | dense | `bf16` |
 | `hymba-1.5b` | MHA | 0/0 | 0 | rmsnorm | neox theta=10000 | SwiGLU | `bf16` |
 | `codestral-mamba-7b` | none | 0/0 | 0 | rmsnorm | ALiBi/none | dense | `bf16` |
+| `deepseek-v4-flash` | MQA | 64/1 | 512 | rmsnorm | neox theta=10000/yarn | MoE 256e/top-6+1shared sqrt_softplus | `fp8` |
+| `kimi-k2.6` | MLA | 64/64 | 192 | rmsnorm | neox theta=50000/yarn | MoE 384e/top-8+1shared sigmoid_group | `fp8` |
+| `gemma-4-31b` | GQA | 32/16 | 256 | rmsnorm | neox theta=1000000 | GeGLU | `bf16` |
+| `gemma-4-12b` | GQA | 16/8 | 256 | rmsnorm | neox theta=1000000 | GeGLU | `bf16` |
+| `gemma-4-e4b` | GQA | 0/0 | 0 | rmsnorm | neox theta=1000000 | GeGLU | `bf16` |
+| `gemma-4-26b-a4b-moe` | GQA | 0/0 | 0 | rmsnorm | neox theta=1000000 | MoE 0e/top-0 softmax | `bf16` |
+| `qwen3.5-4b` | GQA | 16/4 | 256 | rmsnorm | neox theta=10000000/yarn | SwiGLU | `bf16` |
+| `qwen3.6-35b-a3b` | GQA | 16/2 | 256 | rmsnorm | neox theta=10000000/yarn | MoE 512e/top-10+1shared softmax | `fp8` |
+| `minimax-m3` | GQA | 0/0 | 0 | rmsnorm | neox theta=5000000 | MoE 0e/top-0 softmax | `bf16` |
+| `hy3-preview` | GQA | 64/8 | 128 | rmsnorm | neox theta=11158840 | MoE 192e/top-8+1shared softmax | `bf16` |
+| `step-3.7-flash` | GQA | 64/8 | 128 | rmsnorm | neox theta=5000000/llama3 | MoE 288e/top-8+1shared softmax | `fp8` |
+| `command-a-plus` | GQA | 128/8 | 128 | layernorm | gptj theta=50000 | MoE 128e/top-8+4shared softmax | `fp8` |
+| `mistral-medium-3.5` | GQA | 0/0 | 128 | rmsnorm | neox theta=1000000 | SwiGLU | `bf16` |
+| `mistral-large-3` | GQA | 0/0 | 128 | rmsnorm | neox theta=1000000 | MoE 0e/top-0 softmax | `bf16` |
+| `granite-4.1-30b` | GQA | 32/8 | 128 | rmsnorm | neox theta=50000000 | SwiGLU | `bf16` |
+| `falcon-h1r-7b` | GQA | 0/0 | 0 | rmsnorm | neox theta=100000000000 | SwiGLU | `bf16` |
+| `mamba-3` | none | 0/0 | 0 | rmsnorm | ALiBi/none | dense | `bf16` |
+| `olmo-3-32b` | GQA | 0/0 | 0 | rmsnorm | neox theta=500000 | SwiGLU | `bf16` |
 
 ## Attention path
 
@@ -229,6 +247,24 @@ python3 models/ksctl table --gpu h100 --dtype auto --mode inference --md docs/MO
 | `rwkv-7-goose-2.9b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
 | `hymba-1.5b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
 | `codestral-mamba-7b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `deepseek-v4-flash` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`fp8` | ks_gemm<br>`fp8` |
+| `kimi-k2.6` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_mla_decode<br>`bf16` | ks_gemm<br>`fp8` | ks_gemm<br>`fp8` |
+| `gemma-4-31b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `gemma-4-12b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `gemma-4-e4b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `gemma-4-26b-a4b-moe` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `qwen3.5-4b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `qwen3.6-35b-a3b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`fp8` | ks_gemm<br>`fp8` |
+| `minimax-m3` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `hy3-preview` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `step-3.7-flash` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`fp8` | ks_gemm<br>`fp8` |
+| `command-a-plus` | ks_embedding_lookup<br>`bf16` | ks_layer_norm<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`fp8` | ks_gemm<br>`fp8` |
+| `mistral-medium-3.5` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `mistral-large-3` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `granite-4.1-30b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `falcon-h1r-7b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `mamba-3` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
+| `olmo-3-32b` | ks_embedding_lookup<br>`bf16` | ks_rms_norm_residual<br>`bf16` | ks_rope_gather<br>`bf16` | ks_flash_attn_varlen<br>`bf16` | ks_paged_attn_decode<br>`bf16` | ks_gemm<br>`bf16` | ks_gemm<br>`bf16` |
 
 ## MLP / MoE path
 
@@ -338,6 +374,24 @@ python3 models/ksctl table --gpu h100 --dtype auto --mode inference --md docs/MO
 | `rwkv-7-goose-2.9b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_gelu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
 | `hymba-1.5b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
 | `codestral-mamba-7b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `deepseek-v4-flash` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`fp8` | ks_gemm<br>`fp8` | ks_sample<br>`f32` |
+| `kimi-k2.6` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_moe_gate_sigmoid_group_topk<br>`f32` | ks_moe_grouped_gemm<br>`fp8` | ks_gemm<br>`fp8` | ks_sample<br>`f32` |
+| `gemma-4-31b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_geglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `gemma-4-12b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_geglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `gemma-4-e4b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_geglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `gemma-4-26b-a4b-moe` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_geglu<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`bf16` | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `qwen3.5-4b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `qwen3.6-35b-a3b` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`fp8` | ks_gemm<br>`fp8` | ks_sample<br>`f32` |
+| `minimax-m3` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`bf16` | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `hy3-preview` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`bf16` | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `step-3.7-flash` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`fp8` | ks_gemm<br>`fp8` | ks_sample<br>`f32` |
+| `command-a-plus` | ks_layer_norm<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`fp8` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`fp8` | ks_gemm<br>`fp8` | ks_sample<br>`f32` |
+| `mistral-medium-3.5` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `mistral-large-3` | ks_rms_norm_residual<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_moe_grouped_gemm<br>`bf16` | ks_moe_gate_softmax_topk<br>`f32` | ks_moe_grouped_gemm<br>`bf16` | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `granite-4.1-30b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `falcon-h1r-7b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `mamba-3` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
+| `olmo-3-32b` | ks_rms_norm_residual<br>`bf16` | ks_gemm<br>`bf16` | ks_swiglu<br>`bf16` | ks_gemm<br>`bf16` | — | — | ks_gemm<br>`bf16` | ks_sample<br>`f32` |
 
 ## Op legend
 
