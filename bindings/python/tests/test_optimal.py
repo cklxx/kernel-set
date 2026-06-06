@@ -190,6 +190,10 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "fp4_quantize" in table_ops
     assert "mxfp8_quantize" in table_ops
     assert "apply_token_bitmask" in table_ops
+    assert "sparse_mla_attention" in table_ops
+    assert "dsa_indexer_logits" in table_ops
+    assert "dsa_topk_select" in table_ops
+    assert "nsa_selection_attention" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +351,45 @@ def test_heuristic_fill_fused_linear_ce_sm80_plus():
             assert cell["source"] == "heuristic"
             assert cell["fallback_chain"] == ["liger", KERNEL_SET]
     assert O.select_optimal("fused_linear_ce", 75, "fp16")["provider"] == \
+        KERNEL_SET
+
+
+def test_heuristic_fill_wave2b_sparse_attention_ops():
+    for sm in (90, 100):
+        for dtype in ("bf16", "fp8"):
+            cell = O.select_optimal("sparse_mla_attention", sm, dtype)
+            assert cell["provider"] == "flash-mla"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == ["flash-mla", KERNEL_SET]
+
+        cell = O.select_optimal("dsa_indexer_logits", sm, "fp8")
+        assert cell["provider"] == "deep_gemm"
+        assert cell["source"] == "heuristic"
+        assert cell["fallback_chain"] == ["deep_gemm", KERNEL_SET]
+
+    for sm in (80, 86, 89, 90, 100):
+        for dtype in ("fp32", "fp16", "bf16"):
+            cell = O.select_optimal("dsa_topk_select", sm, dtype)
+            assert cell["provider"] == "flashinfer"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == ["flashinfer", KERNEL_SET]
+
+        for dtype in ("fp16", "bf16"):
+            cell = O.select_optimal("nsa_selection_attention", sm, dtype)
+            assert cell["provider"] == "flash-linear-attention"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == [
+                "flash-linear-attention", KERNEL_SET]
+
+    assert O.select_optimal("sparse_mla_attention", 89, "bf16")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("dsa_indexer_logits", 89, "fp8")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("dsa_indexer_logits", 90, "bf16")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("dsa_topk_select", 75, "fp32")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("nsa_selection_attention", 75, "fp16")["provider"] == \
         KERNEL_SET
 
 
@@ -626,6 +669,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "vllm-fp8-marlin": "vllm",
         "vllm-cutlass-sparse": "vllm",
         "bitblas": "bitblas",
+        "flash-mla": "flash_mla",
     }
     samples = [
         # L4 (sm89) fp16 measured winners.
@@ -644,6 +688,9 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         ("rwkv_wkv", 80, "bf16"),     # heuristic -> flash-linear-attention
         ("cross_entropy", 80, "bf16"),  # heuristic -> fused_linear_ce / liger
         ("bitnet_gemm", 80, "fp16"),  # heuristic -> bitblas
+        ("sparse_mla_attention", 90, "fp8"),  # heuristic -> flash-mla
+        ("dsa_indexer_logits", 90, "fp8"),  # heuristic -> deep_gemm
+        ("nsa_selection_attention", 80, "bf16"),  # heuristic -> FLA
     ]
     for plan_op, sm, scheme in samples:
         cell = sel.optimal_cell(plan_op, sm, scheme)
@@ -713,6 +760,13 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
     assert sel.optimal_lookup_op("sparse_2_4_gemm", "fp8") == \
         "sparse_2_4_gemm"
     assert sel.optimal_lookup_op("bitnet_gemm", "bf16") == "bitnet_gemm"
+    assert sel.optimal_lookup_op("sparse_mla_attention", "fp8") == \
+        "sparse_mla_attention"
+    assert sel.optimal_lookup_op("dsa_indexer_logits", "fp8") == \
+        "dsa_indexer_logits"
+    assert sel.optimal_lookup_op("dsa_topk_select", "fp8") == "dsa_topk_select"
+    assert sel.optimal_lookup_op("nsa_selection_attention", "bf16") == \
+        "nsa_selection_attention"
     assert sel.optimal_lookup_op("cross_entropy", "bf16") == "fused_linear_ce"
     assert sel.optimal_lookup_op("fused_linear_cross_entropy", "bf16") == \
         "fused_linear_ce"
@@ -735,3 +789,24 @@ def test_bitnet_model_routes_core_gemm_to_bitnet_provider(monkeypatch):
     assert entry["fn"] == "ks_gemm"
     assert entry["optimal_provider"] == "bitblas"
     assert entry["optimal_source"] == "heuristic"
+
+
+def test_deepseek_dsa_models_route_sparse_attention_ops():
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    for model_id in (
+        "deepseek-v3.2-exp", "deepseek-v4-pro", "deepseek-v4-flash", "glm-5",
+    ):
+        plan = sel.select(model_id, "h100", "auto")
+        ops = plan["ops"]
+        assert ops["sparse_mla_attention"]["optimal_provider"] == "flash-mla"
+        assert ops["dsa_indexer_logits"]["optimal_provider"] == "deep_gemm"
+        assert ops["dsa_topk_select"]["optimal_provider"] == "flashinfer"
+        assert ops["dsa_topk_select"]["ks_dtype"] == "KS_DTYPE_F32"

@@ -82,6 +82,7 @@ def _install_fake_fla(monkeypatch, calls):
         "chunk_simple_gla", "chunk_lightning_attn", "chunk_rwkv7",
         "fused_recurrent_gated_delta_rule", "fused_recurrent_gla",
         "fused_recurrent_simple_gla", "fused_recurrent_rwkv7",
+        "parallel_nsa", "native_sparse_attention",
     ):
         setattr(ops, name, record(name))
     fla.ops = ops
@@ -713,6 +714,20 @@ def test_new_deferred_op_import_checks_are_specific():
                 if p.name == "xgrammar").import_check == \
         "import xgrammar; xgrammar.apply_token_bitmask_inplace; " \
         "xgrammar.allocate_token_bitmask"
+    assert next(p for p in OPS["sparse_mla_attention"].providers
+                if p.name == "flash-mla").import_check == \
+        "from flash_mla import flash_mla_sparse_fwd, " \
+        "flash_mla_with_kvcache, get_mla_metadata"
+    assert next(p for p in OPS["dsa_indexer_logits"].providers
+                if p.name == "deep_gemm").import_check == \
+        "import deep_gemm; deep_gemm.fp8_mqa_logits; " \
+        "deep_gemm.fp8_paged_mqa_logits"
+    assert next(p for p in OPS["dsa_topk_select"].providers
+                if p.name == "flashinfer").import_check == \
+        "import flashinfer; flashinfer.top_k"
+    assert next(p for p in OPS["nsa_selection_attention"].providers
+                if p.name == "flash-linear-attention").import_check == \
+        "import fla.ops"
 
 
 def test_mxfp4_providers_are_blackwell_only():
@@ -739,6 +754,8 @@ COMPUTE_BOUND_OPS = [
     "gemm", "fp8_gemm", "int8_gemm", "w4a16", "w4a8", "w8a16_fp8",
     "sparse_2_4_gemm", "bitnet_gemm",
     "attention_prefill", "attention_decode", "mla_decode",
+    "sparse_mla_attention", "dsa_indexer_logits", "dsa_topk_select",
+    "nsa_selection_attention",
     "moe", "selective_scan", "causal_conv1d",
     "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
     "fused_linear_ce",
@@ -776,6 +793,11 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("attention_decode", {"flashinfer"}, 80, "fp16", "flashinfer"),
         ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
         ("mla_decode", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("sparse_mla_attention", {"flash_mla"}, 90, "bf16", "flash-mla"),
+        ("dsa_indexer_logits", {"deep_gemm"}, 90, "fp8", "deep_gemm"),
+        ("dsa_topk_select", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("nsa_selection_attention", {"fla"}, 80, "bf16",
+         "flash-linear-attention"),
         ("moe", {"deep_gemm"}, 90, None, "deep_gemm"),
         ("moe", {"vllm"}, 80, None, "vllm"),
         ("selective_scan", {"mamba_ssm"}, 80, "bf16", "mamba-ssm"),
@@ -924,6 +946,37 @@ def test_bitnet_new_op_bitblas_ampere(monkeypatch):
     dispatch.reset_cache()
     _mock_available(monkeypatch, available_libs={"bitblas"}, sm=80)
     assert dispatch.which("bitnet_gemm", dtype="bf16") == KERNEL_SET
+
+
+def test_wave2b_dsa_provider_only_ops_select_and_gate(monkeypatch):
+    assert "sparse_mla_attention" in dispatch.ops()
+    assert "dsa_indexer_logits" in dispatch.ops()
+    assert "dsa_topk_select" in dispatch.ops()
+    assert "nsa_selection_attention" in dispatch.ops()
+
+    cases = [
+        ("sparse_mla_attention", {"flash_mla"}, 90, "bf16", "flash-mla"),
+        ("sparse_mla_attention", {"flash_mla"}, 90, "fp8", "flash-mla"),
+        ("dsa_indexer_logits", {"deep_gemm"}, 90, "fp8", "deep_gemm"),
+        ("dsa_topk_select", {"flashinfer"}, 80, "fp16", "flashinfer"),
+        ("dsa_topk_select", {"flashinfer"}, 80, "bf16", "flashinfer"),
+        ("nsa_selection_attention", {"fla"}, 80, "fp16",
+         "flash-linear-attention"),
+    ]
+    for op, libs, sm, dtype, expected in cases:
+        dispatch.reset_cache()
+        _mock_available(monkeypatch, available_libs=libs, sm=sm)
+        assert dispatch.which(op, dtype=dtype) == expected
+
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"flash_mla"}, sm=89)
+    assert dispatch.which("sparse_mla_attention", dtype="bf16") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"deep_gemm"}, sm=90)
+    assert dispatch.which("dsa_indexer_logits", dtype="bf16") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"fla"}, sm=75)
+    assert dispatch.which("nsa_selection_attention", dtype="fp16") == KERNEL_SET
 
 
 def test_wave1_provider_only_ops_select_and_gate(monkeypatch):
@@ -1174,6 +1227,101 @@ def test_sparse_and_bitnet_adapters_call_expected_external_apis(monkeypatch):
     assert kwargs["scale"] is sa
 
 
+def test_wave2b_dsa_adapters_call_expected_external_apis(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    calls = []
+
+    flash_mla = types.ModuleType("flash_mla")
+
+    def flash_mla_sparse_fwd(*args, **kwargs):
+        calls.append(("flash_mla_sparse_fwd", args, kwargs))
+        return "sparse_prefill_out", "lse"
+
+    def get_mla_metadata(*args, **kwargs):
+        calls.append(("get_mla_metadata", args, kwargs))
+        return "tile_md", "num_splits"
+
+    def flash_mla_with_kvcache(*args, **kwargs):
+        calls.append(("flash_mla_with_kvcache", args, kwargs))
+        return "sparse_decode_out", "lse"
+
+    flash_mla.flash_mla_sparse_fwd = flash_mla_sparse_fwd
+    flash_mla.get_mla_metadata = get_mla_metadata
+    flash_mla.flash_mla_with_kvcache = flash_mla_with_kvcache
+    monkeypatch.setitem(sys.modules, "flash_mla", flash_mla)
+
+    q_nope = torch.zeros(2, 4, 8)
+    q_pe = torch.zeros(2, 4, 2)
+    kv = torch.zeros(3, 1, 10)
+    block_tables = torch.zeros(2, 3, dtype=torch.int32)
+    seq_lens = torch.tensor([8, 8], dtype=torch.int32)
+    indices = torch.zeros(2, 4, 3, dtype=torch.int32)
+
+    assert _registry._sparse_mla_attention_flash_mla(
+        q_nope, q_pe, kv, indices=indices, topk=3, prefill=True) == \
+        "sparse_prefill_out"
+    assert calls[-1][0] == "flash_mla_sparse_fwd"
+    assert calls[-1][1][2] is indices
+    assert calls[-1][2]["topk"] == 3
+
+    assert _registry._sparse_mla_attention_flash_mla(
+        q_nope, q_pe, kv, block_tables, seq_lens, indices,
+        heads=4, lora=8, rope_dim=2, topk=3, is_fp8=True) == \
+        "sparse_decode_out"
+    assert calls[-2][0] == "get_mla_metadata"
+    assert calls[-2][2]["is_fp8"] is True
+    assert calls[-2][2]["topk"] == 3
+    assert calls[-1][0] == "flash_mla_with_kvcache"
+    assert calls[-1][2]["indices"] is indices
+    assert calls[-1][2]["topk"] == 3
+
+    deep_gemm = types.ModuleType("deep_gemm")
+
+    def fp8_mqa_logits(*args, **kwargs):
+        calls.append(("fp8_mqa_logits", args, kwargs))
+        return "prefill_logits"
+
+    def fp8_paged_mqa_logits(*args, **kwargs):
+        calls.append(("fp8_paged_mqa_logits", args, kwargs))
+        return "paged_logits"
+
+    deep_gemm.fp8_mqa_logits = fp8_mqa_logits
+    deep_gemm.fp8_paged_mqa_logits = fp8_paged_mqa_logits
+    monkeypatch.setitem(sys.modules, "deep_gemm", deep_gemm)
+    assert _registry._dsa_indexer_logits_deepgemm(q_nope, kv) == \
+        "prefill_logits"
+    assert calls[-1][0] == "fp8_mqa_logits"
+    assert _registry._dsa_indexer_logits_deepgemm(
+        q_nope, kv, paged=True, block_tables=block_tables,
+        seq_lens=seq_lens) == "paged_logits"
+    assert calls[-1][0] == "fp8_paged_mqa_logits"
+    assert calls[-1][1][:4] == (q_nope, kv, block_tables, seq_lens)
+
+    flashinfer = types.ModuleType("flashinfer")
+    values = torch.ones(2, 3)
+    out_indices = torch.ones(2, 3, dtype=torch.int32)
+
+    def top_k(*args, **kwargs):
+        calls.append(("top_k", args, kwargs))
+        return values, out_indices
+
+    flashinfer.top_k = top_k
+    monkeypatch.setitem(sys.modules, "flashinfer", flashinfer)
+    assert _registry._dsa_topk_select_flashinfer(q_nope, 3) is out_indices
+    assert calls[-1][0] == "top_k"
+    assert calls[-1][1][:2] == (q_nope, 3)
+
+    calls.clear()
+    _install_fake_fla(monkeypatch, calls)
+    assert _registry._nsa_selection_attention_fla(
+        q_nope, q_nope, q_nope, block_tables=block_tables) == \
+        "parallel_nsa_out"
+    assert calls[-1][0] == "parallel_nsa"
+    assert calls[-1][2]["block_tables"] is block_tables
+
+
 def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
     torch = pytest.importorskip("torch")
     from kernel_set.backends import _registry
@@ -1356,6 +1504,10 @@ def test_arch_gates_preserved_for_sm90_providers():
     assert gate("gated_delta_rule", "flash-linear-attention") == 80
     assert gate("gated_linear_attn", "flash-linear-attention") == 80
     assert gate("rwkv_wkv7", "flash-linear-attention") == 80
+    assert gate("sparse_mla_attention", "flash-mla") == 90
+    assert gate("dsa_indexer_logits", "deep_gemm") == 90
+    assert gate("dsa_topk_select", "flashinfer") == 80
+    assert gate("nsa_selection_attention", "flash-linear-attention") == 80
 
 
 # --------------------------------------------------------------------------- #

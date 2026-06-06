@@ -65,6 +65,10 @@ __all__ = [
     "attention_prefill",
     "attention_decode",
     "mla_decode",
+    "sparse_mla_attention",
+    "dsa_indexer_logits",
+    "dsa_topk_select",
+    "nsa_selection_attention",
     "gemm",
     "fp8_gemm",
     "fp8_gemm_blockwise",
@@ -261,6 +265,43 @@ def mla_decode(q_nope, q_pe, kv_cache, block_tables, seq_lens, *, heads, lora,
         dict(heads=heads, lora=lora, rope_dim=rope_dim, block_size=block_size,
              max_blocks_per_seq=max_blocks_per_seq,
              softmax_scale=softmax_scale, **kw))
+
+
+def sparse_mla_attention(q_nope, q_pe, kv_cache, block_tables=None,
+                         seq_lens=None, indices=None, *, heads=None,
+                         lora=None, rope_dim=None, block_size=None,
+                         max_blocks_per_seq=None, topk=None,
+                         softmax_scale=None, is_fp8=False, prefill=False,
+                         **kw):
+    """Sparse DeepSeek MLA over per-query top-k KV indices."""
+    return _dispatch(
+        "sparse_mla_attention",
+        (q_nope, q_pe, kv_cache, block_tables, seq_lens, indices),
+        dict(heads=heads, lora=lora, rope_dim=rope_dim, block_size=block_size,
+             max_blocks_per_seq=max_blocks_per_seq, topk=topk,
+             softmax_scale=softmax_scale, is_fp8=is_fp8, prefill=prefill,
+             **kw))
+
+
+def dsa_indexer_logits(q, kv, *args, paged=False, block_tables=None,
+                       seq_lens=None, **kw):
+    """DeepSeek Sparse Attention lightning-indexer logits."""
+    return _dispatch(
+        "dsa_indexer_logits", (q, kv, *args),
+        dict(paged=paged, block_tables=block_tables, seq_lens=seq_lens, **kw))
+
+
+def dsa_topk_select(scores, topk, *, indices_out=None, largest=True,
+                    sorted=False, **kw):
+    """Row-wise top-k sparse-attention index selection."""
+    return _dispatch(
+        "dsa_topk_select", (scores, topk),
+        dict(indices_out=indices_out, largest=largest, sorted=sorted, **kw))
+
+
+def nsa_selection_attention(q, k, v, *args, **kw):
+    """Native Sparse Attention selection branch provider dispatch."""
+    return _dispatch("nsa_selection_attention", (q, k, v, *args), kw)
 
 
 def gemm(a, b, **kw):

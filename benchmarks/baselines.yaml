@@ -209,6 +209,95 @@ attention:
   benchable: true
   confidence: high
   notes: DeepSeek's official MLA decode; up to 3000 GB/s mem-bound / 580 TFLOPS compute-bound on H800; the reference best-in-class MLA kernel.
+- name: flash-mla — sparse_mla_attention
+  lib: flash-mla
+  pip_install: null
+  build_from_source: git clone --recursive https://github.com/deepseek-ai/FlashMLA && cd FlashMLA && pip install -v .
+  import_check: from flash_mla import flash_mla_sparse_fwd, flash_mla_with_kvcache, get_mla_metadata
+  python_call: from flash_mla import flash_mla_sparse_fwd, flash_mla_with_kvcache, get_mla_metadata; prefill uses flash_mla_sparse_fwd(q, k_cache, indices, topk=...); decode builds tile_md,num_splits=get_mla_metadata(cache_seqlens, ..., is_fp8=..., topk=...) then calls flash_mla_with_kvcache(..., indices=indices, topk=...).
+  maps_to: []
+  ks_op: sparse_mla_attention
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - bf16
+  - fp8_e4m3
+  benchable: true
+  confidence: medium
+  notes: Sparse/top-k indexed FlashMLA path for DeepSeek-V3.2/V4 and GLM-5 DSA long-context attention.
+- name: deep_gemm — dsa_indexer_logits
+  lib: deep_gemm
+  pip_install: pip install deep_gemm
+  build_from_source: null
+  import_check: import deep_gemm; deep_gemm.fp8_mqa_logits; deep_gemm.fp8_paged_mqa_logits
+  python_call: import deep_gemm; deep_gemm.fp8_mqa_logits(q, kv, ...); deep_gemm.fp8_paged_mqa_logits(q, kv, block_tables, seq_lens, ...) for paged decode.
+  maps_to: []
+  ks_op: dsa_indexer_logits
+  bench_category: attention
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - fp32
+  - fp8_e4m3
+  benchable: true
+  confidence: medium
+  notes: DeepGEMM ships this separately from GEMM/attention because the DSA indexer is a logits-only MQA reduction.
+- name: flashinfer — dsa_topk_select
+  lib: flashinfer
+  pip_install: pip install flashinfer-python
+  build_from_source: null
+  import_check: import flashinfer; flashinfer.top_k
+  python_call: 'import flashinfer; indices = flashinfer.top_k(scores, topk, largest=True, sorted=False)  # adapter returns the indices component when values are also returned.'
+  maps_to: []
+  ks_op: dsa_topk_select
+  bench_category: attention
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: medium
+  notes: Reusable top-k/radix selector until the Wave-3 kernel-set radix-select implementation lands.
+- name: flash-linear-attention — nsa_selection_attention
+  lib: flash-linear-attention
+  pip_install: pip install flash-linear-attention
+  build_from_source: null
+  import_check: import fla.ops
+  python_call: import fla.ops; fla.ops.parallel_nsa(q, k, v, ...) or fla.ops.native_sparse_attention(q, k, v, ...) depending on the installed FLA export.
+  maps_to: []
+  ks_op: nsa_selection_attention
+  bench_category: attention
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  benchable: true
+  confidence: medium
+  notes: Provider-wired trainable sparse-attention family; kernel-set terminal intentionally raises until a portable fallback is developed.
 - name: flashinfer-python — mla_prefill
   lib: flashinfer-python
   pip_install: pip install flashinfer-python

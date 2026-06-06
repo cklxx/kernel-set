@@ -356,6 +356,90 @@
       ]
     },
     {
+      "op": "sparse_mla_attention",
+      "domain": "attention",
+      "desc": "DeepSeek Sparse Attention MLA over per-query top-k gathered latent KV indices; fuses sparse index gather, MLA softmax, and PV over a ragged/padded top-k set.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flash-mla",
+          "repo": "https://github.com/deepseek-ai/FlashMLA",
+          "rank": 1,
+          "python_call": "from flash_mla import flash_mla_sparse_fwd, flash_mla_with_kvcache, get_mla_metadata; prefill uses flash_mla_sparse_fwd(q, k_cache, indices, topk=...); decode builds tile_md,num_splits=get_mla_metadata(cache_seqlens, ..., is_fp8=..., topk=...) then calls flash_mla_with_kvcache(..., indices=indices, topk=...).",
+          "install": "git clone --recursive https://github.com/deepseek-ai/FlashMLA && cd FlashMLA && pip install -v .",
+          "import_check": "from flash_mla import flash_mla_sparse_fwd, flash_mla_with_kvcache, get_mla_metadata",
+          "gpu_arch": "sm90+ (Hopper/Blackwell)",
+          "dtypes": "bf16, fp8 e4m3 KV cache",
+          "perf_note": "Sparse/top-k indexed FlashMLA path for DeepSeek-V3.2/V4 and GLM-5 DSA long-context attention.",
+          "source_url": "https://github.com/deepseek-ai/FlashMLA/blob/main/flash_mla/flash_mla_interface.py",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "dsa_indexer_logits",
+      "domain": "attention",
+      "desc": "DeepSeek lightning-indexer FP8 MQA scorer: returns raw ReLU-gated token-to-token logits for choosing sparse-attention KV positions, with no softmax or PV matmul.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "deep_gemm",
+          "repo": "https://github.com/deepseek-ai/DeepGEMM",
+          "rank": 1,
+          "python_call": "import deep_gemm; deep_gemm.fp8_mqa_logits(q, kv, ...); deep_gemm.fp8_paged_mqa_logits(q, kv, block_tables, seq_lens, ...) for paged decode.",
+          "install": "pip install deep_gemm",
+          "import_check": "import deep_gemm; deep_gemm.fp8_mqa_logits; deep_gemm.fp8_paged_mqa_logits",
+          "gpu_arch": "sm90+ (Hopper/Blackwell)",
+          "dtypes": "fp8 e4m3 inputs, fp32 logits",
+          "perf_note": "DeepGEMM ships this separately from GEMM/attention because the DSA indexer is a logits-only MQA reduction.",
+          "source_url": "https://github.com/deepseek-ai/DeepGEMM",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "dsa_topk_select",
+      "domain": "attention",
+      "desc": "Large-k row-wise top-k over DSA indexer score rows, emitting packed int32 KV indices with -1 padding for downstream sparse MLA.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flashinfer",
+          "repo": "https://github.com/flashinfer-ai/flashinfer",
+          "rank": 1,
+          "python_call": "import flashinfer; indices = flashinfer.top_k(scores, topk, largest=True, sorted=False)  # adapter returns the indices component when values are also returned.",
+          "install": "pip install flashinfer-python",
+          "import_check": "import flashinfer; flashinfer.top_k",
+          "gpu_arch": "sm80+ (Ampere/Ada/Hopper/Blackwell)",
+          "dtypes": "score rows fp32/fp16/bf16; output indices int32",
+          "perf_note": "Reusable top-k/radix selector until the Wave-3 kernel-set radix-select implementation lands.",
+          "source_url": "https://docs.flashinfer.ai/",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "nsa_selection_attention",
+      "domain": "attention",
+      "desc": "Native Sparse Attention selection branch: compressed attention chooses top-n blocks, then selected blocks are gathered and attended with a sliding branch and gated combine.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flash-linear-attention",
+          "repo": "https://github.com/fla-org/flash-linear-attention",
+          "rank": 1,
+          "python_call": "import fla.ops; fla.ops.parallel_nsa(q, k, v, ...) or fla.ops.native_sparse_attention(q, k, v, ...) depending on the installed FLA export.",
+          "install": "pip install flash-linear-attention",
+          "import_check": "import fla.ops",
+          "gpu_arch": "sm80+ (Triton/CUDA)",
+          "dtypes": "fp16, bf16",
+          "perf_note": "Provider-wired trainable sparse-attention family; kernel-set terminal intentionally raises until a portable fallback is developed.",
+          "source_url": "https://github.com/fla-org/flash-linear-attention",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
       "op": "mla_prefill",
       "domain": "attention",
       "desc": "DeepSeek MLA prefill/context attention (absorb or non-absorb form) for the prompt phase, computing over latent KV; head_dim 192 (128 nope + 64 rope).",

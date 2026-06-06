@@ -112,6 +112,10 @@ _PLAN_OP_TO_OPTIMAL = {
     "w8a16_fp8": "w8a16_fp8",
     "sparse_2_4_gemm": "sparse_2_4_gemm",
     "bitnet_gemm": "bitnet_gemm",
+    "sparse_mla_attention": "sparse_mla_attention",
+    "dsa_indexer_logits": "dsa_indexer_logits",
+    "dsa_topk_select": "dsa_topk_select",
+    "nsa_selection_attention": "nsa_selection_attention",
     "cross_entropy": "fused_linear_ce",
     "fused_linear_ce": "fused_linear_ce",
     "fused_linear_cross_entropy": "fused_linear_ce",
@@ -189,6 +193,10 @@ def optimal_cell(plan_op, sm, scheme):
     dtype = _SCHEME_TO_DTYPE.get(scheme, scheme)
     if op == "bitnet_gemm" and dtype in ("bf16", "fp32", "f32", "tf32"):
         dtype = "fp16"
+    if op == "dsa_topk_select":
+        # The selector consumes fp32/fp16/bf16 score rows, not the model's weight
+        # quantization scheme (e.g. an fp8 DSA model still emits fp32 logits).
+        dtype = "fp32"
     sm_key = _optimal_table_sm(sm)
     cell = _OPTIMAL_TABLE.get((op, sm_key, dtype))
     if cell is not None:
@@ -323,7 +331,9 @@ GEMM_OPS = {"qkv_proj", "o_proj", "mlp_gate_up", "mlp_down", "lm_head",
 DENSE_GEMM_OPS = GEMM_OPS - {"moe_grouped_gemm"}
 # Ops that always stay in the model's activation dtype (norms, rope, act, etc).
 ACT_DTYPE_OPS = {"attn_norm", "ffn_norm", "rope", "mlp_act", "embedding",
-                 "attn_prefill", "attn_decode", "attn_backward"}
+                 "attn_prefill", "attn_decode", "attn_backward",
+                 "sparse_mla_attention", "dsa_indexer_logits",
+                 "dsa_topk_select", "nsa_selection_attention"}
 
 
 def _pick_gemm_fn(op, scheme, default_fn):
@@ -470,6 +480,22 @@ def build_op(op, model, base_ops, scheme, gcaps, act_dt, gemm_dt,
     if op == "bitnet_gemm":
         return mk(fn, "KS_DTYPE_F16",
                   "BitBLAS W1.58A8 ternary BitLinear GEMM; ks_gemm is the "
+                  "ABI-valid terminal placeholder")
+    if op == "sparse_mla_attention":
+        return mk(fn, act_dt,
+                  "FlashMLA sparse/top-k indexed attention; fn is an "
+                  "ABI-valid terminal placeholder")
+    if op == "dsa_indexer_logits":
+        return mk(fn, act_dt,
+                  "DeepGEMM FP8 lightning-indexer logits; fn is an "
+                  "ABI-valid terminal placeholder")
+    if op == "dsa_topk_select":
+        return mk(fn, "KS_DTYPE_F32",
+                  "FlashInfer radix top-k index select; fn is an "
+                  "ABI-valid terminal placeholder")
+    if op == "nsa_selection_attention":
+        return mk(fn, act_dt,
+                  "FLA Native Sparse Attention selection branch; fn is an "
                   "ABI-valid terminal placeholder")
 
     # ---- MoE gate --------------------------------------------------------

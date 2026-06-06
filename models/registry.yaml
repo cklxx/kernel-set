@@ -8,6 +8,10 @@ logical_ops:
   - rope
   - attn_prefill
   - attn_decode
+  - sparse_mla_attention
+  - dsa_indexer_logits
+  - dsa_topk_select
+  - nsa_selection_attention
   - conv1d
   - ssm
   - gated_delta
@@ -36,6 +40,10 @@ op_descriptions:
   rope: rotary position embedding
   attn_prefill: prefill / context attention (full sequence)
   attn_decode: autoregressive decode attention (paged KV)
+  sparse_mla_attention: DeepSeek sparse MLA over selected KV indices
+  dsa_indexer_logits: DeepSeek lightning-indexer attention logits
+  dsa_topk_select: top-k KV-index selection for sparse attention
+  nsa_selection_attention: Native Sparse Attention selection branch
   qkv_proj: fused Q/K/V projection GEMM
   o_proj: attention output projection GEMM
   ffn_norm: pre-MLP normalization
@@ -5213,6 +5221,18 @@ models:
         fn: ks_mla_decode
         dtype: model
 
+      sparse_mla_attention:
+        fn: ks_mla_decode
+        dtype: model
+
+      dsa_indexer_logits:
+        fn: ks_gemm
+        dtype: model
+
+      dsa_topk_select:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
       qkv_proj:
         fn: ks_gemm
         dtype: model
@@ -5254,7 +5274,7 @@ models:
         dtype: f32
 
 
-    notes: "671B total (685B incl. MTP) / 37B active. Adds DeepSeek Sparse Attention (DSA, lightning-indexer top-k=2048) on top of V3 MLA, cutting attention to O(Lk); decode maps to ks_mla_decode over compressed latent KV. DSA top-k indexer is a sparse-mask selection step needing ks_sparse_attn_indexer (Wave-2, unmapped); first 3 layers dense SwiGLU. MLA dims qk_nope=128/qk_rope=64/v=128/kv_lora=512/q_lora=1536. Config-verified."
+    notes: "671B total (685B incl. MTP) / 37B active. Adds DeepSeek Sparse Attention (DSA, lightning-indexer top-k=2048) on top of V3 MLA, cutting attention to O(Lk); dense decode maps to ks_mla_decode over compressed latent KV, while sparse_mla_attention/dsa_indexer_logits/dsa_topk_select are provider-routed with ABI-valid terminal placeholders. First 3 layers dense SwiGLU. MLA dims qk_nope=128/qk_rope=64/v=128/kv_lora=512/q_lora=1536. Config-verified."
     examples:
       - DeepSeek-V3.2-Exp
       - DeepSeek-V3.2
@@ -5322,6 +5342,18 @@ models:
         fn: ks_paged_attn_decode
         dtype: model
 
+      sparse_mla_attention:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      dsa_indexer_logits:
+        fn: ks_gemm
+        dtype: model
+
+      dsa_topk_select:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
       qkv_proj:
         fn: ks_gemm
         dtype: model
@@ -5363,7 +5395,7 @@ models:
         dtype: f32
 
 
-    notes: "1.6T total / ~49B active, 1M context. Hybrid sparse attention: Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA), index_topk=1024 / 64 index heads \u2014 NOT classic MLA. CSA/HCA sparse selection + state compression needs ks_sparse_attn_indexer and ks_ssm_scan-style compression (Wave-2, unmapped); attn_decode falls back to ks_paged_attn_decode (MQA, 1 kv head) for the dense path. MoE gate sqrtsoftplus -> modeled via ks_moe_gate_softmax_topk (Wave-2: ks_moe_gate_sqrt_softplus unmapped). mHC residual + Muon optimizer. Some MLA-style config fields null in fetched config -> attention internals medium confidence. Sibling DeepSeek-V4-Flash ~284B."
+    notes: "1.6T total / ~49B active, 1M context. Hybrid sparse attention: Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA), index_topk=1024 / 64 index heads \u2014 NOT classic MLA. CSA/HCA sparse selection routes through sparse_mla_attention/dsa_indexer_logits/dsa_topk_select provider ops with ABI-valid terminal placeholders; attn_decode remains ks_paged_attn_decode (MQA, 1 kv head) for the dense path. MoE gate sqrtsoftplus -> modeled via ks_moe_gate_softmax_topk (Wave-2: ks_moe_gate_sqrt_softplus unmapped). mHC residual + Muon optimizer. Some MLA-style config fields null in fetched config -> attention internals medium confidence. Sibling DeepSeek-V4-Flash ~284B."
     examples:
       - DeepSeek-V4-Pro
       - DeepSeek-V4-Flash
@@ -6891,6 +6923,18 @@ models:
         fn: ks_paged_attn_decode
         dtype: model
 
+      sparse_mla_attention:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      dsa_indexer_logits:
+        fn: ks_gemm
+        dtype: model
+
+      dsa_topk_select:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
       qkv_proj:
         fn: ks_gemm
         dtype: model
@@ -6932,7 +6976,7 @@ models:
         dtype: f32
 
 
-    notes: "744B total / 40B active (model_type glm_moe_dsa = MoE + DeepSeek-style Sparse Attention). Full MHA (64 KV heads, head_dim 64) -> ks_paged_attn_decode for the dense path; the DSA sparse top-k indexer needs ks_sparse_attn_indexer (Wave-2, unmapped). 256-expert top-8 + 1 shared sigmoid MoE; first 3 layers dense; ~2x scale-up over GLM-4.5. GLM-5.1 (754B) later. Config-verified."
+    notes: "744B total / 40B active (model_type glm_moe_dsa = MoE + DeepSeek-style Sparse Attention). Full MHA (64 KV heads, head_dim 64) -> ks_paged_attn_decode for the dense path; sparse_mla_attention/dsa_indexer_logits/dsa_topk_select are provider-routed DSA ops with ABI-valid terminal placeholders. 256-expert top-8 + 1 shared sigmoid MoE; first 3 layers dense; ~2x scale-up over GLM-4.5. GLM-5.1 (754B) later. Config-verified."
     examples:
       - GLM-5
       - GLM-5-FP8
@@ -10437,6 +10481,18 @@ models:
         fn: ks_paged_attn_decode
         dtype: model
 
+      sparse_mla_attention:
+        fn: ks_paged_attn_decode
+        dtype: model
+
+      dsa_indexer_logits:
+        fn: ks_gemm
+        dtype: model
+
+      dsa_topk_select:
+        fn: ks_moe_gate_softmax_topk
+        dtype: f32
+
       qkv_proj:
         fn: ks_gemm
         dtype: model
@@ -10478,7 +10534,7 @@ models:
         dtype: f32
 
 
-    notes: "284B total / ~13B active (param counts from secondary reporting, not directly config-confirmed -> approximate), 1M context. Smaller sibling of deepseek-v4-pro: same hybrid Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA) design \u2014 NOT classic MLA. CSA/HCA sparse-select + KV compression need ks_sparse_attn_indexer and ks_selective_scan-style compression (Wave-2, unmapped); dense decode path falls back to ks_paged_attn_decode (MQA, 1 kv head). Sqrt(Softplus) gate modeled via ks_moe_gate_softmax_topk (ks_moe_gate_sqrt_softplus unmapped). 256-expert top-6 + 1 shared DeepSeekMoE, FP4 routed experts, mHC residual, Muon, MTP. config.json-verified for layers/hidden/experts/heads; total/active medium confidence."
+    notes: "284B total / ~13B active (param counts from secondary reporting, not directly config-confirmed -> approximate), 1M context. Smaller sibling of deepseek-v4-pro: same hybrid Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA) design \u2014 NOT classic MLA. CSA/HCA sparse-select routes through sparse_mla_attention/dsa_indexer_logits/dsa_topk_select provider ops; dense decode path falls back to ks_paged_attn_decode (MQA, 1 kv head). Sqrt(Softplus) gate modeled via ks_moe_gate_softmax_topk (ks_moe_gate_sqrt_softplus unmapped). 256-expert top-6 + 1 shared DeepSeekMoE, FP4 routed experts, mHC residual, Muon, MTP. config.json-verified for layers/hidden/experts/heads; total/active medium confidence."
     examples:
       - DeepSeek-V4-Flash
   - id: kimi-k2.6

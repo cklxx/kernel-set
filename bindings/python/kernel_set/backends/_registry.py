@@ -1661,6 +1661,95 @@ def _mla_decode_sgl(q_nope, q_pe, kv_cache, block_tables, seq_lens, *,
     return out
 
 
+def _sparse_mla_attention_flash_mla(
+        q_nope, q_pe, kv_cache, block_tables=None, seq_lens=None, indices=None,
+        *, heads=None, lora=None, rope_dim=None, block_size=None,
+        max_blocks_per_seq=None, topk=None, softmax_scale=None, is_fp8=False,
+        prefill=False, causal=True, h_kv=1, **kw):
+    # Sparse FlashMLA consumes a per-query top-k index tensor and only gathers
+    # those KV positions. This is not a flag on dense MLA decode.
+    import torch
+    from flash_mla import (
+        flash_mla_sparse_fwd,
+        flash_mla_with_kvcache,
+        get_mla_metadata,
+    )
+    if indices is None:
+        raise ValueError("sparse_mla_attention requires an indices tensor")
+    if topk is None:
+        topk = indices.shape[-1]
+    if lora is None:
+        lora = q_nope.shape[-1]
+    if rope_dim is None:
+        rope_dim = q_pe.shape[-1]
+    if heads is None:
+        heads = q_nope.shape[-2]
+    q_cat = torch.cat([q_nope, q_pe], dim=-1).to(torch.bfloat16)
+    if not prefill:
+        q_cat = q_cat.unsqueeze(1) if q_cat.ndim == 3 else q_cat
+    if block_size is not None and kv_cache.ndim == 3:
+        kcache = kv_cache.reshape(
+            kv_cache.shape[0], block_size, h_kv, lora + rope_dim)
+    else:
+        kcache = kv_cache
+    kcache = kcache.to(torch.bfloat16)
+    sm_scale = _scale(lora + rope_dim, softmax_scale)
+    if prefill or block_tables is None or seq_lens is None:
+        out = flash_mla_sparse_fwd(
+            q_cat, kcache, indices, topk=topk, softmax_scale=sm_scale,
+            causal=causal, is_fp8=is_fp8, **kw)
+        return _first_result(out)
+    tile_md, num_splits = get_mla_metadata(
+        seq_lens, heads // h_kv, h_kv, is_fp8=is_fp8, topk=topk)
+    out, _lse = flash_mla_with_kvcache(
+        q_cat, kcache, block_tables, seq_lens, lora, tile_md, num_splits,
+        softmax_scale=sm_scale, causal=causal, is_fp8=is_fp8,
+        indices=indices, topk=topk, **kw)
+    return out
+
+
+def _dsa_indexer_logits_deepgemm(q, kv, *args, paged=False,
+                                 block_tables=None, seq_lens=None, **kw):
+    dg = _imp("deep_gemm")
+    if paged or block_tables is not None or seq_lens is not None:
+        return dg.fp8_paged_mqa_logits(
+            q, kv, block_tables, seq_lens, *args, **kw)
+    return dg.fp8_mqa_logits(q, kv, *args, **kw)
+
+
+def _dsa_topk_select_flashinfer(scores, topk, *, indices_out=None,
+                                largest=True, sorted=False, **kw):
+    fi = _imp("flashinfer")
+    fn = getattr(fi, "top_k", None)
+    if fn is None:
+        try:
+            topk_mod = _imp("flashinfer.top_k")
+            fn = getattr(topk_mod, "top_k", None) or getattr(topk_mod, "topk", None)
+        except Exception as exc:
+            raise ProviderCallUnsupported(
+                "flashinfer top_k selector is not exposed by this install") from exc
+    if fn is None:
+        raise ProviderCallUnsupported(
+            "flashinfer top_k selector is not exposed by this install")
+    result = fn(scores, topk, largest=largest, sorted=sorted, **kw)
+    indices = result[1] if isinstance(result, (tuple, list)) and len(result) > 1 \
+        else _first_result(result)
+    if indices_out is not None:
+        indices_out.copy_(indices)
+        return indices_out
+    return indices
+
+
+def _nsa_selection_attention_fla(q, k, v, *args, **kw):
+    ops = _imp("fla.ops")
+    fn = (getattr(ops, "parallel_nsa", None) or
+          getattr(ops, "native_sparse_attention", None))
+    if fn is None:
+        raise ProviderCallUnsupported(
+            "FLA install does not expose parallel_nsa/native_sparse_attention")
+    return _first_result(fn(q, k, v, *args, **kw))
+
+
 # =========================================================================== #
 # THE CURATED TABLE. Provider lists are in rank order (1 = best).
 # A kernel-set fallback is appended to every op via _ks(...) below.
@@ -1749,6 +1838,41 @@ _OPS_RAW: List[Op] = [
                  "native DeepSeek FlashMLA package (Hopper+)"),
         _ks_provider(_mla_decode_ks, "ks_mla_decode",
                      "kernel-set absorbed-MLA decode"),
+    ]),
+    Op("sparse_mla_attention", "attention", None, [
+        Provider("flash-mla", 1, 90, "bf16, fp8 e4m3 KV",
+                 "from flash_mla import flash_mla_sparse_fwd, "
+                 "flash_mla_with_kvcache, get_mla_metadata",
+                 _sparse_mla_attention_flash_mla,
+                 "FlashMLA sparse/top-k indexed MLA prefill+decode (Hopper+)"),
+        _ks_provider(_ks_unsupported("sparse_mla_attention"), "",
+                     "no portable sparse MLA; needs FlashMLA"),
+    ]),
+    Op("dsa_indexer_logits", "attention", None, [
+        Provider("deep_gemm", 1, 90, "fp8 e4m3, fp32 logits",
+                 "import deep_gemm; deep_gemm.fp8_mqa_logits; "
+                 "deep_gemm.fp8_paged_mqa_logits",
+                 _dsa_indexer_logits_deepgemm,
+                 "DeepGEMM FP8 lightning-indexer MQA logits (Hopper+)"),
+        _ks_provider(_ks_unsupported("dsa_indexer_logits"), "",
+                     "no portable DSA indexer; needs DeepGEMM"),
+    ]),
+    Op("dsa_topk_select", "attention", None, [
+        Provider("flashinfer", 1, 80,
+                 "fp32, fp16, bf16 scores; int32 indices",
+                 "import flashinfer; flashinfer.top_k",
+                 _dsa_topk_select_flashinfer,
+                 "FlashInfer radix/top-k selector for sparse-attention indices"),
+        _ks_provider(_ks_unsupported("dsa_topk_select"), "",
+                     "no portable DSA top-k selector; needs FlashInfer"),
+    ]),
+    Op("nsa_selection_attention", "attention", None, [
+        Provider("flash-linear-attention", 1, 80, "fp16, bf16",
+                 "import fla.ops",
+                 _nsa_selection_attention_fla,
+                 "FLA Native Sparse Attention selection branch"),
+        _ks_provider(_ks_unsupported("nsa_selection_attention"), "",
+                     "no portable NSA selection attention; needs FLA"),
     ]),
     Op("gemm", "gemm-dense", "ks_gemm", [
         # Dense fp16/bf16/tf32 GEMM is the most NVIDIA-tuned primitive there is;

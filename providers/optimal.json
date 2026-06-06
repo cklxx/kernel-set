@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 413,
+    "total": 444,
     "measured": 13,
-    "heuristic": 400
+    "heuristic": 431
   },
   "cells": [
     {
@@ -1359,6 +1359,193 @@
       "fallback_chain": [
         "liger",
         "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_indexer_logits",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "deep_gemm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "deep_gemm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_indexer_logits",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "deep_gemm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "deep_gemm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "dsa_topk_select",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
         "kernel-set"
       ]
     },
@@ -3509,6 +3696,116 @@
       ]
     },
     {
+      "logical_op": "nsa_selection_attention",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "nsa_selection_attention",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "nvfp4_gemm",
       "sm": 100,
       "dtype": "fp4",
@@ -4335,6 +4632,50 @@
       "source": "heuristic",
       "fallback_chain": [
         "vllm-cutlass-sparse",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sparse_mla_attention",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-mla",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-mla",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sparse_mla_attention",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "flash-mla",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-mla",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sparse_mla_attention",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-mla",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-mla",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "sparse_mla_attention",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "flash-mla",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-mla",
         "kernel-set"
       ]
     },

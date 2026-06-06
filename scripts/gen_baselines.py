@@ -97,6 +97,10 @@ BENCH_CATEGORY = {
     "retention_retnet": "linear_attention", "rwkv6_wkv": "linear_attention",
     "rwkv7_wkv": "linear_attention",
     "attention_state_merge": "attention",
+    "sparse_mla_attention": "attention",
+    "dsa_indexer_logits": "attention",
+    "dsa_topk_select": "attention",
+    "nsa_selection_attention": "attention",
     # gemm-quant
     "gemm_fp8": "gemm", "fp8_gemm_blockwise": "gemm", "fp8_gemm_scaled_mm": "gemm",
     "awq_gemm": "w4a16", "dequantize_int4": "w4a16", "w4a16_gemm": "w4a16",

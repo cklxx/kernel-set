@@ -525,6 +525,37 @@ HEURISTIC = {
         {"logical_op": "mla_decode", "sm": 100, "dtype": "fp8",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "kernel-set"]},
+        # --- DeepSeek Sparse Attention / Native Sparse Attention family. -----
+        # Sparse MLA consumes top-k KV indices and is FlashMLA Hopper+; dsa
+        # indexer logits are DeepGEMM FP8 only; the large-k selector can reuse
+        # FlashInfer top_k on Ampere+ until the Wave-3 radix selector lands.
+        *[
+            {"logical_op": "sparse_mla_attention", "sm": sm, "dtype": dtype,
+             "provider": "flash-mla",
+             "fallback_chain": ["flash-mla", "kernel-set"]}
+            for sm in (90, 100)
+            for dtype in ("bf16", "fp8")
+        ],
+        *[
+            {"logical_op": "dsa_indexer_logits", "sm": sm, "dtype": "fp8",
+             "provider": "deep_gemm",
+             "fallback_chain": ["deep_gemm", "kernel-set"]}
+            for sm in (90, 100)
+        ],
+        *[
+            {"logical_op": "dsa_topk_select", "sm": sm, "dtype": dtype,
+             "provider": "flashinfer",
+             "fallback_chain": ["flashinfer", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp32", "fp16", "bf16")
+        ],
+        *[
+            {"logical_op": "nsa_selection_attention", "sm": sm, "dtype": dtype,
+             "provider": "flash-linear-attention",
+             "fallback_chain": ["flash-linear-attention", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         {"logical_op": "moe", "sm": 75, "dtype": "fp16",
          "provider": "kernel-set", "fallback_chain": ["kernel-set"]},
         {"logical_op": "moe", "sm": 75, "dtype": "bf16",
