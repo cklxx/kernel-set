@@ -96,6 +96,7 @@ BENCH_CATEGORY = {
     "linear_attention_basic": "linear_attention",
     "retention_retnet": "linear_attention", "rwkv6_wkv": "linear_attention",
     "rwkv7_wkv": "linear_attention",
+    "attention_state_merge": "attention",
     # gemm-quant
     "gemm_fp8": "gemm", "fp8_gemm_blockwise": "gemm", "fp8_gemm_scaled_mm": "gemm",
     "awq_gemm": "w4a16", "dequantize_int4": "w4a16", "w4a16_gemm": "w4a16",
@@ -106,7 +107,12 @@ BENCH_CATEGORY = {
     "w4a8_gemm": "w4a8", "sparse_2_4_gemm": "sparse_quant",
     "bitnet_gemm": "bitnet",
     "fp4_quantize": "fp4_gemm", "mxfp4_gemm": "fp4_gemm", "nvfp4_gemm": "fp4_gemm",
+    "mxfp8_quantize": "quant",
     "dequantize_fp8": "quant", "quantize_fp8_dynamic": "quant",
+    "mrope": "rope", "fused_rmsnorm_gated": "rmsnorm",
+    "min_p_sampling": "sampling",
+    "chain_speculative_sampling": "sampling",
+    "apply_token_bitmask": "sampling",
     # loss-optim-misc
     "adafactor_optimizer": "optimizer", "adamw_8bit": "optimizer",
     "adamw_fused": "optimizer", "global_grad_norm_clip": "optimizer",

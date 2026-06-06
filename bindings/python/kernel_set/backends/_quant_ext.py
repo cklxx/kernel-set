@@ -84,7 +84,8 @@ def _nvfp4_gemm_vllm(a_fp4, b_fp4, a_scale, b_scale, *, alpha=None,
                                      out_dtype=out_dtype or torch.bfloat16)
 
 
-def _nvfp4_quantize_vllm(x, global_scale=None, **_):
+def _nvfp4_quantize_vllm(x, global_scale=None, *, is_sf_swizzled_layout=True,
+                         **_):
     """vLLM fused NVFP4 quant (registry.json `fp4_quantize` rank 1).
 
     ``q_fp4, block_scale = ops.scaled_fp4_quant(input, input_global_scale,
@@ -93,7 +94,8 @@ def _nvfp4_quantize_vllm(x, global_scale=None, **_):
     the per-tensor fp32 input global scale.
     """
     from vllm import _custom_ops as ops
-    return ops.scaled_fp4_quant(x, global_scale)
+    return ops.scaled_fp4_quant(
+        x, global_scale, is_sf_swizzled_layout=is_sf_swizzled_layout)
 
 
 def _nvfp4_quantize_flashinfer(x, global_scale=None, **_):

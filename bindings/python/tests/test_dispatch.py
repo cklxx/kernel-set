@@ -473,6 +473,35 @@ def test_new_deferred_op_import_checks_are_specific():
     assert next(p for p in OPS["bitnet_gemm"].providers
                 if p.name == "bitblas").import_check == \
         "from bitblas import Matmul"
+    assert next(p for p in OPS["mrope"].providers
+                if p.name == "vllm").import_check == \
+        "from vllm.model_executor.layers.rotary_embedding.mrope " \
+        "import triton_mrope"
+    assert next(p for p in OPS["fused_rmsnorm_gated"].providers
+                if p.name == "flash-linear-attention").import_check == \
+        "from fla.modules import FusedRMSNormGated"
+    assert next(p for p in OPS["min_p_sampling"].providers
+                if p.name == "flashinfer").import_check == \
+        "import flashinfer.sampling; " \
+        "flashinfer.sampling.min_p_sampling_from_probs"
+    assert next(p for p in OPS["chain_speculative_sampling"].providers
+                if p.name == "flashinfer").import_check == \
+        "import flashinfer.sampling; " \
+        "flashinfer.sampling.chain_speculative_sampling"
+    assert next(p for p in OPS["attention_state_merge"].providers
+                if p.name == "flashinfer").import_check == \
+        "import flashinfer.cascade; flashinfer.cascade.merge_state; " \
+        "flashinfer.cascade.merge_states"
+    assert next(p for p in OPS["fp4_quantize"].providers
+                if p.name == "vllm").import_check == \
+        "from vllm import _custom_ops as ops; ops.scaled_fp4_quant"
+    assert next(p for p in OPS["mxfp8_quantize"].providers
+                if p.name == "vllm").import_check == \
+        "from vllm import _custom_ops as ops; ops.mxfp8_experts_quant"
+    assert next(p for p in OPS["apply_token_bitmask"].providers
+                if p.name == "xgrammar").import_check == \
+        "import xgrammar; xgrammar.apply_token_bitmask_inplace; " \
+        "xgrammar.allocate_token_bitmask"
 
 
 def test_mxfp4_providers_are_blackwell_only():
@@ -684,6 +713,203 @@ def test_bitnet_new_op_bitblas_ampere(monkeypatch):
     dispatch.reset_cache()
     _mock_available(monkeypatch, available_libs={"bitblas"}, sm=80)
     assert dispatch.which("bitnet_gemm", dtype="bf16") == KERNEL_SET
+
+
+def test_wave1_provider_only_ops_select_and_gate(monkeypatch):
+    cases = [
+        ("mrope", {"vllm"}, 80, "bf16", "vllm"),
+        ("fused_rmsnorm_gated", {"fla"}, 80, "fp16",
+         "flash-linear-attention"),
+        ("min_p_sampling", {"flashinfer"}, 75, "fp32", "flashinfer"),
+        ("chain_speculative_sampling", {"flashinfer"}, 75, "fp16",
+         "flashinfer"),
+        ("attention_state_merge", {"flashinfer"}, 80, "bf16",
+         "flashinfer"),
+        ("attention_state_merge", {"flashinfer"}, 89, "fp8",
+         "flashinfer"),
+        ("fp4_quantize", {"vllm"}, 100, "fp4", "vllm"),
+        ("mxfp8_quantize", {"vllm"}, 100, "fp8", "vllm"),
+        ("apply_token_bitmask", {"xgrammar"}, 75, "fp32", "xgrammar"),
+    ]
+    for op, libs, sm, dtype, expected in cases:
+        dispatch.reset_cache()
+        _mock_available(monkeypatch, available_libs=libs, sm=sm)
+        assert dispatch.which(op, dtype=dtype) == expected
+
+    # Arch/dtype gates remain real despite provider-only terminal fallback.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
+    assert dispatch.which("fp4_quantize", dtype="fp4") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
+    assert dispatch.which("mxfp8_quantize", dtype="fp8") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"xgrammar"}, sm=75)
+    assert dispatch.which("apply_token_bitmask", dtype="bf16") == KERNEL_SET
+
+
+def test_wave1_provider_only_adapters_call_expected_external_apis(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    calls = []
+
+    def install_module(name, module):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    # FlashInfer sampling + cascade.
+    flashinfer = types.ModuleType("flashinfer")
+    sampling = types.ModuleType("flashinfer.sampling")
+    cascade = types.ModuleType("flashinfer.cascade")
+
+    def min_p(*args, **kwargs):
+        calls.append(("min_p", args, kwargs))
+        return "min_p_ids"
+
+    def chain(*args, **kwargs):
+        calls.append(("chain", args, kwargs))
+        return "chain_out"
+
+    def merge_state(*args, **kwargs):
+        calls.append(("merge_state", args, kwargs))
+        return "merged_pair"
+
+    def merge_states(*args, **kwargs):
+        calls.append(("merge_states", args, kwargs))
+        return "merged_many"
+
+    sampling.min_p_sampling_from_probs = min_p
+    sampling.chain_speculative_sampling = chain
+    cascade.merge_state = merge_state
+    cascade.merge_states = merge_states
+    flashinfer.sampling = sampling
+    flashinfer.cascade = cascade
+    install_module("flashinfer", flashinfer)
+    install_module("flashinfer.sampling", sampling)
+    install_module("flashinfer.cascade", cascade)
+
+    probs = torch.ones(2, 4)
+    draft = torch.ones(2, 3, 4)
+    ids = torch.zeros(2, 3, dtype=torch.int32)
+    assert _registry._min_p_sampling_flashinfer(probs, 0.05) == "min_p_ids"
+    assert calls[-1][0] == "min_p"
+    assert calls[-1][1][:2] == (probs, 0.05)
+    assert _registry._chain_speculative_sampling_flashinfer(
+        draft, ids, draft) == "chain_out"
+    assert calls[-1][0] == "chain"
+    assert calls[-1][1][:3] == (draft, ids, draft)
+    assert _registry._attention_state_merge_flashinfer(probs, probs) == \
+        "merged_many"
+    assert calls[-1][0] == "merge_states"
+    assert _registry._attention_state_merge_flashinfer(
+        probs, probs, probs, probs) == "merged_pair"
+    assert calls[-1][0] == "merge_state"
+
+    # xgrammar in-place bitmask apply.
+    xgrammar = types.ModuleType("xgrammar")
+
+    def apply_mask(*args, **kwargs):
+        calls.append(("bitmask", args, kwargs))
+
+    xgrammar.apply_token_bitmask_inplace = apply_mask
+    xgrammar.allocate_token_bitmask = object()
+    install_module("xgrammar", xgrammar)
+    bitmask = torch.zeros(2, 1, dtype=torch.int32)
+    logits = torch.zeros(2, 4)
+    assert _registry._apply_token_bitmask_xgrammar(logits, bitmask) is logits
+    assert calls[-1][0] == "bitmask"
+    assert calls[-1][1][:2] == (logits, bitmask)
+    assert calls[-1][2]["vocab_size"] == 4
+
+    # vLLM quantize + mRoPE modules.
+    vllm = types.ModuleType("vllm")
+    ops = types.ModuleType("vllm._custom_ops")
+
+    def scaled_fp4_quant(*args, **kwargs):
+        calls.append(("fp4_quant", args, kwargs))
+        return "fp4_out", "fp4_scale"
+
+    def mxfp8_experts_quant(*args, **kwargs):
+        calls.append(("mxfp8_quant", args, kwargs))
+
+    ops.scaled_fp4_quant = scaled_fp4_quant
+    ops.mxfp8_experts_quant = mxfp8_experts_quant
+    vllm._custom_ops = ops
+    install_module("vllm", vllm)
+    install_module("vllm._custom_ops", ops)
+
+    assert _registry._nvfp4_quantize_vllm(probs, None) == \
+        ("fp4_out", "fp4_scale")
+    assert calls[-1][0] == "fp4_quant"
+    assert calls[-1][2]["is_sf_swizzled_layout"] is True
+
+    problem_sizes = torch.ones(1, dtype=torch.int32)
+    expert_offsets = torch.zeros(1, dtype=torch.int32)
+    blockscale_offsets = torch.zeros(1, dtype=torch.int32)
+    quant_output = torch.empty_like(probs)
+    scale_factor = torch.empty(1, dtype=torch.uint8)
+    got = _registry._mxfp8_quantize_vllm(
+        probs, problem_sizes, expert_offsets, blockscale_offsets,
+        quant_output=quant_output, scale_factor=scale_factor)
+    assert got == (quant_output, scale_factor)
+    assert calls[-1][0] == "mxfp8_quant"
+    for got_arg, expected_arg in zip(
+            calls[-1][1],
+            (probs, problem_sizes, expert_offsets, blockscale_offsets,
+             quant_output, scale_factor)):
+        assert got_arg is expected_arg
+
+    model_executor = types.ModuleType("vllm.model_executor")
+    layers = types.ModuleType("vllm.model_executor.layers")
+    rotary = types.ModuleType("vllm.model_executor.layers.rotary_embedding")
+    mrope = types.ModuleType(
+        "vllm.model_executor.layers.rotary_embedding.mrope")
+
+    def triton_mrope(*args, **kwargs):
+        calls.append(("mrope", args, kwargs))
+        return "mrope_out"
+
+    mrope.triton_mrope = triton_mrope
+    rotary.mrope = mrope
+    layers.rotary_embedding = rotary
+    model_executor.layers = layers
+    vllm.model_executor = model_executor
+    install_module("vllm.model_executor", model_executor)
+    install_module("vllm.model_executor.layers", layers)
+    install_module("vllm.model_executor.layers.rotary_embedding", rotary)
+    install_module("vllm.model_executor.layers.rotary_embedding.mrope", mrope)
+    assert _registry._mrope_vllm(
+        probs, probs, probs, probs, (16, 24, 24), rotary_dim=32) == "mrope_out"
+    assert calls[-1][0] == "mrope"
+    assert calls[-1][2]["rotary_dim"] == 32
+
+    # FLA FusedRMSNormGated module.
+    fla = types.ModuleType("fla")
+    fla_modules = types.ModuleType("fla.modules")
+
+    class FusedRMSNormGated:
+        def __init__(self, hidden_size, **kwargs):
+            calls.append(("fla_init", (hidden_size,), kwargs))
+            self.weight = torch.empty(hidden_size)
+
+        def to(self, *, device=None, dtype=None):
+            calls.append(("fla_to", (device, dtype), {}))
+            return self
+
+        def __call__(self, x, gate):
+            calls.append(("fla_call", (x, gate), {}))
+            return "gated_norm_out"
+
+    fla_modules.FusedRMSNormGated = FusedRMSNormGated
+    fla.modules = fla_modules
+    install_module("fla", fla)
+    install_module("fla.modules", fla_modules)
+    weight = torch.ones(4)
+    gate = torch.zeros_like(probs)
+    assert _registry._fused_rmsnorm_gated_fla(
+        probs, weight, gate, activation="sigmoid") == "gated_norm_out"
+    assert calls[-3][0] == "fla_init"
+    assert calls[-1][0] == "fla_call"
 
 
 def test_sparse_and_bitnet_adapters_call_expected_external_apis(monkeypatch):

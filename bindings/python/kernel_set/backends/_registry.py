@@ -71,6 +71,7 @@ def _imp(modpath: str):
 from ._quant_ext import (  # noqa: E402
     _nvfp4_gemm_flashinfer, _nvfp4_gemm_vllm,
     _mxfp4_gemm_flashinfer, _mxfp4_gemm_vllm, _mxfp4_gemm_torchao,
+    _nvfp4_quantize_vllm, _nvfp4_quantize_flashinfer,
     _reshape_and_cache_fp8_vllm,
     _per_token_group_quant_fp8_vllm, _per_token_group_quant_fp8_sgl,
     _per_token_group_quant_fp8_deepgemm,
@@ -591,6 +592,16 @@ def _rope_liger(q, k, cos, sin, *, interleaved=False, **_):
             k_rot.transpose(1, 2).reshape(tokens, kvh, hd))
 
 
+def _mrope_vllm(q, k, cos, sin, mrope_section, *, positions=None,
+                mrope_interleaved=False, rotary_dim=None, **kw):
+    # vLLM Triton mRoPE for Qwen2.5/3-VL: 3-axis sections and optional partial
+    # rotary_dim. The installed vLLM function owns layout details.
+    from vllm.model_executor.layers.rotary_embedding.mrope import triton_mrope
+    return triton_mrope(
+        q, k, cos, sin, mrope_section, positions=positions,
+        mrope_interleaved=mrope_interleaved, rotary_dim=rotary_dim, **kw)
+
+
 def _rope_ks(q, k, cos, sin, *, interleaved=False, **_):
     from .. import rope
     tokens, qh, hd = q.shape
@@ -624,6 +635,20 @@ def _swiglu_vllm(gate, up, **_):
 def _swiglu_liger(gate, up, **_):
     from liger_kernel.ops.swiglu import LigerSiLUMulFunction
     return LigerSiLUMulFunction.apply(gate, up)
+
+
+def _fused_rmsnorm_gated_fla(x, weight, gate, *, eps=1e-6,
+                             activation="silu", **kw):
+    import torch
+    from fla.modules import FusedRMSNormGated
+    mod = FusedRMSNormGated(weight.shape[-1], eps=eps, activation=activation,
+                            **kw)
+    if hasattr(mod, "to"):
+        mod = mod.to(device=x.device, dtype=x.dtype)
+    if hasattr(mod, "weight"):
+        with torch.no_grad():
+            mod.weight.copy_(weight)
+    return mod(x, gate)
 
 
 def _swiglu_ks(gate, up, **_):
@@ -906,6 +931,30 @@ def _sampling_flashinfer(probs, *, top_k=None, top_p=None, **_):
     return fs.sampling_from_probs(probs)
 
 
+def _min_p_sampling_flashinfer(probs, min_p, *, indices=None,
+                               deterministic=True, generator=None, seed=None,
+                               offset=None, **_):
+    fs = _imp("flashinfer.sampling")
+    return fs.min_p_sampling_from_probs(
+        probs, min_p, indices=indices, deterministic=deterministic,
+        generator=generator, seed=seed, offset=offset)
+
+
+def _chain_speculative_sampling_flashinfer(
+        draft_probs, draft_token_ids, target_probs, *,
+        maybe_output_accepted_token_num=None,
+        maybe_output_emitted_draft_token_num=None,
+        deterministic=True, generator=None, seed=None, offset=None, **_):
+    fs = _imp("flashinfer.sampling")
+    return fs.chain_speculative_sampling(
+        draft_probs, draft_token_ids, target_probs,
+        maybe_output_accepted_token_num=maybe_output_accepted_token_num,
+        maybe_output_emitted_draft_token_num=(
+            maybe_output_emitted_draft_token_num),
+        deterministic=deterministic, generator=generator, seed=seed,
+        offset=offset)
+
+
 def _moe_gate_sgl(gating_output, *, top_k, renormalize=False,
                   moe_softcapping=0.0, correction_bias=None, **_):
     # sgl_kernel.topk_softmax(topk_weights, topk_ids, gating_output,
@@ -1016,6 +1065,41 @@ def _sampling_ks(probs, *, top_k=None, top_p=None, **_):
     sampling.sample(out_tokens, probs, num_seqs, vocab,
                     top_ks=top_ks, top_ps=top_ps)
     return out_tokens
+
+
+def _attention_state_merge_flashinfer(v, s, v_other=None, s_other=None, **_):
+    cascade = _imp("flashinfer.cascade")
+    if v_other is None:
+        return cascade.merge_states(v, s)
+    return cascade.merge_state(v, s, v_other, s_other)
+
+
+def _mxfp8_quantize_vllm(x, problem_sizes, expert_offsets,
+                         blockscale_offsets, *, quant_output=None,
+                         scale_factor=None, **_):
+    import torch
+    from vllm import _custom_ops as ops
+    if quant_output is None:
+        dtype = getattr(torch, "float8_e4m3fn", x.dtype)
+        quant_output = torch.empty_like(x, dtype=dtype)
+    if scale_factor is None:
+        nblocks = max(1, (x.numel() + 31) // 32)
+        scale_factor = torch.empty(nblocks, device=x.device, dtype=torch.uint8)
+    ops.mxfp8_experts_quant(
+        x, problem_sizes, expert_offsets, blockscale_offsets,
+        quant_output, scale_factor)
+    return quant_output, scale_factor
+
+
+def _apply_token_bitmask_xgrammar(logits, bitmask, *, indices=None,
+                                  vocab_size=None, backend="cuda", **_):
+    import xgrammar as xgr
+    if vocab_size is None:
+        vocab_size = logits.shape[-1]
+    xgr.apply_token_bitmask_inplace(
+        logits, bitmask, indices=indices, vocab_size=vocab_size,
+        backend=backend)
+    return logits
 
 
 def _copy_result_to_out(out, result):
@@ -1679,6 +1763,29 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_ks_unsupported("mxfp4 GEMM"), "",
                      "no portable fp4 kernel; needs FlashInfer/vLLM/torchao"),
     ]),
+    Op("fp4_quantize", "gemm-quant", None, [
+        Provider("vllm", 1, 100,
+                 "fp16, bf16 -> fp4 e2m1 + fp8-e4m3 block scale",
+                 "from vllm import _custom_ops as ops; ops.scaled_fp4_quant",
+                 _nvfp4_quantize_vllm,
+                 "vLLM scaled_fp4_quant activation quant (Blackwell)"),
+        Provider("flashinfer", 2, 100,
+                 "fp16, bf16 -> fp4 e2m1 + fp8/ue8m0 block scale",
+                 "from flashinfer import fp4_quantization",
+                 _nvfp4_quantize_flashinfer,
+                 "FlashInfer fp4_quantization NVFP4/MXFP4 activation quant"),
+        _ks_provider(_ks_unsupported("fp4_quantize"), "",
+                     "no portable FP4 quantizer; needs vLLM/FlashInfer"),
+    ]),
+    Op("mxfp8_quantize", "gemm-quant", None, [
+        Provider("vllm", 1, 100,
+                 "fp16, bf16 -> mxfp8/fp8 e4m3 with E8M0 block scale",
+                 "from vllm import _custom_ops as ops; ops.mxfp8_experts_quant",
+                 _mxfp8_quantize_vllm,
+                 "vLLM MXFP8 expert quantizer (Blackwell microscaling)"),
+        _ks_provider(_ks_unsupported("mxfp8_quantize"), "",
+                     "no portable MXFP8 quantizer; needs vLLM/torchao"),
+    ]),
     # FP8 attention compute (fp8 QK^T/PV, fp32 softmax) — distinct from fp8 KV
     # store. SageAttention / FlashAttention-3 fp8. ks attention is fp16/bf16 only.
     Op("fp8_attention", "attention", None, [
@@ -1710,6 +1817,15 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_ks_unsupported("fp8 KV-cache quant"), "",
                      "ks_reshape_and_cache is dtype-preserving; needs vLLM"),
     ]),
+    Op("attention_state_merge", "attention", None, [
+        Provider("flashinfer", 1, 80, "fp16, bf16, fp8",
+                 "import flashinfer.cascade; flashinfer.cascade.merge_state; "
+                 "flashinfer.cascade.merge_states",
+                 _attention_state_merge_flashinfer,
+                 "FlashInfer cascade merge_state/merge_states (online softmax)"),
+        _ks_provider(_ks_unsupported("attention_state_merge"), "",
+                     "no portable attention-state merge; needs FlashInfer"),
+    ]),
     Op("rmsnorm", "norm-act-rope", "ks_rmsnorm", [
         Provider("quack", 0, 90, "fp16, bf16, fp32",
                  "from quack import rmsnorm",
@@ -1738,6 +1854,14 @@ _OPS_RAW: List[Op] = [
                  _far_vllm, "vLLM fused add-RMSNorm"),
         _ks_provider(_far_ks, "ks_fused_add_rmsnorm"),
     ]),
+    Op("fused_rmsnorm_gated", "norm-act-rope", None, [
+        Provider("flash-linear-attention", 1, 80, "fp16, bf16",
+                 "from fla.modules import FusedRMSNormGated",
+                 _fused_rmsnorm_gated_fla,
+                 "FLA fused RMSNorm plus SiLU/sigmoid gate"),
+        _ks_provider(_ks_unsupported("fused_rmsnorm_gated"), "",
+                     "no portable fused gated RMSNorm; needs FLA"),
+    ]),
     Op("gemma_rmsnorm", "norm-act-rope", "ks_gemma_rmsnorm", [
         Provider("flashinfer", 1, 75, "fp16, bf16",
                  "from flashinfer.norm import gemma_rmsnorm",
@@ -1760,6 +1884,15 @@ _OPS_RAW: List[Op] = [
                  "from liger_kernel.ops.rope import LigerRopeFunction",
                  _rope_liger, "Liger Triton RoPE"),
         _ks_provider(_rope_ks, "ks_rope"),
+    ]),
+    Op("mrope", "norm-act-rope", None, [
+        Provider("vllm", 1, 70, "fp16, bf16",
+                 "from vllm.model_executor.layers.rotary_embedding.mrope "
+                 "import triton_mrope",
+                 _mrope_vllm,
+                 "vLLM Triton multimodal/3D RoPE with mrope_section"),
+        _ks_provider(_ks_unsupported("mrope"), "",
+                     "no portable multimodal RoPE; needs vLLM"),
     ]),
     Op("swiglu", "norm-act-rope", "ks_silu_and_mul", [
         Provider("flashinfer", 1, 75, "fp16, bf16",
@@ -1847,6 +1980,34 @@ _OPS_RAW: List[Op] = [
                       note="SGLang renorm + categorical sampling"),
         _ks_provider(_sampling_ks, "ks_sample",
                      "fused temp/top-k/top-p sampler"),
+    ]),
+    Op("min_p_sampling", "sampling-logitproc", None, [
+        Provider("flashinfer", 1, 75, "fp32, fp16, bf16 probs",
+                 "import flashinfer.sampling; "
+                 "flashinfer.sampling.min_p_sampling_from_probs",
+                 _min_p_sampling_flashinfer,
+                 "FlashInfer sorting-free min-p filter + sample"),
+        _ks_provider(_ks_unsupported("min_p_sampling"), "",
+                     "ks_sample has no min-p path; needs FlashInfer"),
+    ]),
+    Op("chain_speculative_sampling", "sampling-logitproc", None, [
+        Provider("flashinfer", 1, 75, "fp32, fp16, bf16 probs; int32 token ids",
+                 "import flashinfer.sampling; "
+                 "flashinfer.sampling.chain_speculative_sampling",
+                 _chain_speculative_sampling_flashinfer,
+                 "FlashInfer draft/target chain speculative accept-reject"),
+        _ks_provider(_ks_unsupported("chain_speculative_sampling"), "",
+                     "no portable speculative verifier; needs FlashInfer"),
+    ]),
+    Op("apply_token_bitmask", "sampling-logitproc", None, [
+        Provider("xgrammar", 1, 70,
+                 "fp32, fp16, bf16 logits; int32 packed bitmask",
+                 "import xgrammar; xgrammar.apply_token_bitmask_inplace; "
+                 "xgrammar.allocate_token_bitmask",
+                 _apply_token_bitmask_xgrammar,
+                 "xgrammar CUDA/Triton vocab bitmask apply for guided decode"),
+        _ks_provider(_ks_unsupported("apply_token_bitmask"), "",
+                     "no portable token-bitmask kernel; needs xgrammar"),
     ]),
     Op("selective_scan", "ssm", "ks_selective_scan", [
         Provider("mamba-ssm", 1, 80, "fp16, bf16, fp32",

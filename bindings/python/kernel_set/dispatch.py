@@ -76,12 +76,17 @@ __all__ = [
     "per_token_group_quant",
     "nvfp4_gemm",
     "mxfp4_gemm",
+    "fp4_quantize",
+    "mxfp8_quantize",
     "fp8_attention",
     "fp8_kv_cache",
+    "attention_state_merge",
     "rms_norm",
     "fused_add_rmsnorm",
+    "fused_rmsnorm_gated",
     "gemma_rmsnorm",
     "rope",
+    "mrope",
     "swiglu",
     "cross_entropy",
     "fused_linear_ce",
@@ -89,6 +94,9 @@ __all__ = [
     "moe_gate",
     "moe_group_gate",
     "sampling",
+    "min_p_sampling",
+    "chain_speculative_sampling",
+    "apply_token_bitmask",
     "selective_scan",
     "causal_conv1d",
     "gated_delta_rule",
@@ -325,6 +333,22 @@ def mxfp4_gemm(a4, b4, a_scale, b_scale, *, alpha=None, out_dtype=None, **kw):
                      dict(alpha=alpha, out_dtype=out_dtype, **kw))
 
 
+def fp4_quantize(x, global_scale=None, *, is_sf_swizzled_layout=True, **kw):
+    """Standalone NVFP4/MXFP4 activation quantize. Returns packed FP4 data plus
+    the backend-specific block-scale tensor."""
+    return _dispatch(
+        "fp4_quantize", (x, global_scale),
+        dict(is_sf_swizzled_layout=is_sf_swizzled_layout, **kw))
+
+
+def mxfp8_quantize(x, problem_sizes, expert_offsets, blockscale_offsets, *,
+                   quant_output=None, scale_factor=None, **kw):
+    """Standalone MXFP8 expert quantize with E8M0 block scales."""
+    return _dispatch(
+        "mxfp8_quantize", (x, problem_sizes, expert_offsets, blockscale_offsets),
+        dict(quant_output=quant_output, scale_factor=scale_factor, **kw))
+
+
 def fp8_attention(q, k, v, *, causal=True, softmax_scale=None, **kw):
     """FP8 attention compute (fp8 QK^T/PV, fp32 softmax). Routes to
     SageAttention / FlashAttention-3 fp8 (no portable ks fp8 attention)."""
@@ -341,6 +365,13 @@ def fp8_kv_cache(key, value, key_cache, value_cache, slot_mapping, *,
                      dict(k_scale=k_scale, v_scale=v_scale, **kw))
 
 
+def attention_state_merge(v, s, v_other=None, s_other=None, **kw):
+    """Merge one or more partial attention states ``(out, lse)`` via the online
+    softmax reduction used by cascade/context-parallel attention."""
+    return _dispatch(
+        "attention_state_merge", (v, s, v_other, s_other), kw)
+
+
 def rms_norm(x, w, *, eps=1e-6, **kw):
     """RMSNorm. x: ``(rows, hidden)``; w: ``(hidden,)``."""
     return _dispatch("rmsnorm", (x, w), dict(eps=eps, **kw))
@@ -349,6 +380,13 @@ def rms_norm(x, w, *, eps=1e-6, **kw):
 def fused_add_rmsnorm(x, residual, w, *, eps=1e-6, **kw):
     """Fused add-RMSNorm. Returns ``(normed, new_residual)``."""
     return _dispatch("fused_add_rmsnorm", (x, residual, w), dict(eps=eps, **kw))
+
+
+def fused_rmsnorm_gated(x, weight, gate, *, eps=1e-6, activation="silu", **kw):
+    """Fused RMSNorm followed by an activation gate over a separate gate tensor."""
+    return _dispatch(
+        "fused_rmsnorm_gated", (x, weight, gate),
+        dict(eps=eps, activation=activation, **kw))
 
 
 def gemma_rmsnorm(x, w, *, eps=1e-6, **kw):
@@ -360,6 +398,15 @@ def rope(q, k, cos, sin, *, interleaved=False, **kw):
     """Rotary embedding. Returns ``(q_rot, k_rot)``. NeoX / rotate_half."""
     return _dispatch("rope", (q, k, cos, sin),
                      dict(interleaved=interleaved, **kw))
+
+
+def mrope(q, k, cos, sin, mrope_section, *, positions=None,
+          mrope_interleaved=False, rotary_dim=None, **kw):
+    """Multimodal/3D RoPE with ``mrope_section`` and optional partial rotary dim."""
+    return _dispatch(
+        "mrope", (q, k, cos, sin, mrope_section),
+        dict(positions=positions, mrope_interleaved=mrope_interleaved,
+             rotary_dim=rotary_dim, **kw))
 
 
 def swiglu(gate, up, **kw):
@@ -411,6 +458,30 @@ def sampling(probs, *, top_k=None, top_p=None, **kw):
     renorm-by-threshold sampling or the kernel-set fused sampler."""
     return _dispatch("sampling", (probs,),
                      dict(top_k=top_k, top_p=top_p, **kw))
+
+
+def min_p_sampling(probs, min_p, *, indices=None, deterministic=True, **kw):
+    """Min-p sampling from probabilities. Returns sampled token ids."""
+    return _dispatch(
+        "min_p_sampling", (probs, min_p),
+        dict(indices=indices, deterministic=deterministic, **kw))
+
+
+def chain_speculative_sampling(draft_probs, draft_token_ids, target_probs, *,
+                               deterministic=True, **kw):
+    """Linear speculative-decoding accept/reject over draft and target probs."""
+    return _dispatch(
+        "chain_speculative_sampling",
+        (draft_probs, draft_token_ids, target_probs),
+        dict(deterministic=deterministic, **kw))
+
+
+def apply_token_bitmask(logits, bitmask, *, indices=None, vocab_size=None,
+                        backend="cuda", **kw):
+    """Apply a packed grammar/JSON token bitmask to logits in-place."""
+    return _dispatch(
+        "apply_token_bitmask", (logits, bitmask),
+        dict(indices=indices, vocab_size=vocab_size, backend=backend, **kw))
 
 
 def selective_scan(out, x, dt, A, B, C, D=None, z=None, dt_bias=None, *,

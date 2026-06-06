@@ -683,6 +683,27 @@
       ]
     },
     {
+      "op": "attention_state_merge",
+      "domain": "attention",
+      "desc": "Merge two or more partial attention states (out, log-sum-exp) by the online-softmax log-sum-exp reduction used by cascade, chunked prefill, and context-parallel attention.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flashinfer-python",
+          "repo": "https://github.com/flashinfer-ai/flashinfer",
+          "rank": 1,
+          "python_call": "flashinfer.cascade.merge_state(v_a, s_a, v_b, s_b) -> (v, s); batched multi-state form: flashinfer.cascade.merge_states(v, s) where v/s carry a num_states dimension.",
+          "install": "pip install flashinfer-python",
+          "import_check": "import flashinfer.cascade; flashinfer.cascade.merge_state; flashinfer.cascade.merge_states",
+          "gpu_arch": "sm80/sm90/sm100",
+          "dtypes": "fp16, bf16, fp8",
+          "perf_note": "Tiny but required fused state reducer for shared-prefix cascade, chunked prefill, and ring/context-parallel attention.",
+          "source_url": "https://docs.flashinfer.ai/api/cascade.html",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
       "op": "tree_speculative_attention",
       "domain": "attention",
       "desc": "Tree / cascade attention for speculative decoding: verify a token tree (custom attention mask over draft branches) in one batched attention call.",
@@ -2061,6 +2082,27 @@
       ]
     },
     {
+      "op": "mxfp8_quantize",
+      "domain": "gemm-quant",
+      "desc": "Quantize fp16/bf16 activations or expert inputs to OCP MXFP8 with 1x32 blocks and E8M0 power-of-two block scales.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "vllm",
+          "repo": "https://github.com/vllm-project/vllm",
+          "rank": 1,
+          "python_call": "from vllm import _custom_ops as ops; ops.mxfp8_experts_quant(input, problem_sizes, expert_offsets, blockscale_offsets, quant_output, scale_factor) -> None. Adapter returns (quant_output, scale_factor).",
+          "install": "pip install vllm",
+          "import_check": "from vllm import _custom_ops as ops; ops.mxfp8_experts_quant",
+          "gpu_arch": "sm100 (Blackwell)",
+          "dtypes": "fp16/bf16 -> mxfp8/fp8 e4m3 + E8M0 block scale",
+          "perf_note": "Microscaling FP8 quantization path for MX-format MoE/expert kernels; Blackwell-focused provider-only Wave-1 wiring.",
+          "source_url": "https://github.com/vllm-project/vllm/blob/main/vllm/_custom_ops.py",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
       "op": "nf4_fp4_blockwise_quant_linear",
       "domain": "gemm-quant",
       "desc": "4-bit weight-only quantization (NF4 NormalFloat / FP4) with blockwise absmax scaling + double quantization; QLoRA. Weights stored 4-bit, GEMV dequant-on-the-fly, compute in bf16/fp16.",
@@ -2219,6 +2261,27 @@
           "perf_note": "Triton fused add+rmsnorm with training backward for both x and residual grads.",
           "source_url": "https://github.com/linkedin/Liger-Kernel",
           "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "fused_rmsnorm_gated",
+      "domain": "norm-act-rope",
+      "desc": "Fused output norm+gate for linear-attention blocks: out = rmsnorm(x, weight) * act(gate), with silu/sigmoid gate variants.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flash-linear-attention",
+          "repo": "https://github.com/fla-org/flash-linear-attention",
+          "rank": 1,
+          "python_call": "from fla.modules import FusedRMSNormGated; FusedRMSNormGated(hidden_size, eps=1e-6, activation='silu')(x, gate) -> out. Functional fused_rmsnorm_gated variants may be present by FLA version.",
+          "install": "pip install flash-linear-attention",
+          "import_check": "from fla.modules import FusedRMSNormGated",
+          "gpu_arch": "sm80+ (Triton/CUDA)",
+          "dtypes": "fp16/bf16",
+          "perf_note": "Fuses the per-head RMS reduction, weight scale, and GDN/KDA gate product; avoids the two-pass rmsnorm + activation/mul composition.",
+          "source_url": "https://github.com/fla-org/flash-linear-attention",
+          "confidence": "high"
         }
       ]
     },
@@ -2704,6 +2767,27 @@
           "dtypes": "fp16/bf16/fp32",
           "perf_note": "Training-grade fused RoPE (nvte_fused_rope_forward/backward); context-parallel aware (cp_size/cp_rank), THD/SBHD/BSHD formats, interleaved flag.",
           "source_url": "https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/attention/rope.py",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
+      "op": "mrope",
+      "domain": "norm-act-rope",
+      "desc": "Multimodal/3D RoPE with a 3-axis position tensor, mrope_section frequency partitioning, optional interleaved THTHWH layout, and partial rotary_dim.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "vllm",
+          "repo": "https://github.com/vllm-project/vllm",
+          "rank": 1,
+          "python_call": "from vllm.model_executor.layers.rotary_embedding.mrope import triton_mrope; triton_mrope(q, k, cos, sin, mrope_section, positions=positions, mrope_interleaved=False, rotary_dim=None) -> (q_rot, k_rot).",
+          "install": "pip install vllm",
+          "import_check": "from vllm.model_executor.layers.rotary_embedding.mrope import triton_mrope",
+          "gpu_arch": "sm70+ (Triton/CUDA)",
+          "dtypes": "fp16/bf16",
+          "perf_note": "Production Qwen-VL style mRoPE: different frequency bands gather temporal/height/width positions and can use interleaved multimodal layout.",
+          "source_url": "https://github.com/vllm-project/vllm",
           "confidence": "high"
         }
       ]
@@ -3598,6 +3682,27 @@
       ]
     },
     {
+      "op": "min_p_sampling",
+      "domain": "sampling-logitproc",
+      "desc": "Min-p truncated sampling from probabilities: keep p >= min_p * row_max_prob, renormalize, and sample one token id per request.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flashinfer-python",
+          "repo": "https://github.com/flashinfer-ai/flashinfer",
+          "rank": 1,
+          "python_call": "flashinfer.sampling.min_p_sampling_from_probs(probs, min_p, indices=None, deterministic=True, generator=None, seed=None, offset=None) -> sampled_token_ids[batch]",
+          "install": "pip install flashinfer-python",
+          "import_check": "import flashinfer.sampling; flashinfer.sampling.min_p_sampling_from_probs",
+          "gpu_arch": "sm75+ (Ampere/Ada/Hopper/Blackwell)",
+          "dtypes": "fp32/fp16/bf16 probs",
+          "perf_note": "Sorting-free fused threshold+sample path for modern min-p decoding presets; distinct from top-k/top-p.",
+          "source_url": "https://docs.flashinfer.ai/generated/flashinfer.sampling.min_p_sampling_from_probs.html",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
       "op": "typical_sampling",
       "domain": "sampling-logitproc",
       "desc": "Locally-typical sampling (Meister et al.): keep tokens whose surprisal is closest to the conditional entropy; mask atypical tokens.",
@@ -3747,6 +3852,27 @@
       ]
     },
     {
+      "op": "apply_token_bitmask",
+      "domain": "sampling-logitproc",
+      "desc": "Apply a packed grammar/JSON token bitmask to logits in-place, setting disallowed vocabulary entries to -inf.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "xgrammar",
+          "repo": "https://github.com/mlc-ai/xgrammar",
+          "rank": 1,
+          "python_call": "import xgrammar as xgr; xgr.apply_token_bitmask_inplace(logits, bitmask, indices=None, vocab_size=V, backend='cuda') -> None. bitmask is packed int32 ceil(vocab/32) words per constrained row.",
+          "install": "pip install xgrammar",
+          "import_check": "import xgrammar; xgrammar.apply_token_bitmask_inplace; xgrammar.allocate_token_bitmask",
+          "gpu_arch": "CUDA sm70+ (cuda/triton backends); cpu/torch_native fallback",
+          "dtypes": "fp32/fp16/bf16 logits; int32 packed bitmask",
+          "perf_note": "Dedicated bit-unpack vocab mask apply path used by vLLM/SGLang structured-output stacks.",
+          "source_url": "https://xgrammar.mlc.ai/docs/api/python/bitmask_ops.html",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
       "op": "categorical_sample_from_probs",
       "domain": "sampling-logitproc",
       "desc": "Draw one token per row from a categorical distribution (probs already filtered/renormalized) using reproducible counter-based RNG (Gumbel/inverse-CDF).",
@@ -3884,6 +4010,27 @@
           "perf_note": "Production rejection sampler with greedy and stochastic verify paths; Triton kernel fallback when FlashInfer absent. Integrated with EAGLE/ngram/medusa proposers.",
           "source_url": "https://github.com/vllm-project/vllm/tree/main/vllm/v1/spec_decode",
           "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "chain_speculative_sampling",
+      "domain": "sampling-logitproc",
+      "desc": "Linear speculative-decoding verification: accept/reject a chain of draft tokens against target probabilities and sample the residual correction token.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flashinfer-python",
+          "repo": "https://github.com/flashinfer-ai/flashinfer",
+          "rank": 1,
+          "python_call": "flashinfer.sampling.chain_speculative_sampling(draft_probs, draft_token_ids, target_probs, maybe_output_accepted_token_num=None, maybe_output_emitted_draft_token_num=None, deterministic=True, generator=None, seed=None, offset=None) -> (output_token_ids, accepted_num, emitted_num)",
+          "install": "pip install flashinfer-python",
+          "import_check": "import flashinfer.sampling; flashinfer.sampling.chain_speculative_sampling",
+          "gpu_arch": "sm75+ (Ampere/Ada/Hopper/Blackwell)",
+          "dtypes": "fp32/fp16/bf16 probs; int32 token ids",
+          "perf_note": "Provider-only Wave-1 wiring for MTP/EAGLE chain verification; the probabilistic residual resample is not covered by ks_sample.",
+          "source_url": "https://docs.flashinfer.ai/generated/flashinfer.sampling.chain_speculative_sampling.html",
+          "confidence": "high"
         }
       ]
     },

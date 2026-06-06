@@ -439,6 +439,28 @@ attention:
   benchable: true
   confidence: high
   notes: Shared-prefix cascade massively cuts KV reads for many-request common prompts (system prompts, few-shot); merge_state via online softmax.
+- name: flashinfer-python — attention_state_merge
+  lib: flashinfer-python
+  pip_install: pip install flashinfer-python
+  build_from_source: null
+  import_check: import flashinfer.cascade; flashinfer.cascade.merge_state; flashinfer.cascade.merge_states
+  python_call: 'flashinfer.cascade.merge_state(v_a, s_a, v_b, s_b) -> (v, s); batched multi-state form: flashinfer.cascade.merge_states(v, s) where v/s carry a num_states dimension.'
+  maps_to: []
+  ks_op: attention_state_merge
+  bench_category: attention
+  gpu_arch_required:
+  - sm80
+  - sm90
+  - sm100
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  - fp8_e4m3
+  benchable: true
+  confidence: high
+  notes: Tiny but required fused state reducer for shared-prefix cascade, chunked prefill, and ring/context-parallel attention.
 - name: flashinfer-python — tree_speculative_attention
   lib: flashinfer-python
   pip_install: pip install flashinfer-python
@@ -1389,6 +1411,27 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Fused NVFP4 quant feeding cutlass_scaled_fp4_mm; swizzled scale-factor layout for tensor-core consumption.
+- name: vllm — mxfp8_quantize
+  lib: vllm
+  pip_install: pip install vllm
+  build_from_source: null
+  import_check: from vllm import _custom_ops as ops; ops.mxfp8_experts_quant
+  python_call: from vllm import _custom_ops as ops; ops.mxfp8_experts_quant(input, problem_sizes, expert_offsets, blockscale_offsets, quant_output, scale_factor) -> None. Adapter returns (quant_output, scale_factor).
+  maps_to: []
+  ks_op: mxfp8_quantize
+  bench_category: quant
+  gpu_arch_required:
+  - sm100
+  blackwell_only: true
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  - fp8_e4m3
+  - mxfp8
+  benchable: true
+  confidence: medium
+  notes: Microscaling FP8 quantization path for MX-format MoE/expert kernels; Blackwell-focused provider-only Wave-1 wiring.
 - name: bitsandbytes — nf4_fp4_blockwise_quant_linear
   lib: bitsandbytes
   pip_install: pip install bitsandbytes
@@ -1494,6 +1537,29 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Single-kernel residual+norm; eliminates an extra HBM round-trip vs separate add+norm; quant fused variant available.
+- name: flash-linear-attention — fused_rmsnorm_gated
+  lib: flash-linear-attention
+  pip_install: pip install flash-linear-attention
+  build_from_source: null
+  import_check: from fla.modules import FusedRMSNormGated
+  python_call: from fla.modules import FusedRMSNormGated; FusedRMSNormGated(hidden_size, eps=1e-6, activation='silu')(x, gate) -> out. Functional fused_rmsnorm_gated variants may be present by FLA version.
+  maps_to: []
+  ks_op: fused_rmsnorm_gated
+  bench_category: rmsnorm
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Fuses the per-head RMS reduction, weight scale, and GDN/KDA gate product; avoids the two-pass rmsnorm + activation/mul composition.
 - name: flashinfer-python — gemma_rmsnorm
   lib: flashinfer-python
   pip_install: pip install flashinfer-python
@@ -1800,6 +1866,31 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Computes cos/sin on the fly or from cache; supports partial rotary, pos_ids (paged), neox/gptj; the de-facto serving RoPE. Inplace variants avoid alloc.
+- name: vllm — mrope
+  lib: vllm
+  pip_install: pip install vllm
+  build_from_source: null
+  import_check: from vllm.model_executor.layers.rotary_embedding.mrope import triton_mrope
+  python_call: from vllm.model_executor.layers.rotary_embedding.mrope import triton_mrope; triton_mrope(q, k, cos, sin, mrope_section, positions=positions, mrope_interleaved=False, rotary_dim=None) -> (q_rot, k_rot).
+  maps_to: []
+  ks_op: mrope
+  bench_category: rope
+  gpu_arch_required:
+  - sm70
+  - sm75
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: 'Production Qwen-VL style mRoPE: different frequency bands gather temporal/height/width positions and can use interleaved multimodal layout.'
 - name: liger-kernel — rope_train_backward
   lib: liger-kernel
   pip_install: pip install liger-kernel
@@ -2132,6 +2223,31 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Single-CUDA-kernel rejection sampling fuses min-p threshold + sampling, no sort. Fastest production min-p path; multiple rejection rounds fused in one launch.
+- name: flashinfer-python — min_p_sampling
+  lib: flashinfer-python
+  pip_install: pip install flashinfer-python
+  build_from_source: null
+  import_check: import flashinfer.sampling; flashinfer.sampling.min_p_sampling_from_probs
+  python_call: flashinfer.sampling.min_p_sampling_from_probs(probs, min_p, indices=None, deterministic=True, generator=None, seed=None, offset=None) -> sampled_token_ids[batch]
+  maps_to: []
+  ks_op: min_p_sampling
+  bench_category: sampling
+  gpu_arch_required:
+  - sm75
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Sorting-free fused threshold+sample path for modern min-p decoding presets; distinct from top-k/top-p.
 - name: transformers — typical_sampling
   lib: transformers
   pip_install: pip install transformers
@@ -2232,6 +2348,32 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Default structured-output backend in vLLM and SGLang. Pre-computes context-independent token masks at compile time, validates only context-dependent tokens per step; dedicated CUDA bitmask-apply kernel. Fastest end-to-end for JSON-schema/EBNF.
+- name: xgrammar — apply_token_bitmask
+  lib: xgrammar
+  pip_install: pip install xgrammar
+  build_from_source: null
+  import_check: import xgrammar; xgrammar.apply_token_bitmask_inplace; xgrammar.allocate_token_bitmask
+  python_call: import xgrammar as xgr; xgr.apply_token_bitmask_inplace(logits, bitmask, indices=None, vocab_size=V, backend='cuda') -> None. bitmask is packed int32 ceil(vocab/32) words per constrained row.
+  maps_to: []
+  ks_op: apply_token_bitmask
+  bench_category: sampling
+  gpu_arch_required:
+  - sm70
+  - sm75
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Dedicated bit-unpack vocab mask apply path used by vLLM/SGLang structured-output stacks.
 - name: flashinfer-python — categorical_sample_from_probs
   lib: flashinfer-python
   pip_install: pip install flashinfer-python
@@ -2309,6 +2451,31 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Single-kernel theoretically-lossless rejection verification for linear speculative decoding (draft model). Returns acceptance/emission counts for adaptive spec length. Best-in-class for chain (non-tree) verify.
+- name: flashinfer-python — chain_speculative_sampling
+  lib: flashinfer-python
+  pip_install: pip install flashinfer-python
+  build_from_source: null
+  import_check: import flashinfer.sampling; flashinfer.sampling.chain_speculative_sampling
+  python_call: flashinfer.sampling.chain_speculative_sampling(draft_probs, draft_token_ids, target_probs, maybe_output_accepted_token_num=None, maybe_output_emitted_draft_token_num=None, deterministic=True, generator=None, seed=None, offset=None) -> (output_token_ids, accepted_num, emitted_num)
+  maps_to: []
+  ks_op: chain_speculative_sampling
+  bench_category: sampling
+  gpu_arch_required:
+  - sm75
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Provider-only Wave-1 wiring for MTP/EAGLE chain verification; the probabilistic residual resample is not covered by ks_sample.
 - name: sgl-kernel — speculative_verify_tree
   lib: sgl-kernel
   pip_install: pip install sgl-kernel

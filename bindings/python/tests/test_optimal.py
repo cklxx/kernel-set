@@ -182,6 +182,14 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "sparse_2_4_gemm" in table_ops
     assert "bitnet_gemm" in table_ops
     assert "fused_linear_ce" in table_ops
+    assert "mrope" in table_ops
+    assert "fused_rmsnorm_gated" in table_ops
+    assert "min_p_sampling" in table_ops
+    assert "chain_speculative_sampling" in table_ops
+    assert "attention_state_merge" in table_ops
+    assert "fp4_quantize" in table_ops
+    assert "mxfp8_quantize" in table_ops
+    assert "apply_token_bitmask" in table_ops
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +350,59 @@ def test_heuristic_fill_fused_linear_ce_sm80_plus():
         KERNEL_SET
 
 
+def test_heuristic_fill_wave1_provider_only_ops():
+    for sm in (80, 86, 89, 90, 100):
+        for dtype in ("fp16", "bf16"):
+            cell = O.select_optimal("mrope", sm, dtype)
+            assert cell["provider"] == "vllm"
+            assert cell["fallback_chain"] == ["vllm", KERNEL_SET]
+
+            gated = O.select_optimal("fused_rmsnorm_gated", sm, dtype)
+            assert gated["provider"] == "flash-linear-attention"
+            assert gated["fallback_chain"] == [
+                "flash-linear-attention", KERNEL_SET]
+
+        for dtype in ("fp32", "fp16", "bf16"):
+            assert O.select_optimal("min_p_sampling", sm, dtype)["provider"] == \
+                "flashinfer"
+            assert O.select_optimal(
+                "chain_speculative_sampling", sm, dtype)["provider"] == \
+                "flashinfer"
+            assert O.select_optimal(
+                "apply_token_bitmask", sm, dtype)["provider"] == "xgrammar"
+
+        for dtype in ("fp16", "bf16"):
+            assert O.select_optimal(
+                "attention_state_merge", sm, dtype)["provider"] == "flashinfer"
+
+    assert O.select_optimal("mrope", 75, "fp16")["provider"] == "vllm"
+    assert O.select_optimal("mrope", 75, "bf16")["provider"] == KERNEL_SET
+    assert O.select_optimal("fused_rmsnorm_gated", 75, "fp16")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("min_p_sampling", 75, "fp32")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal(
+        "chain_speculative_sampling", 75, "fp16")["provider"] == "flashinfer"
+    assert O.select_optimal("apply_token_bitmask", 75, "fp32")["provider"] == \
+        "xgrammar"
+    assert O.select_optimal("attention_state_merge", 89, "fp8")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal("attention_state_merge", 80, "fp8")["provider"] == \
+        KERNEL_SET
+
+    fp4 = O.select_optimal("fp4_quantize", 100, "fp4")
+    assert fp4["provider"] == "vllm"
+    assert fp4["fallback_chain"] == ["vllm", "flashinfer", KERNEL_SET]
+    assert O.select_optimal("fp4_quantize", 90, "fp4")["provider"] == \
+        KERNEL_SET
+
+    mxfp8 = O.select_optimal("mxfp8_quantize", 100, "fp8")
+    assert mxfp8["provider"] == "vllm"
+    assert mxfp8["fallback_chain"] == ["vllm", KERNEL_SET]
+    assert O.select_optimal("mxfp8_quantize", 90, "fp8")["provider"] == \
+        KERNEL_SET
+
+
 # --------------------------------------------------------------------------- #
 # Graceful fallback ladder.
 # --------------------------------------------------------------------------- #
@@ -404,7 +465,8 @@ def test_fp4_cells_only_for_dedicated_fp4_ops_on_blackwell():
     # sm100.
     fp4_cells = [c for c in O._CELLS.values() if c["dtype"] == "fp4"]
     assert fp4_cells, "NVFP4/MXFP4 are wired now -> fp4 cells must exist"
-    assert {c["logical_op"] for c in fp4_cells} == {"nvfp4_gemm", "mxfp4_gemm"}
+    assert {c["logical_op"] for c in fp4_cells} == {
+        "nvfp4_gemm", "mxfp4_gemm", "fp4_quantize"}
     assert all(c["sm"] >= 100 for c in fp4_cells), "fp4 is sm100+ only"
     # The dedicated fp4 op selects its real external winner on Blackwell.
     r = O.select_optimal("nvfp4_gemm", 100, "fp4")

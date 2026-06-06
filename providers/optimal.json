@@ -4,11 +4,198 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 326,
+    "total": 413,
     "measured": 13,
-    "heuristic": 313
+    "heuristic": 400
   },
   "cells": [
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "apply_token_bitmask",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "xgrammar",
+      "source": "heuristic",
+      "fallback_chain": [
+        "xgrammar",
+        "kernel-set"
+      ]
+    },
     {
       "logical_op": "attention_decode",
       "sm": 75,
@@ -421,6 +608,149 @@
       ]
     },
     {
+      "logical_op": "attention_state_merge",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 89,
+      "dtype": "fp8",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 90,
+      "dtype": "fp8",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "attention_state_merge",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "bitnet_gemm",
       "sm": 80,
       "dtype": "fp16",
@@ -637,6 +967,193 @@
       "source": "heuristic",
       "fallback_chain": [
         "causal-conv1d",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "chain_speculative_sampling",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
         "kernel-set"
       ]
     },
@@ -842,6 +1359,18 @@
       "fallback_chain": [
         "liger",
         "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fp4_quantize",
+      "sm": 100,
+      "dtype": "fp4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "flashinfer",
         "kernel-set"
       ]
     },
@@ -1354,6 +1883,116 @@
       "source": "heuristic",
       "fallback_chain": [
         "liger",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "fused_rmsnorm_gated",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-linear-attention",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-linear-attention",
         "kernel-set"
       ]
     },
@@ -2029,6 +2668,193 @@
       ]
     },
     {
+      "logical_op": "min_p_sampling",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "min_p_sampling",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "flashinfer",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "mla_decode",
       "sm": 75,
       "dtype": "fp16",
@@ -2533,6 +3359,127 @@
       "source": "heuristic",
       "fallback_chain": [
         "sgl-kernel",
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mrope",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
         "vllm",
         "kernel-set"
       ]
@@ -2547,6 +3494,17 @@
         "flashinfer",
         "vllm",
         "torchao",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mxfp8_quantize",
+      "sm": 100,
+      "dtype": "fp8",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
         "kernel-set"
       ]
     },

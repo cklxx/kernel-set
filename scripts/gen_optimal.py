@@ -325,6 +325,14 @@ HEURISTIC = {
         {"logical_op": "mxfp4_gemm", "sm": 100, "dtype": "fp4",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "vllm", "torchao", "kernel-set"]},
+        # Standalone FP4 activation quantizer feeding NVFP4/MXFP4 GEMMs.
+        {"logical_op": "fp4_quantize", "sm": 100, "dtype": "fp4",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "flashinfer", "kernel-set"]},
+        # MXFP8 microscaling activation/expert quantizer (1x32 E8M0 scales).
+        {"logical_op": "mxfp8_quantize", "sm": 100, "dtype": "fp8",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "kernel-set"]},
         # FP8 attention compute. SageAttention (sm80+) wins on Ada; FA3 fp8 on
         # Hopper/Blackwell (sm90+), where it joins the chain.
         {"logical_op": "fp8_attention", "sm": 89, "dtype": "fp8",
@@ -346,6 +354,16 @@ HEURISTIC = {
         {"logical_op": "fp8_kv_cache", "sm": 100, "dtype": "fp8",
          "provider": "vllm",
          "fallback_chain": ["vllm", "kernel-set"]},
+        # Merge partial attention (out,lse) states for cascade/chunk/ring
+        # attention. FlashInfer cascade merge_state is the provider path.
+        *[
+            {"logical_op": "attention_state_merge", "sm": sm, "dtype": dtype,
+             "provider": "flashinfer",
+             "fallback_chain": ["flashinfer", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in (("fp16", "bf16", "fp8") if sm >= 89
+                          else ("fp16", "bf16"))
+        ],
         {"logical_op": "attention_prefill", "sm": 75, "dtype": "fp16",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "kernel-set"]},
@@ -694,6 +712,15 @@ HEURISTIC = {
          "fallback_chain": ["flashinfer", "sgl-kernel", "vllm", "kernel-set"]},
         {"logical_op": "fused_add_rmsnorm", "sm": 100, "dtype": "fp32",
          "provider": "vllm", "fallback_chain": ["vllm", "kernel-set"]},
+        # --- fused_rmsnorm_gated: GDN/KDA output norm+gate. FLA is sm80+
+        #     and supports fp16/bf16; no portable ks kernel in Wave-1. --------
+        *[
+            {"logical_op": "fused_rmsnorm_gated", "sm": sm, "dtype": dtype,
+             "provider": "flash-linear-attention",
+             "fallback_chain": ["flash-linear-attention", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         {"logical_op": "rope", "sm": 75, "dtype": "fp16",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "vllm", "kernel-set"]},
@@ -752,6 +779,18 @@ HEURISTIC = {
                             "kernel-set"]},
         {"logical_op": "rope", "sm": 100, "dtype": "fp32",
          "provider": "vllm", "fallback_chain": ["vllm", "kernel-set"]},
+        # --- mrope: multimodal/3D RoPE. vLLM Triton triton_mrope supports
+        #     mrope_section, interleaving, and partial rotary_dim. ------------
+        {"logical_op": "mrope", "sm": 75, "dtype": "fp16",
+         "provider": "vllm",
+         "fallback_chain": ["vllm", "kernel-set"]},
+        *[
+            {"logical_op": "mrope", "sm": sm, "dtype": dtype,
+             "provider": "vllm",
+             "fallback_chain": ["vllm", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16")
+        ],
         {"logical_op": "swiglu", "sm": 75, "dtype": "fp16",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "vllm", "kernel-set"]},
@@ -992,6 +1031,30 @@ HEURISTIC = {
         {"logical_op": "sampling", "sm": 100, "dtype": "fp32",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "sgl-kernel", "kernel-set"]},
+        # --- min_p_sampling: relative-to-row-max threshold + sample. --------
+        *[
+            {"logical_op": "min_p_sampling", "sm": sm, "dtype": dtype,
+             "provider": "flashinfer",
+             "fallback_chain": ["flashinfer", "kernel-set"]}
+            for sm in (75, 80, 86, 89, 90, 100)
+            for dtype in ("fp32", "fp16", "bf16")
+        ],
+        # --- chain_speculative_sampling: MTP/EAGLE chain accept/reject. ------
+        *[
+            {"logical_op": "chain_speculative_sampling", "sm": sm,
+             "dtype": dtype, "provider": "flashinfer",
+             "fallback_chain": ["flashinfer", "kernel-set"]}
+            for sm in (75, 80, 86, 89, 90, 100)
+            for dtype in ("fp32", "fp16", "bf16")
+        ],
+        # --- apply_token_bitmask: structured-output packed vocab mask. -------
+        *[
+            {"logical_op": "apply_token_bitmask", "sm": sm, "dtype": dtype,
+             "provider": "xgrammar",
+             "fallback_chain": ["xgrammar", "kernel-set"]}
+            for sm in (75, 80, 86, 89, 90, 100)
+            for dtype in ("fp32", "fp16", "bf16")
+        ],
     ]
 }
 
