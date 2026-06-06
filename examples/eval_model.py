@@ -109,6 +109,16 @@ def _is_gemma_norm(m) -> bool:
     return "Gemma" in type(m).__name__
 
 
+def _hidden_size(cfg) -> int:
+    # Newer configs nest the text model (Gemma-4 E-series PLE, many VLMs) so
+    # cfg.hidden_size is absent — look through text_config / first sub-config.
+    for c in (cfg, getattr(cfg, "text_config", None),
+              getattr(cfg, "language_config", None)):
+        if c is not None and hasattr(c, "hidden_size"):
+            return int(c.hidden_size)
+    raise AttributeError("no hidden_size on config (nor text_config)")
+
+
 def _is_gated_mlp(m) -> bool:
     return (hasattr(m, "gate_proj") and hasattr(m, "up_proj")
             and hasattr(m, "down_proj") and hasattr(m, "act_fn"))
@@ -132,9 +142,19 @@ def patch_model(model, *, counters: dict):
     ``counters`` accumulates per-op invocation counts so we can prove the
     kernels actually ran. Returns the chosen provider name per op."""
     chosen: dict[str, str] = {}
+    # Only swap the HIDDEN-dim norms (input/post-attn/final). Per-head QK-norm
+    # (head_dim, Qwen3/3.5/3.6, Gemma3+) stays on torch — it normalizes over a
+    # different axis, and hot-swapping it with the hidden-dim path corrupts
+    # attention (this is exactly what broke Qwen3.5 / Gemma-4 end-to-end).
+    try:
+        hidden = _hidden_size(model.config)
+    except AttributeError:
+        hidden = None
 
     for m in model.modules():
         if _is_rmsnorm(m):
+            if hidden is not None and int(m.weight.numel()) != hidden:
+                continue  # skip QK-norm / non-hidden norms
             gemma = _is_gemma_norm(m)
             eps = float(getattr(m, "variance_epsilon",
                                 getattr(m, "eps", 1e-6)))
@@ -201,7 +221,10 @@ def build_plan(dtype_name: str) -> dict:
 # Per-op micro-benchmark on the model's *real* shapes.
 # --------------------------------------------------------------------------- #
 def microbench(cfg, dtype, device, *, seq=2048, iters=100) -> list:
-    hidden = cfg.hidden_size
+    # Resolve the text sub-config (Gemma-4 E-series / VLMs nest it).
+    if not hasattr(cfg, "intermediate_size"):
+        cfg = getattr(cfg, "text_config", cfg) or cfg
+    hidden = _hidden_size(cfg)
     inter = getattr(cfg, "intermediate_size", 4 * hidden)
     n_heads = getattr(cfg, "num_attention_heads", max(1, hidden // 128))
     n_kv = getattr(cfg, "num_key_value_heads", n_heads)
