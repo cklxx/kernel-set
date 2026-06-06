@@ -101,7 +101,46 @@ def rel_err(a, b) -> float:
 # same code works across Qwen2/Qwen3, Gemma/Gemma2/Gemma3, Llama, Mistral, …
 # --------------------------------------------------------------------------- #
 def _is_rmsnorm(m) -> bool:
-    return type(m).__name__.endswith("RMSNorm") and hasattr(m, "weight")
+    cn = type(m).__name__
+    if not (cn.endswith("RMSNorm") and hasattr(m, "weight")):
+        return False
+    # Skip GATED RMSNorm (rmsnorm(x)*act(gate), used in the linear-attention
+    # layers of hybrid models like Qwen3-Next / Qwen3.5): its class name still
+    # ends in "RMSNorm" but its forward takes a gate arg, so swapping it with the
+    # plain rms_norm path silently drops the gate (this was the Qwen3.5 rel-0.83).
+    if "Gate" in cn:
+        return False
+    try:
+        import inspect
+        ps = [p for p in inspect.signature(type(m).forward).parameters.values()
+              if p.name != "self"
+              and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        if len(ps) > 1:        # forward(self, x, gate, ...) => gated
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
+def _arch_caveats(model) -> list:
+    """Flag architectures the whole-model hot-swap demo can't fully reproduce
+    end-to-end (the per-op kernels are still benchmarked + correct; full routing
+    for these lives in models/registry.json)."""
+    cfg = model.config
+    tcfg = getattr(cfg, "text_config", cfg) or cfg
+    why = []
+    arch = (getattr(cfg, "architectures", None) or [""])[0]
+    if "ConditionalGeneration" in arch or hasattr(cfg, "vision_config"):
+        why.append("multimodal")
+    lt = getattr(tcfg, "layer_types", None) or []
+    if any("linear" in str(t).lower() or "mamba" in str(t).lower() for t in lt) \
+            or getattr(tcfg, "linear_num_key_heads", 0):
+        why.append("hybrid linear-attention/SSM")
+    if getattr(tcfg, "num_experts", 0):
+        why.append("MoE")
+    if getattr(tcfg, "mtp_num_hidden_layers", 0):
+        why.append("multi-token-prediction")
+    return why
 
 
 def _is_gemma_norm(m) -> bool:
@@ -354,6 +393,15 @@ def main() -> int:
         model = AutoModelForCausalLM.from_pretrained(
             args.model, torch_dtype=dtype).to(device).eval()
     cfg = model.config
+
+    caveats = _arch_caveats(model)
+    if caveats:
+        print(f"\n⚠  {args.model} is {', '.join(caveats)} — the whole-model demo "
+              "hot-swaps only the standard dense norm/MLP path, so the end-to-end\n"
+              "   greedy check may diverge (the model's gated/linear/MoE/MTP layers "
+              "are not reproduced here). The per-op kernels below are still measured\n"
+              "   on its real shapes, and full kernel routing for this model lives "
+              "in models/registry.json (e.g. gated_delta_rule / linear_attn / ssm).")
 
     def _as_ids(x):
         # transformers ≥5 may return a BatchEncoding/dict; normalize to a tensor.
