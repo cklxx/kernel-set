@@ -107,3 +107,23 @@ all **next-token top-1 correct**, all per-op faster than eager torch:
 
 (Earlier: Qwen2.5-0.5B top-1 / 45-of-64; Gemma-2-2B **64/64 bit-identical** via the
 GeGLU path.) Per-op speedups are vs eager torch; SmolLM2 is bit-identical end-to-end.
+
+## Latest 2026 models (A100/sm80, bf16, transformers 5.9) — kernels verified per-op
+
+The newest small models were tested to see how far the demo reaches. **The kernels
+are correct and fast on them** (per-op vs eager torch):
+
+| model | family | rmsnorm | swiglu | rope | rel-err | end-to-end demo |
+|---|---|---|---|---|---|---|
+| Qwen3.5-2B | Qwen3.5 (QK-norm) | **4.04×** | 1.70× | 3.01× | ≤4e-3 | ✗ logits rel 0.83 |
+| Gemma-4-E4B-it | Gemma 4 (PLE/matformer) | **5.09×** | 1.69× | 2.97× | ≤4e-3 | ✗ (nested config) |
+
+**Honest caveat:** the per-op kernels match torch (rel ≤4e-3), but `eval_model.py`'s
+*whole-model* hot-swap does **not** reproduce these models' 2026 forward end-to-end
+— Qwen3.5 adds attention-level changes beyond QK-norm, and Gemma-4 E-series uses
+Per-Layer-Embeddings / matformer nesting. The example now scopes its norm-swap to
+hidden-dim norms and resolves nested `text_config` (so Gemma-4 no longer crashes),
+but a faithful end-to-end demo of these architectures is future work. The
+bit-identical end-to-end results above stand for the Qwen2.5 / Gemma-2 / Llama /
+Phi / SmolLM architecture families. (Note: **Qwen 3.6 ships no small variant** —
+27B dense / 35B-A3B only — so it can't run on an L4/A100-class card.)
