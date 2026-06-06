@@ -17,15 +17,15 @@ installed on your machine** — FlashAttention, FlashInfer, vLLM, SGLang, DeepGE
 Marlin, … — and falls back to kernel-set's own portable kernel when nothing else
 is there. Same call, every GPU, every language.
 
-- **One C ABI, four languages.** 81 operators (attention, GEMM, norm, RoPE,
+- **One C ABI, four languages.** 83 operators (attention, GEMM, norm, RoPE,
   gated-MLP, MoE, quant, sampling, loss, optimizer, **Mamba SSM**, **linear
   attention** — gated-DeltaNet / GLA / RWKV-7) behind one `libkernel_set` —
   Python / Rust / Go / TypeScript bind the *same* library, no GPU toolchain of
   their own.
-- **Auto best-kernel selection.** **33 logical ops** route per-`(op, GPU, dtype)`
-  to the strongest of **27 backends** (FlashAttention-3, FlashInfer, FlashMLA,
+- **Auto best-kernel selection.** **50 logical ops** route per-`(op, GPU, dtype)`
+  to the strongest of **28 backends** (FlashAttention-3, FlashInfer, FlashMLA,
   DeepGEMM, Marlin/Machete, SGLang, vLLM, FLA, mamba-ssm, FBGEMM, GemLite, Quack,
-  …); kernel-set's clean-room kernels are the always-there fallback.
+  BitBLAS, …); kernel-set's clean-room kernels are the always-there fallback.
   ([how it decides](docs/OPTIMAL_SELECTION.md))
 
 ## Install
