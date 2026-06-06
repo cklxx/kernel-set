@@ -17,13 +17,16 @@ installed on your machine** — FlashAttention, FlashInfer, vLLM, SGLang, DeepGE
 Marlin, … — and falls back to kernel-set's own portable kernel when nothing else
 is there. Same call, every GPU, every language.
 
-- **One C ABI, four languages.** 78 operators (attention, GEMM, norm, RoPE,
-  gated-MLP, MoE, quant, sampling, loss, optimizer, **Mamba SSM**) behind one
-  `libkernel_set` — Python / Rust / Go / TypeScript bind the *same* library, no
-  GPU toolchain of their own.
-- **Auto best-kernel selection.** A per-`(op, GPU, dtype)` table routes each call
-  to the strongest available backend; kernel-set's clean-room kernels are the
-  always-there fallback. ([how it decides](docs/OPTIMAL_SELECTION.md))
+- **One C ABI, four languages.** 81 operators (attention, GEMM, norm, RoPE,
+  gated-MLP, MoE, quant, sampling, loss, optimizer, **Mamba SSM**, **linear
+  attention** — gated-DeltaNet / GLA / RWKV-7) behind one `libkernel_set` —
+  Python / Rust / Go / TypeScript bind the *same* library, no GPU toolchain of
+  their own.
+- **Auto best-kernel selection.** **33 logical ops** route per-`(op, GPU, dtype)`
+  to the strongest of **27 backends** (FlashAttention-3, FlashInfer, FlashMLA,
+  DeepGEMM, Marlin/Machete, SGLang, vLLM, FLA, mamba-ssm, FBGEMM, GemLite, Quack,
+  …); kernel-set's clean-room kernels are the always-there fallback.
+  ([how it decides](docs/OPTIMAL_SELECTION.md))
 
 ## Install
 
@@ -84,10 +87,10 @@ greedy tokens), top-1-correct on Qwen2.5, **3–9× faster** per op vs eager tor
 | Norm | `norm.h` | RMSNorm (+fused residual), LayerNorm, backward |
 | RoPE | `rope.h` | NeoX & interleaved, gathered, GQA, backward |
 | Activation | `activation.h` | SiLU/GeLU/ReLU, **SwiGLU/GeGLU** (+backward) |
-| Quant | `quant.h` | FP8 e4m3/e5m2 (+ per-token-group), INT8, INT4 dequant; NVFP4/MXFP4 via dispatch |
+| Quant | `quant.h` | FP8 e4m3/e5m2 (+ per-token-group), INT8, INT4 dequant; via dispatch: **W4A8, W8A16-fp8, NVFP4/MXFP4, 2:4-sparse, BitNet ternary** |
 | MoE | `moe.h` | softmax & **DeepSeek group** gating, permute, grouped GEMM |
 | Sampling | `sampling.h` | softmax, argmax, temp+top-k+top-p (Philox) |
-| SSM | `ssm.h` | **Mamba** selective-scan + causal-conv1d |
+| SSM · linear-attn | `ssm.h` · `linear_attn.h` | **Mamba** selective-scan + causal-conv1d; **gated-DeltaNet / GLA / RWKV-7** (FLA-matched recurrent fallbacks) |
 | Loss · Optimizer · Embedding · Elementwise | … | fused CE / FLCE · AdamW/SGD · lookup+bwd · add/mul/cast/… |
 
 Every entry point returns `ks_status_t`, takes device pointers + a `ks_stream_t`.
@@ -110,7 +113,7 @@ python3 models/ksctl plan --model deepseek-v3 --gpu h100 --dtype fp8   # best ke
 | [`OPTIMAL_SELECTION.md`](docs/OPTIMAL_SELECTION.md) · [`ROUTING.md`](docs/ROUTING.md) | how a kernel gets picked (table + 3-tier routing) |
 | [`QUANT_OPERATORS.md`](docs/QUANT_OPERATORS.md) | quant ops: what ships, what dispatches, the gaps |
 | [`OPERATOR_CATALOG.md`](docs/OPERATOR_CATALOG.md) · [`ATOMIC_OPERATORS.md`](docs/ATOMIC_OPERATORS.md) | 127 logical ops · 476 atomic ops (`sgl.*`/`flashinfer.*`/`vllm.*`) |
-| [`MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 157 models → kernels (DeepSeek-V4, GLM-5, Kimi-2.6, Gemma-4, Llama 4, … + Mamba/RWKV) |
+| [`MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 178 models → kernels (DeepSeek-V4, GLM-5, Kimi-2.6, Gemma-4, Llama 4, MiMo-V2.5, LongCat, Ling-2.5, … + Mamba/RWKV/DeltaNet) |
 | [`USAGE.md`](docs/USAGE.md) · [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`BENCHMARK_METHODOLOGY.md`](docs/BENCHMARK_METHODOLOGY.md) | usage · architecture · bench methodology |
 
 ## License
