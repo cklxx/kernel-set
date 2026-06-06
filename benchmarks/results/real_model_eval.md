@@ -127,3 +127,14 @@ but a faithful end-to-end demo of these architectures is future work. The
 bit-identical end-to-end results above stand for the Qwen2.5 / Gemma-2 / Llama /
 Phi / SmolLM architecture families. (Note: **Qwen 3.6 ships no small variant** —
 27B dense / 35B-A3B only — so it can't run on an L4/A100-class card.)
+
+`eval_model.py --load-4bit` (bnb NF4) was added so large checkpoints fit a small
+GPU — the norms/activations stay bf16, so the hot-swap and the baseline-vs-patched
+check are unaffected (works on any loadable model). Gemma-4 specifically still
+can't be demoed: the 12B checkpoint reports `model_type: gemma4_unified` which
+current transformers doesn't recognize, and the E-series is PLE/matformer — both
+are loader/arch limitations, not quant or kernel issues. A 4-bit **Gemma-2/Gemma-3**
+runs fine through the same path.
+
+Op-level: all kernels stay `correct=100, incorrect=0` on H20 (sm90, all 50 ops)
+after every kernel added this cycle — `benchmarks/results/h20_sm90.md`.
