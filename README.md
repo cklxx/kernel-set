@@ -17,7 +17,7 @@ installed on your machine** — FlashAttention, FlashInfer, vLLM, SGLang, DeepGE
 Marlin, … — and falls back to kernel-set's own portable kernel when nothing else
 is there. Same call, every GPU, every language.
 
-- **One C ABI, four languages.** 83 operators (attention, GEMM, norm, RoPE,
+- **One C ABI, four languages.** 84 operators (attention, GEMM, norm, RoPE,
   gated-MLP, MoE, quant, sampling, loss, optimizer, **Mamba SSM**, **linear
   attention** — gated-DeltaNet / GLA / RWKV-7) behind one `libkernel_set` —
   Python / Rust / Go / TypeScript bind the *same* library, no GPU toolchain of
