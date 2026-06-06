@@ -138,3 +138,24 @@ runs fine through the same path.
 
 Op-level: all kernels stay `correct=100, incorrect=0` on H20 (sm90, all 50 ops)
 after every kernel added this cycle — `benchmarks/results/h20_sm90.md`.
+
+### Why the latest small models diverge end-to-end (diagnosed)
+
+`Qwen3.5-2B`'s `text_config` shows it is **not a dense transformer** — it is a
+Qwen3-Next-class **hybrid**: `attn_output_gate` (gated attention), `linear_*` heads
++ `layer_types` (interleaved **linear-attention** layers), `mtp_num_hidden_layers`
+(MTP), under a multimodal `Qwen3_5ForConditionalGeneration` wrapper. The demo's
+whole-model norm/MLP forward-swap cannot reproduce that path, so the end-to-end
+greedy check diverges (logits rel ~0.83) **even though every per-op kernel matches
+torch** (rmsnorm 3.9×/1.6e-3, swiglu 1.7×, rope 3×). Skipping gated RMSNorm + the
+nested-config handling did not change it — the divergence is structural (the
+hybrid/gated/MTP forward), not a single swapped module. The example now **detects
+and flags** multimodal / hybrid-linear-attn / MoE / MTP models instead of silently
+reporting a wrong end-to-end number.
+
+**These models are adapted at the library level, not the demo:** the registry
+routes the qwen3.5 / qwen3.6 / qwen3-next families to `gated_delta_rule` /
+`linear_attn` / `causal_conv1d` kernels (`models/registry.json`) — that is the
+correct serving path. Reproducing a hybrid linear-attention model end-to-end inside
+this op-swap demo would mean re-implementing its mixer forward, which is out of
+scope for the demo (the registry + per-op verification already cover it).
