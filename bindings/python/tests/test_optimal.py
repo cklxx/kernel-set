@@ -273,9 +273,16 @@ def test_heuristic_fill_ssm_and_conv_sm80_plus():
         assert conv["source"] == "heuristic"
         assert conv["fallback_chain"] == ["causal-conv1d", KERNEL_SET]
 
+        mamba2 = O.select_optimal("mamba2_ssd_chunk_scan", sm, "fp32")
+        assert mamba2["provider"] == "mamba-ssm"
+        assert mamba2["source"] == "heuristic"
+        assert mamba2["fallback_chain"] == ["mamba-ssm", KERNEL_SET]
+
     assert O.select_optimal("selective_scan", 75, "fp16")["provider"] == \
         KERNEL_SET
     assert O.select_optimal("causal_conv1d", 75, "bf16")["provider"] == \
+        KERNEL_SET
+    assert O.select_optimal("mamba2_ssd_chunk_scan", 75, "fp16")["provider"] == \
         KERNEL_SET
 
 
@@ -292,6 +299,24 @@ def test_heuristic_fill_linear_attn_sm80_plus():
 
     for op in ("gated_delta_rule", "gated_linear_attn", "rwkv_wkv7"):
         assert O.select_optimal(op, 75, "fp16")["provider"] == KERNEL_SET
+
+
+def test_heuristic_fill_wave4_provider_only_ops():
+    for sm in (80, 86, 89, 90, 100):
+        for op, provider in (
+            ("flex_attention", "torch"),
+            ("varlen_pad", "flash-attn"),
+            ("muon", "torch"),
+        ):
+            cell = O.select_optimal(op, sm, "bf16")
+            assert cell["provider"] == provider
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == [provider, KERNEL_SET]
+
+    assert O.select_optimal("patch_embed", 75, "fp32")["provider"] == "torch"
+    assert O.select_optimal("patch_embed", 80, "bf16")["provider"] == "torch"
+    assert O.select_optimal("patch_embed", 75, "bf16")["provider"] == \
+        KERNEL_SET
 
 
 def test_heuristic_fill_w4a8_sm80_plus():
@@ -682,6 +707,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         ("rope", 90, "bf16"),         # heuristic -> flashinfer
         ("moe_grouped_gemm", 90, "fp8"),  # heuristic -> deep_gemm
         ("ssm", 80, "bf16"),          # heuristic -> mamba-ssm
+        ("mamba2_ssd_chunk_scan", 80, "bf16"),  # heuristic -> mamba-ssm
         ("conv1d", 80, "fp16"),       # heuristic -> causal-conv1d
         ("gated_delta", 80, "bf16"),  # heuristic -> flash-linear-attention
         ("linear_attn", 80, "fp16"),  # heuristic -> flash-linear-attention
@@ -750,6 +776,8 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
     spec.loader.exec_module(sel)
 
     assert sel.optimal_lookup_op("ssm", "bf16") == "selective_scan"
+    assert sel.optimal_lookup_op("mamba2_ssd_chunk_scan", "bf16") == \
+        "mamba2_ssd_chunk_scan"
     assert sel.optimal_lookup_op("conv1d", "fp16") == "causal_conv1d"
     assert sel.optimal_lookup_op("gated_delta", "bf16") == "gated_delta_rule"
     assert sel.optimal_lookup_op("linear_attn", "fp16") == "gated_linear_attn"
@@ -810,3 +838,42 @@ def test_deepseek_dsa_models_route_sparse_attention_ops():
         assert ops["dsa_indexer_logits"]["optimal_provider"] == "deep_gemm"
         assert ops["dsa_topk_select"]["optimal_provider"] == "flashinfer"
         assert ops["dsa_topk_select"]["ks_dtype"] == "KS_DTYPE_F32"
+
+
+def test_mamba2_models_route_ssd_chunk_scan():
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    mamba2_models = (
+        "granite-4.0-h-micro",
+        "granite-4.0-h-small",
+        "granite-4.0-h-tiny",
+        "nemotron-nano-12b-v2-base",
+        "nemotron-nano-9b-v2",
+        "nemotron-3-nano-30b-a3b",
+        "nemotron-3-super-120b-a12b",
+        "nemotron-3-ultra-550b-a55b",
+        "nemotron-h-56b",
+        "falcon-h1-34b",
+        "zamba2-7b",
+        "codestral-mamba-7b",
+        "falcon-h1r-7b",
+        "nemotron-3-nano-omni-30b-a3b",
+        "bamba-9b",
+        "granite-4.0-h-1b",
+        "granite-4.0-h-350m",
+        "zamba2-2.7b",
+        "apriel-h1-15b-thinker",
+    )
+    for model_id in mamba2_models:
+        plan = sel.select(model_id, "a100", "auto")
+        entry = plan["ops"]["mamba2_ssd_chunk_scan"]
+        assert entry["fn"] == "ks_selective_scan"
+        assert entry["optimal_provider"] == "mamba-ssm"
+        assert entry["optimal_source"] == "heuristic"

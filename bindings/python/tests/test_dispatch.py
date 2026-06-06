@@ -224,13 +224,15 @@ def test_attention_flash_attn_kwargs_thread_through(monkeypatch):
     calls = []
 
     def flash_attn_func(q, k, v, *, causal=True, softmax_scale=None,
-                        window_size=None, softcap=0.0, sinks=None):
+                        window_size=None, softcap=0.0, sinks=None,
+                        alibi_slopes=None):
         calls.append({
             "causal": causal,
             "softmax_scale": softmax_scale,
             "window_size": window_size,
             "softcap": softcap,
             "sinks": sinks,
+            "alibi_slopes": alibi_slopes,
         })
         return "feature_attn"
 
@@ -244,22 +246,25 @@ def test_attention_flash_attn_kwargs_thread_through(monkeypatch):
     k = torch.empty(1, 2, 1, 4)
     v = torch.empty(1, 2, 1, 4)
     sinks = torch.empty(1)
+    slopes = torch.empty(1)
     assert dispatch.attention_prefill(
         q, k, v, _dtype="bf16", window_size=(128, 0),
-        softcap=50.0, sinks=sinks) == "feature_attn"
+        softcap=50.0, sinks=sinks, alibi_slopes=slopes) == "feature_attn"
     assert calls[-1]["window_size"] == (128, 0)
     assert calls[-1]["softcap"] == 50.0
     assert calls[-1]["sinks"] is sinks
+    assert calls[-1]["alibi_slopes"] is slopes
 
     def flash_attn_with_kvcache(q, k, v, *, page_table=None,
                                 cache_seqlens=None, softmax_scale=None,
                                 causal=False, window_size=None, softcap=0.0,
-                                sinks=None):
+                                sinks=None, alibi_slopes=None):
         calls.append({
             "decode": True,
             "window_size": window_size,
             "softcap": softcap,
             "sinks": sinks,
+            "alibi_slopes": alibi_slopes,
             "page_table": page_table,
             "cache_seqlens": cache_seqlens,
         })
@@ -274,11 +279,12 @@ def test_attention_flash_attn_kwargs_thread_through(monkeypatch):
     assert _registry._attn_decode_fa3(
         qd, kc, vc, block_tables, seq_lens, block_size=8,
         max_blocks_per_seq=1, window_size=(64, 0),
-        softcap=25.0, sinks=sinks).shape == qd.shape
+        softcap=25.0, sinks=sinks, alibi_slopes=slopes).shape == qd.shape
     assert calls[-1]["decode"] is True
     assert calls[-1]["window_size"] == (64, 0)
     assert calls[-1]["softcap"] == 25.0
     assert calls[-1]["sinks"] is sinks
+    assert calls[-1]["alibi_slopes"] is slopes
 
 
 def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
@@ -293,7 +299,7 @@ def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
     def single_prefill_with_kv_cache(
             q, k, v, *, causal=True, kv_layout="NHD", sm_scale=None,
             window_left=None, logits_soft_cap=0.0, custom_mask=None,
-            packed_custom_mask=None):
+            packed_custom_mask=None, pos_encoding_mode="NONE"):
         calls.append(("prefill", {
             "causal": causal,
             "kv_layout": kv_layout,
@@ -302,6 +308,7 @@ def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
             "logits_soft_cap": logits_soft_cap,
             "custom_mask": custom_mask,
             "packed_custom_mask": packed_custom_mask,
+            "pos_encoding_mode": pos_encoding_mode,
         }))
         return q
 
@@ -337,14 +344,17 @@ def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
     k = torch.empty(1, 2, 1, 4)
     v = torch.empty(1, 2, 1, 4)
     mask = torch.ones(2, 2, dtype=torch.bool)
+    slopes = torch.empty(1)
 
     out = _registry._attn_prefill_flashinfer(
-        q, k, v, window_size=(128, 0), softcap=50.0, custom_mask=mask)
+        q, k, v, window_size=(128, 0), softcap=50.0, custom_mask=mask,
+        alibi_slopes=slopes)
     assert tuple(out.shape) == tuple(q.shape)
     assert calls[-1][0] == "prefill"
     assert calls[-1][1]["window_left"] == 128
     assert calls[-1][1]["logits_soft_cap"] == 50.0
     assert calls[-1][1]["custom_mask"] is mask
+    assert calls[-1][1]["pos_encoding_mode"] == "ALIBI"
 
     qd = torch.empty(2, 1, 4)
     kc = torch.empty(4, 1, 8, 4)
@@ -353,10 +363,12 @@ def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
     seq_lens = torch.full((2,), 8, dtype=torch.int32)
     assert _registry._attn_decode_flashinfer(
         qd, kc, vc, block_tables, seq_lens, block_size=8,
-        max_blocks_per_seq=1, window_size=(64, 0), softcap=25.0) is qd
+        max_blocks_per_seq=1, window_size=(64, 0), softcap=25.0,
+        alibi_slopes=slopes) is qd
     plan = next(c for c in reversed(calls) if c[0] == "decode_plan")
     assert plan[1]["window_left"] == 64
     assert plan[1]["logits_soft_cap"] == 25.0
+    assert plan[1]["pos_encoding_mode"] == "ALIBI"
 
 
 def test_attention_call_specific_fallback_and_ks_error(monkeypatch):
@@ -375,7 +387,7 @@ def test_attention_call_specific_fallback_and_ks_error(monkeypatch):
 
     def single_prefill_with_kv_cache(
             q, k, v, *, causal=True, kv_layout="NHD", sm_scale=None,
-            custom_mask=None):
+            custom_mask=None, pos_encoding_mode="NONE"):
         assert custom_mask is not None
         return q
 
@@ -401,6 +413,9 @@ def test_attention_call_specific_fallback_and_ks_error(monkeypatch):
     with pytest.raises(NotImplementedError, match="kernel-set attention fallback"):
         dispatch.attention_prefill(
             q, k, v, _dtype="bf16", window_size=(128, 0))
+    with pytest.raises(NotImplementedError, match="kernel-set attention fallback"):
+        dispatch.attention_prefill(
+            q, k, v, _dtype="bf16", alibi_slopes=torch.empty(1))
 
 
 def test_tf32_arch_gating():
@@ -728,6 +743,115 @@ def test_new_deferred_op_import_checks_are_specific():
     assert next(p for p in OPS["nsa_selection_attention"].providers
                 if p.name == "flash-linear-attention").import_check == \
         "import fla.ops"
+    assert next(p for p in OPS["mamba2_ssd_chunk_scan"].providers
+                if p.name == "mamba-ssm").import_check == \
+        "from mamba_ssm.ops.triton.ssd_combined import " \
+        "mamba_chunk_scan_combined_varlen"
+    assert next(p for p in OPS["patch_embed"].providers
+                if p.name == "torch").import_check == "import torch"
+    assert next(p for p in OPS["flex_attention"].providers
+                if p.name == "torch").import_check == \
+        "from torch.nn.attention.flex_attention import " \
+        "flex_attention, create_block_mask"
+    assert next(p for p in OPS["varlen_pad"].providers
+                if p.name == "flash-attn").import_check == \
+        "from flash_attn.bert_padding import unpad_input, pad_input, " \
+        "index_first_axis"
+    assert next(p for p in OPS["muon"].providers
+                if p.name == "torch").import_check == "import torch"
+
+
+def test_wave4_torch_provider_adapters(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    grad = torch.randn(2, 3, dtype=torch.float32)
+    try:
+        muon = _registry._muon_torch(grad, steps=1)
+    except RuntimeError as exc:
+        pytest.skip(f"host torch lacks bf16 matmul for Muon adapter: {exc}")
+    assert tuple(muon.shape) == tuple(grad.shape)
+    assert muon.dtype == grad.dtype
+
+    x2 = torch.randn(1, 3, 8, 8)
+    w2 = torch.randn(4, 3, 3, 3)
+    assert tuple(_registry._patch_embed_torch(x2, w2, padding=1).shape) == \
+        (1, 4, 8, 8)
+
+    x3 = torch.randn(1, 3, 2, 8, 8)
+    w3 = torch.randn(4, 3, 1, 3, 3)
+    assert tuple(_registry._patch_embed_torch(x3, w3, padding=(0, 1, 1)).shape) == \
+        (1, 4, 2, 8, 8)
+
+    flex_mod = types.ModuleType("torch.nn.attention.flex_attention")
+    calls = []
+
+    def create_block_mask(mask_mod, **kwargs):
+        calls.append(("create_block_mask", mask_mod, kwargs))
+        return "block_mask"
+
+    def flex_attention(q, k, v, **kwargs):
+        calls.append(("flex_attention", q, k, v, kwargs))
+        return "flex_out"
+
+    flex_mod.create_block_mask = create_block_mask
+    flex_mod.flex_attention = flex_attention
+    monkeypatch.setitem(sys.modules, "torch.nn.attention.flex_attention",
+                        flex_mod)
+    assert _registry._flex_attention_torch(
+        "q", "k", "v", mask_mod="mask_mod",
+        create_mask_kwargs={"B": 1}, score_mod="score_mod") == "flex_out"
+    assert calls[0] == ("create_block_mask", "mask_mod", {"B": 1})
+    assert calls[1][4]["block_mask"] == "block_mask"
+    assert calls[1][4]["score_mod"] == "score_mod"
+
+
+def test_wave4_external_module_adapters(monkeypatch):
+    from kernel_set.backends import _registry
+
+    mamba_pkg = types.ModuleType("mamba_ssm")
+    mamba_ops = types.ModuleType("mamba_ssm.ops")
+    mamba_triton = types.ModuleType("mamba_ssm.ops.triton")
+    ssd = types.ModuleType("mamba_ssm.ops.triton.ssd_combined")
+    calls = []
+
+    def mamba_chunk_scan_combined_varlen(*args, **kwargs):
+        calls.append(("mamba2", args, kwargs))
+        return "scan_out", "state"
+
+    ssd.mamba_chunk_scan_combined_varlen = mamba_chunk_scan_combined_varlen
+    monkeypatch.setitem(sys.modules, "mamba_ssm", mamba_pkg)
+    monkeypatch.setitem(sys.modules, "mamba_ssm.ops", mamba_ops)
+    monkeypatch.setitem(sys.modules, "mamba_ssm.ops.triton", mamba_triton)
+    monkeypatch.setitem(sys.modules, "mamba_ssm.ops.triton.ssd_combined", ssd)
+    assert _registry._mamba2_ssd_chunk_scan_mamba("x", chunk_size=128) == \
+        "scan_out"
+    assert calls[-1] == ("mamba2", ("x",), {"chunk_size": 128})
+
+    flash_attn = types.ModuleType("flash_attn")
+    bert_padding = types.ModuleType("flash_attn.bert_padding")
+
+    def unpad_input(x, attention_mask, **kwargs):
+        return "unpad", x, attention_mask, kwargs
+
+    def pad_input(x, indices, batch, seqlen):
+        return "pad", x, indices, batch, seqlen
+
+    def index_first_axis(x, indices):
+        return "index", x, indices
+
+    bert_padding.unpad_input = unpad_input
+    bert_padding.pad_input = pad_input
+    bert_padding.index_first_axis = index_first_axis
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+    monkeypatch.setitem(sys.modules, "flash_attn.bert_padding", bert_padding)
+
+    assert _registry._varlen_pad_flash_attn(
+        "x", attention_mask="mask", mode="unpad") == \
+        ("unpad", "x", "mask", {})
+    assert _registry._varlen_pad_flash_attn(
+        "x", "idx", mode="pad", batch=2, seqlen=4) == \
+        ("pad", "x", "idx", 2, 4)
 
 
 def test_mxfp4_providers_are_blackwell_only():
@@ -756,9 +880,11 @@ COMPUTE_BOUND_OPS = [
     "attention_prefill", "attention_decode", "mla_decode",
     "sparse_mla_attention", "dsa_indexer_logits", "dsa_topk_select",
     "nsa_selection_attention",
+    "patch_embed", "flex_attention", "varlen_pad",
     "moe", "selective_scan", "causal_conv1d",
+    "mamba2_ssd_chunk_scan",
     "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
-    "fused_linear_ce",
+    "fused_linear_ce", "muon",
 ]
 
 
@@ -798,14 +924,19 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("dsa_topk_select", {"flashinfer"}, 80, "bf16", "flashinfer"),
         ("nsa_selection_attention", {"fla"}, 80, "bf16",
          "flash-linear-attention"),
+        ("patch_embed", {"torch"}, 75, "fp32", "torch"),
+        ("flex_attention", {"torch"}, 80, "bf16", "torch"),
+        ("varlen_pad", {"flash_attn"}, 80, "bf16", "flash-attn"),
         ("moe", {"deep_gemm"}, 90, None, "deep_gemm"),
         ("moe", {"vllm"}, 80, None, "vllm"),
         ("selective_scan", {"mamba_ssm"}, 80, "bf16", "mamba-ssm"),
+        ("mamba2_ssd_chunk_scan", {"mamba_ssm"}, 80, "bf16", "mamba-ssm"),
         ("causal_conv1d", {"causal_conv1d"}, 80, "bf16", "causal-conv1d"),
         ("gated_delta_rule", {"fla"}, 80, "bf16", "flash-linear-attention"),
         ("gated_linear_attn", {"fla"}, 80, "fp16", "flash-linear-attention"),
         ("rwkv_wkv7", {"fla"}, 80, "bf16", "flash-linear-attention"),
         ("fused_linear_ce", {"liger_kernel"}, 80, "bf16", "liger"),
+        ("muon", {"torch"}, 80, "bf16", "torch"),
     ]
     for op, libs, sm, dtype, expected in cases:
         dispatch.reset_cache()
@@ -1400,6 +1531,7 @@ def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
     _mock_available(
         monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=75)
     assert dispatch.which("selective_scan", dtype="fp16") == KERNEL_SET
+    assert dispatch.which("mamba2_ssd_chunk_scan", dtype="fp16") == KERNEL_SET
     assert dispatch.which("causal_conv1d", dtype="fp16") == KERNEL_SET
 
     dispatch.reset_cache()
@@ -1407,6 +1539,8 @@ def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
         monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=80)
     assert dispatch.which("selective_scan", dtype="fp16") == "mamba-ssm"
     assert dispatch.which("selective_scan", dtype="bf16") == "mamba-ssm"
+    assert dispatch.which("mamba2_ssd_chunk_scan", dtype="fp16") == "mamba-ssm"
+    assert dispatch.which("mamba2_ssd_chunk_scan", dtype="bf16") == "mamba-ssm"
     assert dispatch.which("causal_conv1d", dtype="fp16") == "causal-conv1d"
     assert dispatch.which("causal_conv1d", dtype="bf16") == "causal-conv1d"
 
@@ -1414,6 +1548,7 @@ def test_ssm_and_conv_external_providers_are_sm80_gated(monkeypatch):
     _mock_available(
         monkeypatch, available_libs={"mamba_ssm", "causal_conv1d"}, sm=80)
     assert dispatch.which("selective_scan", dtype="fp32") == "mamba-ssm"
+    assert dispatch.which("mamba2_ssd_chunk_scan", dtype="fp32") == "mamba-ssm"
     assert dispatch.which("causal_conv1d", dtype="fp32") == "causal-conv1d"
 
 
@@ -1508,6 +1643,11 @@ def test_arch_gates_preserved_for_sm90_providers():
     assert gate("dsa_indexer_logits", "deep_gemm") == 90
     assert gate("dsa_topk_select", "flashinfer") == 80
     assert gate("nsa_selection_attention", "flash-linear-attention") == 80
+    assert gate("patch_embed", "torch") == 70
+    assert gate("flex_attention", "torch") == 80
+    assert gate("varlen_pad", "flash-attn") == 80
+    assert gate("mamba2_ssd_chunk_scan", "mamba-ssm") == 80
+    assert gate("muon", "torch") == 80
 
 
 # --------------------------------------------------------------------------- #

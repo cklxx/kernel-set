@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 444,
+    "total": 521,
     "measured": 13,
-    "heuristic": 431
+    "heuristic": 508
   },
   "cells": [
     {
@@ -1550,6 +1550,171 @@
       ]
     },
     {
+      "logical_op": "flex_attention",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "flex_attention",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "fp4_quantize",
       "sm": 100,
       "dtype": "fp4",
@@ -2855,6 +3020,171 @@
       ]
     },
     {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "mamba2_ssd_chunk_scan",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "mamba-ssm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "mamba-ssm",
+        "kernel-set"
+      ]
+    },
+    {
       "logical_op": "min_p_sampling",
       "sm": 75,
       "dtype": "fp16",
@@ -3668,6 +3998,171 @@
       "source": "heuristic",
       "fallback_chain": [
         "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "muon",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
         "kernel-set"
       ]
     },
@@ -3814,6 +4309,193 @@
       "fallback_chain": [
         "flashinfer",
         "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 75,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 75,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "patch_embed",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "torch",
+      "source": "heuristic",
+      "fallback_chain": [
+        "torch",
         "kernel-set"
       ]
     },
@@ -4901,6 +5583,171 @@
       "fallback_chain": [
         "vllm",
         "liger",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 80,
+      "dtype": "bf16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 80,
+      "dtype": "fp16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 80,
+      "dtype": "fp32",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 86,
+      "dtype": "bf16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 86,
+      "dtype": "fp16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 86,
+      "dtype": "fp32",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 89,
+      "dtype": "bf16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 89,
+      "dtype": "fp16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 89,
+      "dtype": "fp32",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 90,
+      "dtype": "bf16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 90,
+      "dtype": "fp16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 90,
+      "dtype": "fp32",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 100,
+      "dtype": "bf16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 100,
+      "dtype": "fp16",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "varlen_pad",
+      "sm": 100,
+      "dtype": "fp32",
+      "provider": "flash-attn",
+      "source": "heuristic",
+      "fallback_chain": [
+        "flash-attn",
         "kernel-set"
       ]
     },

@@ -767,6 +767,48 @@
       ]
     },
     {
+      "op": "flex_attention",
+      "domain": "attention",
+      "desc": "Programmable block-sparse attention using score_mod and block_mask callbacks for bespoke masks.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "torch",
+          "repo": "https://github.com/pytorch/pytorch",
+          "rank": 1,
+          "python_call": "from torch.nn.attention.flex_attention import flex_attention, create_block_mask; flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask).",
+          "install": "pip install torch",
+          "import_check": "from torch.nn.attention.flex_attention import flex_attention, create_block_mask",
+          "gpu_arch": "sm80+ recommended (PyTorch FlexAttention / Triton)",
+          "dtypes": "fp16, bf16, fp32",
+          "perf_note": "PyTorch FlexAttention is the tractable provider for programmable block-sparse or score-modified attention.",
+          "source_url": "https://pytorch.org/blog/flexattention/",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "varlen_pad",
+      "domain": "attention",
+      "desc": "Sequence padding/unpadding and first-axis gather helpers for FlashAttention varlen inputs.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "flash-attn",
+          "repo": "https://github.com/Dao-AILab/flash-attention",
+          "rank": 1,
+          "python_call": "from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis; unpad_input(x, attention_mask) / pad_input(x_unpad, indices, batch, seqlen).",
+          "install": "pip install flash-attn",
+          "import_check": "from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis",
+          "gpu_arch": "sm80+ recommended with FlashAttention installs",
+          "dtypes": "fp16, bf16, fp32",
+          "perf_note": "Feeds ks_flash_attn_varlen and FlashAttention varlen kernels; provider-only in this wave.",
+          "source_url": "https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/bert_padding.py",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
       "op": "attention_state_merge",
       "domain": "attention",
       "desc": "Merge two or more partial attention states (out, log-sum-exp) by the online-softmax log-sum-exp reduction used by cascade, chunked prefill, and context-parallel attention.",
@@ -886,12 +928,12 @@
           "lib": "mamba-ssm",
           "repo": "https://github.com/state-spaces/mamba",
           "rank": 1,
-          "python_call": "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined; y, final_state = mamba_chunk_scan_combined(x, dt, A, B, C, chunk_size=256, D=None, z=None, dt_bias=None, initial_states=None, seq_idx=None, cu_seqlens=None, dt_softplus=False, dt_limit=(0.0,float('inf')), return_final_states=True). Shapes: x [B,L,nheads,headdim], dt [B,L,nheads], A [nheads], B/C [B,L,ngroups,dstate], D [nheads] or [nheads,headdim].",
+          "python_call": "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined_varlen; y, final_state = mamba_chunk_scan_combined_varlen(x, dt, A, B, C, cu_seqlens=cu_seqlens, chunk_size=256, D=None, z=None, dt_bias=None, initial_states=None, seq_idx=None, dt_softplus=False, return_final_states=True). Varlen layout follows mamba-ssm SSD combined scan; returns output plus optional final state.",
           "install": "pip install mamba-ssm --no-build-isolation  (or: pip install mamba-ssm[causal-conv1d])",
-          "import_check": "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined",
-          "gpu_arch": "sm70+ (V100/A100/H100); Triton path. CUDA selective-scan extension targets sm70+; best on sm80+/sm90.",
+          "import_check": "from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined_varlen",
+          "gpu_arch": "sm80+ recommended (Triton varlen SSD path)",
           "dtypes": "fp32/fp16/bf16 (inputs fp16/bf16, accumulation fp32 internally)",
-          "perf_note": "Reference Mamba-2 SSD kernel from the original authors (Tri Dao / Albert Gu). Triton chunk-scan is the de-facto fastest open SSM training kernel; pairs with causal-conv1d. v2.3.2.post1 (May 2026).",
+          "perf_note": "Reference Mamba-2 SSD varlen chunk-scan path from mamba-ssm; distinct from the recurrent Mamba-1 selective_scan fallback.",
           "source_url": "https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/triton/ssd_combined.py",
           "confidence": "high"
         },
@@ -4577,6 +4619,27 @@
       ]
     },
     {
+      "op": "muon",
+      "domain": "loss-optim-misc",
+      "desc": "Muon optimizer orthogonalized update using the Newton-Schulz5 iteration over gradient matrices.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "torch",
+          "repo": "https://github.com/pytorch/pytorch",
+          "rank": 1,
+          "python_call": "X = grad.bfloat16(); normalize; repeat Newton-Schulz5 A=X@X.T, B=b*A+c*A@A, X=a*X+B@X; return X.to(grad.dtype).",
+          "install": "pip install torch",
+          "import_check": "import torch",
+          "gpu_arch": "sm80+ recommended; matmul-bound torch/cuBLAS path",
+          "dtypes": "fp16, bf16, fp32",
+          "perf_note": "No pip CUDA optimizer kernel API is available; the adapter uses the standard matmul-bound Muon update in torch.",
+          "source_url": "https://github.com/KellerJordan/Muon",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
       "op": "muon_optimizer",
       "domain": "loss-optim-misc",
       "desc": "Muon \u2014 momentum SGD followed by Newton-Schulz orthogonalization of the 2D weight update; for hidden-layer matrices, with AdamW for 1D params/embeddings/head. ~2x compute efficiency vs AdamW at scale.",
@@ -4674,6 +4737,27 @@
           "dtypes": "fp32/bf16/fp16",
           "perf_note": "foreach=True uses torch._foreach_norm for a multi-tensor reduction; dependency-free and standard.",
           "source_url": "https://pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html",
+          "confidence": "high"
+        }
+      ]
+    },
+    {
+      "op": "patch_embed",
+      "domain": "gemm-dense",
+      "desc": "Vision-language model patchify projection via 2D image or 3D video convolution.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "torch",
+          "repo": "https://github.com/pytorch/pytorch",
+          "rank": 1,
+          "python_call": "torch.nn.functional.conv2d(x, weight, bias, stride=..., padding=..., dilation=..., groups=...) for 4D image tensors; conv3d for 5D video tensors.",
+          "install": "pip install torch",
+          "import_check": "import torch",
+          "gpu_arch": "sm70+ CUDA via cuDNN/ATen",
+          "dtypes": "fp16, bf16, fp32",
+          "perf_note": "Patch embedding is a standard convolution; cuDNN/ATen is the provider path and no portable ks kernel is exposed in this wave.",
+          "source_url": "https://pytorch.org/docs/stable/generated/torch.nn.functional.conv2d.html",
           "confidence": "high"
         }
       ]

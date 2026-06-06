@@ -528,6 +528,54 @@ attention:
   benchable: true
   confidence: high
   notes: Shared-prefix cascade massively cuts KV reads for many-request common prompts (system prompts, few-shot); merge_state via online softmax.
+- name: torch — flex_attention
+  lib: torch
+  pip_install: pip install torch
+  build_from_source: null
+  import_check: from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+  python_call: from torch.nn.attention.flex_attention import flex_attention, create_block_mask; flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask).
+  maps_to: []
+  ks_op: flex_attention
+  bench_category: attention
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: medium
+  notes: PyTorch FlexAttention is the tractable provider for programmable block-sparse or score-modified attention.
+- name: flash-attn — varlen_pad
+  lib: flash-attn
+  pip_install: pip install flash-attn
+  build_from_source: null
+  import_check: from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis
+  python_call: from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis; unpad_input(x, attention_mask) / pad_input(x_unpad, indices, batch, seqlen).
+  maps_to: []
+  ks_op: varlen_pad
+  bench_category: attention
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Feeds ks_flash_attn_varlen and FlashAttention varlen kernels; provider-only in this wave.
 - name: flashinfer-python — attention_state_merge
   lib: flashinfer-python
   pip_install: pip install flashinfer-python
@@ -623,14 +671,12 @@ attention:
   lib: mamba-ssm
   pip_install: 'pip install mamba-ssm --no-build-isolation  (or: pip install mamba-ssm[causal-conv1d])'
   build_from_source: null
-  import_check: from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-  python_call: 'from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined; y, final_state = mamba_chunk_scan_combined(x, dt, A, B, C, chunk_size=256, D=None, z=None, dt_bias=None, initial_states=None, seq_idx=None, cu_seqlens=None, dt_softplus=False, dt_limit=(0.0,float(''inf'')), return_final_states=True). Shapes: x [B,L,nheads,headdim], dt [B,L,nheads], A [nheads], B/C [B,L,ngroups,dstate], D [nheads] or [nheads,headdim].'
+  import_check: from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined_varlen
+  python_call: from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined_varlen; y, final_state = mamba_chunk_scan_combined_varlen(x, dt, A, B, C, cu_seqlens=cu_seqlens, chunk_size=256, D=None, z=None, dt_bias=None, initial_states=None, seq_idx=None, dt_softplus=False, return_final_states=True). Varlen layout follows mamba-ssm SSD combined scan; returns output plus optional final state.
   maps_to: []
   ks_op: mamba2_ssd_chunk_scan
   bench_category: ssm
   gpu_arch_required:
-  - sm70
-  - sm75
   - sm80
   - sm89
   - sm90
@@ -644,7 +690,7 @@ attention:
   - fp16
   benchable: true
   confidence: high
-  notes: Reference Mamba-2 SSD kernel from the original authors (Tri Dao / Albert Gu). Triton chunk-scan is the de-facto fastest open SSM training kernel; pairs with causal-conv1d. v2.3.2.post1 (May 2026).
+  notes: Reference Mamba-2 SSD varlen chunk-scan path from mamba-ssm; distinct from the recurrent Mamba-1 selective_scan fallback.
 - name: mamba-ssm — mamba1_selective_scan
   lib: mamba-ssm
   pip_install: pip install mamba-ssm --no-build-isolation
@@ -2614,6 +2660,32 @@ gemm_quant:
   benchable: true
   confidence: high
   notes: Sorting-free renorm via pivot threshold; single O(V) pass. SGLang re-exports these as sgl_kernel.top_k_renorm_prob/top_p_renorm_prob and uses them in EAGLE verify. Best-in-class.
+- name: torch — patch_embed
+  lib: torch
+  pip_install: pip install torch
+  build_from_source: null
+  import_check: import torch
+  python_call: torch.nn.functional.conv2d(x, weight, bias, stride=..., padding=..., dilation=..., groups=...) for 4D image tensors; conv3d for 5D video tensors.
+  maps_to: []
+  ks_op: patch_embed
+  bench_category: embedding
+  gpu_arch_required:
+  - sm70
+  - sm75
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: high
+  notes: Patch embedding is a standard convolution; cuDNN/ATen is the provider path and no portable ks kernel is exposed in this wave.
 moe_comm_training:
 - name: sgl-kernel — moe_gate_softmax_topk
   lib: sgl-kernel
@@ -3226,6 +3298,30 @@ moe_comm_training:
   benchable: true
   confidence: high
   notes: The standard production Adafactor; factored second moments => much lower optimizer memory than Adam (no full vsq tensor).
+- name: torch — muon
+  lib: torch
+  pip_install: pip install torch
+  build_from_source: null
+  import_check: import torch
+  python_call: X = grad.bfloat16(); normalize; repeat Newton-Schulz5 A=X@X.T, B=b*A+c*A@A, X=a*X+B@X; return X.to(grad.dtype).
+  maps_to: []
+  ks_op: muon
+  bench_category: optimizer
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - fp32
+  - bf16
+  - fp16
+  benchable: true
+  confidence: medium
+  notes: No pip CUDA optimizer kernel API is available; the adapter uses the standard matmul-bound Muon update in torch.
 - name: Moonlight (MoonshotAI scalable Muon) — muon_optimizer
   lib: Moonlight (MoonshotAI scalable Muon)
   pip_install: 'pip install git+https://github.com/MoonshotAI/Moonlight.git  # or copy the Muon class from examples/toy_train.py'

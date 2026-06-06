@@ -13,6 +13,7 @@
     "nsa_selection_attention",
     "conv1d",
     "ssm",
+    "mamba2_ssd_chunk_scan",
     "gated_delta",
     "linear_attn",
     "rwkv_wkv",
@@ -61,7 +62,8 @@
     "gated_delta": "gated delta-rule linear attention (gated DeltaNet / KDA)",
     "linear_attn": "gated linear attention (GLA / lightning / simple-GLA)",
     "rwkv_wkv": "RWKV-7 WKV (free DPLR generalized delta rule)",
-    "bitnet_gemm": "BitNet W1.58A8 ternary BitLinear GEMM"
+    "bitnet_gemm": "BitNet W1.58A8 ternary BitLinear GEMM",
+    "mamba2_ssd_chunk_scan": "Mamba-2 SSD varlen chunk scan"
   },
   "models": [
     {
@@ -8880,6 +8882,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -8992,6 +8998,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -9107,6 +9117,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -9214,6 +9228,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -9317,6 +9335,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -9431,6 +9453,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -9549,6 +9575,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -9663,6 +9693,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -9765,6 +9799,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -9875,6 +9913,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -10432,6 +10474,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -10716,6 +10762,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -12399,6 +12449,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -14926,6 +14980,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -16309,6 +16367,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -16637,6 +16699,10 @@
           "decode_fn": "ks_selective_scan_update",
           "dtype": "model"
         },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
+          "dtype": "model"
+        },
         "conv1d": {
           "fn": "ks_causal_conv1d",
           "dtype": "model"
@@ -16743,6 +16809,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -17476,6 +17546,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {
@@ -18453,6 +18527,10 @@
         "ssm": {
           "fn": "ks_selective_scan",
           "decode_fn": "ks_selective_scan_update",
+          "dtype": "model"
+        },
+        "mamba2_ssd_chunk_scan": {
+          "fn": "ks_selective_scan",
           "dtype": "model"
         },
         "conv1d": {

@@ -85,6 +85,9 @@ __all__ = [
     "mxfp8_quantize",
     "fp8_attention",
     "fp8_kv_cache",
+    "patch_embed",
+    "flex_attention",
+    "varlen_pad",
     "attention_state_merge",
     "rms_norm",
     "fused_add_rmsnorm",
@@ -95,6 +98,7 @@ __all__ = [
     "swiglu",
     "cross_entropy",
     "fused_linear_ce",
+    "muon",
     "moe",
     "moe_gate",
     "moe_group_gate",
@@ -103,6 +107,7 @@ __all__ = [
     "chain_speculative_sampling",
     "apply_token_bitmask",
     "selective_scan",
+    "mamba2_ssd_chunk_scan",
     "causal_conv1d",
     "gated_delta_rule",
     "gated_linear_attn",
@@ -233,26 +238,30 @@ def _dispatch(op: str, args, kwargs):
 # --------------------------------------------------------------------------- #
 def attention_prefill(q, k, v, *, causal=True, softmax_scale=None,
                       window_size=None, softcap=0.0, sinks=None,
-                      custom_mask=None, packed_custom_mask=None, **kw):
+                      custom_mask=None, packed_custom_mask=None,
+                      alibi_slopes=None, **kw):
     """Dense prefill attention. q/k/v: ``(batch, seqlen, heads, head_dim)``."""
     return _dispatch("attention_prefill", (q, k, v),
                      dict(causal=causal, softmax_scale=softmax_scale,
                           window_size=window_size, softcap=softcap,
                           sinks=sinks, custom_mask=custom_mask,
-                          packed_custom_mask=packed_custom_mask, **kw))
+                          packed_custom_mask=packed_custom_mask,
+                          alibi_slopes=alibi_slopes, **kw))
 
 
 def attention_decode(q, k_cache, v_cache, block_tables, seq_lens, *,
                      block_size, max_blocks_per_seq, softmax_scale=None,
                      window_size=None, softcap=0.0, sinks=None,
-                     custom_mask=None, packed_custom_mask=None, **kw):
+                     custom_mask=None, packed_custom_mask=None,
+                     alibi_slopes=None, **kw):
     """Paged KV-cache decode. q: ``(num_seqs, heads, head_dim)``."""
     return _dispatch(
         "attention_decode", (q, k_cache, v_cache, block_tables, seq_lens),
         dict(block_size=block_size, max_blocks_per_seq=max_blocks_per_seq,
              softmax_scale=softmax_scale, window_size=window_size,
              softcap=softcap, sinks=sinks, custom_mask=custom_mask,
-             packed_custom_mask=packed_custom_mask, **kw))
+             packed_custom_mask=packed_custom_mask,
+             alibi_slopes=alibi_slopes, **kw))
 
 
 def mla_decode(q_nope, q_pe, kv_cache, block_tables, seq_lens, *, heads, lora,
@@ -428,6 +437,35 @@ def fp8_kv_cache(key, value, key_cache, value_cache, slot_mapping, *,
                      dict(k_scale=k_scale, v_scale=v_scale, **kw))
 
 
+def patch_embed(x, weight, bias=None, *, stride=1, padding=0, dilation=1,
+                groups=1, **kw):
+    """Vision patch embedding via 2D/3D convolution."""
+    return _dispatch(
+        "patch_embed", (x, weight, bias),
+        dict(stride=stride, padding=padding, dilation=dilation,
+             groups=groups, **kw))
+
+
+def flex_attention(q, k, v, *, score_mod=None, block_mask=None, mask_mod=None,
+                   create_mask_kwargs=None, **kw):
+    """Programmable block-sparse attention via PyTorch FlexAttention."""
+    return _dispatch(
+        "flex_attention", (q, k, v),
+        dict(score_mod=score_mod, block_mask=block_mask, mask_mod=mask_mod,
+             create_mask_kwargs=create_mask_kwargs, **kw))
+
+
+def varlen_pad(x, indices=None, *, mode="unpad", attention_mask=None,
+               batch=None, seqlen=None, cu_seqlens=None, max_seqlen=None,
+               **kw):
+    """Pack/unpack padded sequence tensors for varlen attention."""
+    return _dispatch(
+        "varlen_pad", (x, indices),
+        dict(mode=mode, attention_mask=attention_mask, batch=batch,
+             seqlen=seqlen, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen,
+             **kw))
+
+
 def attention_state_merge(v, s, v_other=None, s_other=None, **kw):
     """Merge one or more partial attention states ``(out, lse)`` via the online
     softmax reduction used by cascade/context-parallel attention."""
@@ -493,6 +531,11 @@ def fused_linear_ce(hidden, lm_head_weight, targets, *, bias=None,
              label_smoothing=label_smoothing, reduction=reduction, **kw))
 
 
+def muon(grad, *, steps=5, eps=1e-7, **kw):
+    """Muon orthogonalized optimizer update via the torch/cuBLAS provider."""
+    return _dispatch("muon", (grad,), dict(steps=steps, eps=eps, **kw))
+
+
 def moe(*args, **kw):
     """Mixture-of-Experts. The strongest provider (vLLM fused_experts) takes
     ``(hidden, w1, w2, topk_weights, topk_ids)``; the kernel-set fallback takes
@@ -556,6 +599,11 @@ def selective_scan(out, x, dt, A, B, C, D=None, z=None, dt_bias=None, *,
         dict(D=D, z=z, dt_bias=dt_bias, delta_softplus=delta_softplus,
              batch=batch, dim=dim, seqlen=seqlen, dstate=dstate, dtype=dtype,
              stream=stream, **kw))
+
+
+def mamba2_ssd_chunk_scan(*args, **kw):
+    """Mamba-2 SSD varlen chunk scan via mamba-ssm."""
+    return _dispatch("mamba2_ssd_chunk_scan", args, kw)
 
 
 def causal_conv1d(out, x, weight, bias=None, *, batch=None, dim=None,

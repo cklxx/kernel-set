@@ -104,6 +104,7 @@ _PLAN_OP_TO_OPTIMAL = {
     "moe_gate": "moe_gate",
     "moe_grouped_gemm": "moe",
     "ssm": "selective_scan",
+    "mamba2_ssd_chunk_scan": "mamba2_ssd_chunk_scan",
     "conv1d": "causal_conv1d",
     "gated_delta": "gated_delta_rule",
     "linear_attn": "gated_linear_attn",
@@ -333,7 +334,8 @@ DENSE_GEMM_OPS = GEMM_OPS - {"moe_grouped_gemm"}
 ACT_DTYPE_OPS = {"attn_norm", "ffn_norm", "rope", "mlp_act", "embedding",
                  "attn_prefill", "attn_decode", "attn_backward",
                  "sparse_mla_attention", "dsa_indexer_logits",
-                 "dsa_topk_select", "nsa_selection_attention"}
+                 "dsa_topk_select", "nsa_selection_attention",
+                 "mamba2_ssd_chunk_scan"}
 
 
 def _pick_gemm_fn(op, scheme, default_fn):
@@ -497,6 +499,10 @@ def build_op(op, model, base_ops, scheme, gcaps, act_dt, gemm_dt,
         return mk(fn, act_dt,
                   "FLA Native Sparse Attention selection branch; fn is an "
                   "ABI-valid terminal placeholder")
+    if op == "mamba2_ssd_chunk_scan":
+        return mk(fn, act_dt,
+                  "Mamba-2 SSD varlen chunk scan via mamba-ssm; "
+                  "ks_selective_scan is the ABI-valid dense terminal placeholder")
 
     # ---- MoE gate --------------------------------------------------------
     if op == "moe_gate":

@@ -822,6 +822,29 @@ HEURISTIC = {
             for sm in (80, 86, 89, 90, 100)
             for dtype in ("fp16", "bf16")
         ],
+        # --- Wave-4 provider-only utility ops. Torch/cuDNN owns patch
+        #     projection and FlexAttention; flash-attn owns varlen pack/unpack.
+        *[
+            {"logical_op": "patch_embed", "sm": sm, "dtype": dtype,
+             "provider": "torch",
+             "fallback_chain": ["torch", "kernel-set"]}
+            for sm in (75, 80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
+        ],
+        *[
+            {"logical_op": "flex_attention", "sm": sm, "dtype": dtype,
+             "provider": "torch",
+             "fallback_chain": ["torch", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
+        ],
+        *[
+            {"logical_op": "varlen_pad", "sm": sm, "dtype": dtype,
+             "provider": "flash-attn",
+             "fallback_chain": ["flash-attn", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
+        ],
         {"logical_op": "swiglu", "sm": 75, "dtype": "fp16",
          "provider": "flashinfer",
          "fallback_chain": ["flashinfer", "vllm", "kernel-set"]},
@@ -1000,6 +1023,15 @@ HEURISTIC = {
             for sm in (80, 86, 89, 90, 100)
             for dtype in ("fp16", "bf16", "fp32")
         ],
+        # --- Muon optimizer: standard Newton-Schulz5 update is matmul-bound;
+        #     torch/cuBLAS is the provider path (no portable ks kernel).
+        *[
+            {"logical_op": "muon", "sm": sm, "dtype": dtype,
+             "provider": "torch",
+             "fallback_chain": ["torch", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
+        ],
         # --- SSM / causal conv front-end for Mamba-style blocks. External
         #     libraries are CUDA sm80+ and support fp16/bf16; below sm80 the
         #     selector falls back to the kernel-set terminal by omission.
@@ -1009,6 +1041,13 @@ HEURISTIC = {
              "fallback_chain": ["mamba-ssm", "kernel-set"]}
             for sm in (80, 86, 89, 90, 100)
             for dtype in ("fp16", "bf16")
+        ],
+        *[
+            {"logical_op": "mamba2_ssd_chunk_scan", "sm": sm, "dtype": dtype,
+             "provider": "mamba-ssm",
+             "fallback_chain": ["mamba-ssm", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "bf16", "fp32")
         ],
         *[
             {"logical_op": "causal_conv1d", "sm": sm, "dtype": dtype,
