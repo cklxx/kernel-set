@@ -179,6 +179,8 @@ def test_table_logical_ops_match_dispatch_op_order():
     assert "rwkv_wkv7" in table_ops
     assert "w4a8" in table_ops
     assert "w8a16_fp8" in table_ops
+    assert "sparse_2_4_gemm" in table_ops
+    assert "bitnet_gemm" in table_ops
     assert "fused_linear_ce" in table_ops
 
 
@@ -304,6 +306,29 @@ def test_heuristic_fill_w8a16_fp8_sm80_plus():
         KERNEL_SET
     # fp8 is activation dtype here; sm80 cannot run fp8 activation TC paths.
     assert O.select_optimal("w8a16_fp8", 80, "fp8")["provider"] == KERNEL_SET
+
+
+def test_heuristic_fill_sparse_2_4_hopper_plus():
+    for sm in (90, 100):
+        for dtype in ("fp8", "int8"):
+            cell = O.select_optimal("sparse_2_4_gemm", sm, dtype)
+            assert cell["provider"] == "vllm-cutlass-sparse"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == [
+                "vllm-cutlass-sparse", KERNEL_SET]
+    assert O.select_optimal("sparse_2_4_gemm", 89, "fp8")["provider"] == \
+        KERNEL_SET
+
+
+def test_heuristic_fill_bitnet_gemm_sm80_plus():
+    for sm in (80, 86, 89, 90, 100):
+        for dtype in ("fp16", "int8"):
+            cell = O.select_optimal("bitnet_gemm", sm, dtype)
+            assert cell["provider"] == "bitblas"
+            assert cell["source"] == "heuristic"
+            assert cell["fallback_chain"] == ["bitblas", KERNEL_SET]
+    assert O.select_optimal("bitnet_gemm", 75, "fp16")["provider"] == \
+        KERNEL_SET
 
 
 def test_heuristic_fill_fused_linear_ce_sm80_plus():
@@ -537,6 +562,8 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "mamba-ssm": "mamba_ssm", "causal-conv1d": "causal_conv1d",
         "flash-linear-attention": "fla",
         "vllm-fp8-marlin": "vllm",
+        "vllm-cutlass-sparse": "vllm",
+        "bitblas": "bitblas",
     }
     samples = [
         # L4 (sm89) fp16 measured winners.
@@ -554,6 +581,7 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         ("linear_attn", 80, "fp16"),  # heuristic -> flash-linear-attention
         ("rwkv_wkv", 80, "bf16"),     # heuristic -> flash-linear-attention
         ("cross_entropy", 80, "bf16"),  # heuristic -> fused_linear_ce / liger
+        ("bitnet_gemm", 80, "fp16"),  # heuristic -> bitblas
     ]
     for plan_op, sm, scheme in samples:
         cell = sel.optimal_cell(plan_op, sm, scheme)
@@ -620,8 +648,28 @@ def test_planner_optimal_lookup_op_new_model_keys_and_mxfp4():
     assert sel.optimal_lookup_op("w4a8", "bf16") == "w4a8"
     assert sel.optimal_lookup_op("qkv_proj", "w4a8") == "w4a8"
     assert sel.optimal_lookup_op("qkv_proj", "w8a16_fp8") == "w8a16_fp8"
+    assert sel.optimal_lookup_op("sparse_2_4_gemm", "fp8") == \
+        "sparse_2_4_gemm"
+    assert sel.optimal_lookup_op("bitnet_gemm", "bf16") == "bitnet_gemm"
     assert sel.optimal_lookup_op("cross_entropy", "bf16") == "fused_linear_ce"
     assert sel.optimal_lookup_op("fused_linear_cross_entropy", "bf16") == \
         "fused_linear_ce"
     assert sel.optimal_lookup_op("qkv_proj", "mxfp4") == "mxfp4_gemm"
     assert sel.optimal_lookup_op("moe_grouped_gemm", "mxfp4") == "mxfp4_gemm"
+
+
+def test_bitnet_model_routes_core_gemm_to_bitnet_provider(monkeypatch):
+    import importlib.util
+
+    sel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "..", "..", "models", "select.py")
+    spec = importlib.util.spec_from_file_location("ks_select", sel_path)
+    sel = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sel)
+
+    plan = sel.select("bitnet-b1.58-2b4t", "a100", "auto")
+    entry = plan["ops"]["bitnet_gemm"]
+    assert entry["fn"] == "ks_gemm"
+    assert entry["optimal_provider"] == "bitblas"
+    assert entry["optimal_source"] == "heuristic"

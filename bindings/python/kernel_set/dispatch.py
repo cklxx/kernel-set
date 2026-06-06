@@ -71,6 +71,8 @@ __all__ = [
     "w4a16",
     "w4a8",
     "w8a16_fp8",
+    "sparse_2_4_gemm",
+    "bitnet_gemm",
     "per_token_group_quant",
     "nvfp4_gemm",
     "mxfp4_gemm",
@@ -275,6 +277,21 @@ def w8a16_fp8(a, b_packed, b_scales, *, global_scale=None, out_dtype=None,
     return _dispatch(
         "w8a16_fp8", (a, b_packed, b_scales),
         dict(global_scale=global_scale, out_dtype=out_dtype, **kw))
+
+
+def sparse_2_4_gemm(a, bt_meta, bt_q, scale_a, scale_b, *, out_dtype=None,
+                    bias=None, **kw):
+    """2:4 structured sparse scaled GEMM over pre-compressed fp8/int8 weights."""
+    return _dispatch(
+        "sparse_2_4_gemm", (a, bt_meta, bt_q, scale_a, scale_b),
+        dict(out_dtype=out_dtype, bias=bias, **kw))
+
+
+def bitnet_gemm(a, b_ternary, scale=None, *, out_dtype=None, **kw):
+    """BitNet W1.58A8 ternary BitLinear GEMM via BitBLAS when available."""
+    return _dispatch(
+        "bitnet_gemm", (a, b_ternary, scale),
+        dict(out_dtype=out_dtype, **kw))
 
 
 def fp8_gemm_blockwise(a8, b8, a_scale, b_scale, *, block_n=128, block_k=128,

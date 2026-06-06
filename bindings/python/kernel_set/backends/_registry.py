@@ -422,6 +422,52 @@ def _w8a16_fp8_marlin(a, b_packed, b_scales, *, global_scale=None,
         size_m, size_n, size_k, True, False, use_fp32_reduce, False)
 
 
+def _sparse_2_4_gemm_vllm(a, bt_meta, bt_q, scale_a, scale_b, *,
+                          out_dtype=None, bias=None, **_):
+    # CUTLASS 2:4 sparse scaled GEMM over weights compressed offline via
+    # ops.cutlass_sparse_compress. The int4+2:4 Sparse-Marlin sub-path is
+    # deferred because vLLM removed gptq_marlin_24_gemm; it needs vendoring
+    # IST-DASLab/Sparse-Marlin before we can expose a callable provider.
+    from vllm import _custom_ops as ops
+    return ops.cutlass_scaled_sparse_mm(
+        a, bt_meta, bt_q, scale_a, scale_b, out_dtype or a.dtype, bias)
+
+
+def _bitnet_gemm_bitblas(a, b_ternary, scale=None, *, out_dtype=None,
+                         matmul=None, config=None, **kw):
+    # BitBLAS is the tractable Python-installable W1.58/A8 provider. The native
+    # microsoft/BitNet CUDA kernels use source-build-only 2-bit packed dp4a and
+    # are deferred until a vendored/native target lands.
+    if matmul is None:
+        from bitblas import Matmul
+        if config is None:
+            m, k = a.shape
+            n = b_ternary.shape[0] if getattr(b_ternary, "ndim", 0) == 2 \
+                else kw.pop("size_n", None)
+            out_name = str(out_dtype or getattr(a, "dtype", "float16"))
+            if out_name.startswith("torch."):
+                out_name = out_name[len("torch."):]
+            config = {
+                "M": kw.pop("size_m", m),
+                "N": kw.pop("size_n", n),
+                "K": kw.pop("size_k", k),
+                "A_dtype": "int8" if "int8" in str(getattr(a, "dtype", ""))
+                else "float16",
+                "W_dtype": "int2",
+                "out_dtype": out_name,
+                "accum_dtype": "int32",
+                "layout": "nt",
+                "bitnet": True,
+            }
+        matmul = Matmul(config)
+    if scale is not None:
+        try:
+            return matmul(a, b_ternary, scale=scale, out_dtype=out_dtype, **kw)
+        except TypeError:
+            return matmul(a, b_ternary, scale, **kw)
+    return matmul(a, b_ternary, **kw)
+
+
 def _w4a16_ks(a, b_packed, scales, zeros, *, group_size=128, **_):
     from .. import gemm
     import torch
@@ -1397,7 +1443,8 @@ def _sgl_provider(rank, call, *, min_sm=80, dtypes="fp16, bf16",
                     import_check="import sgl_kernel", call=call, note=note)
 
 
-# TODO(P2): defer 2:4-sparse and BitNet wiring until vendoring/model targets land.
+# TODO(P2): defer int4+2:4 Sparse-Marlin and native microsoft/BitNet CUDA
+# wiring until vendoring/model targets land.
 
 
 _OPS_RAW: List[Op] = [
@@ -1554,6 +1601,26 @@ _OPS_RAW: List[Op] = [
                  "FP8 weight-only Marlin for Ampere/Ada no-fp8-TC serving"),
         _ks_provider(_ks_unsupported("w8a16_fp8 GEMM"), "",
                      "no portable FP8 weight-only GEMM; needs vLLM Marlin"),
+    ]),
+    Op("sparse_2_4_gemm", "gemm-quant", None, [
+        Provider("vllm-cutlass-sparse", 0, 90,
+                 "fp8 e4m3/int8 weights, fp16/bf16 out",
+                 "from vllm import _custom_ops as ops; "
+                 "ops.cutlass_scaled_sparse_mm; "
+                 "ops.cutlass_sparse_compress",
+                 _sparse_2_4_gemm_vllm,
+                 "vLLM CUTLASS 2:4 sparse scaled GEMM (Hopper+)"),
+        _ks_provider(_ks_unsupported("sparse_2_4_gemm"), "",
+                     "no portable 2:4 sparse GEMM; needs vLLM CUTLASS"),
+    ]),
+    Op("bitnet_gemm", "gemm-quant", None, [
+        Provider("bitblas", 0, 80,
+                 "ternary/int2 weights, int8 or fp16 activations",
+                 "from bitblas import Matmul",
+                 _bitnet_gemm_bitblas,
+                 "BitBLAS A8W1.58 ternary BitLinear GEMM (Ampere+)"),
+        _ks_provider(_ks_unsupported("bitnet_gemm"), "",
+                     "no portable ternary BitLinear GEMM; needs BitBLAS"),
     ]),
     # FP8 BLOCKWISE GEMM (DeepSeek-V3 128x128 weight / 1x128 act recipe). DeepGEMM
     # is the Hopper/Blackwell reference; kernel-set's ks_gemm_fp8_blockwise is the

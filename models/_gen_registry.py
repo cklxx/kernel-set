@@ -46,6 +46,7 @@ LOGICAL_OPS = [
     "moe_gate",        # router (only for MoE models)
     "moe_grouped_gemm",# grouped expert GEMM (only for MoE)
     "lm_head",
+    "bitnet_gemm",     # BitNet W1.58A8 ternary BitLinear GEMM
     "sampling",
 ]
 
@@ -791,6 +792,7 @@ REGISTRY = {
         "moe_gate": "MoE router / gating",
         "moe_grouped_gemm": "grouped per-expert GEMM",
         "lm_head": "final logits projection",
+        "bitnet_gemm": "BitNet W1.58A8 ternary BitLinear GEMM",
         "sampling": "token sampling / decode head",
         "attn_backward": "attention backward (training)",
         "cross_entropy": "fused (linear) cross-entropy loss (training)",

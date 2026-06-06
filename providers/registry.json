@@ -1891,6 +1891,48 @@
       ]
     },
     {
+      "op": "sparse_2_4_gemm",
+      "domain": "gemm-quant",
+      "desc": "2:4 structured sparse scaled GEMM over offline-compressed fp8/int8 weights. CUTLASS sparse path stacks NVIDIA 2:4 tensor-core sparsity with quantized weight formats.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "vllm (CUTLASS sparse)",
+          "repo": "https://github.com/vllm-project/vllm",
+          "rank": 1,
+          "python_call": "from vllm import _custom_ops as ops; out = ops.cutlass_scaled_sparse_mm(a, bt_meta, bt_q, scale_a, scale_b, out_dtype, bias). Compress weights offline with ops.cutlass_sparse_compress.",
+          "install": "pip install vllm",
+          "import_check": "from vllm import _custom_ops as ops; ops.cutlass_scaled_sparse_mm; ops.cutlass_sparse_compress",
+          "gpu_arch": "sm90+",
+          "dtypes": "2:4 structured sparse fp8 e4m3 or int8 weight, fp16/bf16 out, scaled activation/weight tensors",
+          "perf_note": "Tractable no-vendoring 2:4 sparse quant path in vLLM. The int4+2:4 Sparse-Marlin sub-path is deferred because legacy gptq_marlin_24_gemm was removed and standalone IST-DASLab/Sparse-Marlin needs vendoring.",
+          "source_url": "https://github.com/vllm-project/vllm/blob/main/csrc/torch_bindings.cpp",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
+      "op": "bitnet_gemm",
+      "domain": "gemm-quant",
+      "desc": "BitNet W1.58A8 ternary BitLinear GEMM: ternary/int2 packed weights with int8 or fp16 activations for natively-trained BitNet b1.58 models.",
+      "kernel_set_abi": null,
+      "providers": [
+        {
+          "lib": "bitblas",
+          "repo": "https://github.com/microsoft/BitBLAS",
+          "rank": 1,
+          "python_call": "from bitblas import Matmul; matmul = Matmul(config_for_A8W158); out = matmul(a, b_ternary, scale=scale)",
+          "install": "pip install bitblas",
+          "import_check": "from bitblas import Matmul",
+          "gpu_arch": "sm80+",
+          "dtypes": "ternary/int2 weight (W1.58), int8 or fp16 activation (A8W1.58), fp16/bf16 out",
+          "perf_note": "Flexible Python-installable GPU path for ternary BitLinear. Native microsoft/BitNet CUDA 2-bit packed dp4a kernels are source-build-only and deferred.",
+          "source_url": "https://github.com/microsoft/BitBLAS",
+          "confidence": "medium"
+        }
+      ]
+    },
+    {
       "op": "nvfp4_gemm",
       "domain": "gemm-quant",
       "desc": "NVFP4 (4-bit e2m1 with 1x16 micro-block fp8-e4m3 scale + per-tensor global scale) GEMM on Blackwell tensor cores: D = alpha * (A_fp4 @ B_fp4). 2-4x over fp8 on B200.",

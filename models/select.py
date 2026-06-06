@@ -110,6 +110,8 @@ _PLAN_OP_TO_OPTIMAL = {
     "rwkv_wkv": "rwkv_wkv7",
     "w4a8": "w4a8",
     "w8a16_fp8": "w8a16_fp8",
+    "sparse_2_4_gemm": "sparse_2_4_gemm",
+    "bitnet_gemm": "bitnet_gemm",
     "cross_entropy": "fused_linear_ce",
     "fused_linear_ce": "fused_linear_ce",
     "fused_linear_cross_entropy": "fused_linear_ce",
@@ -185,6 +187,8 @@ def optimal_cell(plan_op, sm, scheme):
     if op is None:
         return None
     dtype = _SCHEME_TO_DTYPE.get(scheme, scheme)
+    if op == "bitnet_gemm" and dtype in ("bf16", "fp32", "f32", "tf32"):
+        dtype = "fp16"
     sm_key = _optimal_table_sm(sm)
     cell = _OPTIMAL_TABLE.get((op, sm_key, dtype))
     if cell is not None:
@@ -462,6 +466,11 @@ def build_op(op, model, base_ops, scheme, gcaps, act_dt, gemm_dt,
     if op == "sampling":
         return mk("ks_sample", "KS_DTYPE_F32",
                   "FlashInfer-style fused temp+top-k+top-p sampling")
+
+    if op == "bitnet_gemm":
+        return mk(fn, "KS_DTYPE_F16",
+                  "BitBLAS W1.58A8 ternary BitLinear GEMM; ks_gemm is the "
+                  "ABI-valid terminal placeholder")
 
     # ---- MoE gate --------------------------------------------------------
     if op == "moe_gate":

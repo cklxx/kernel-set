@@ -466,6 +466,13 @@ def test_new_deferred_op_import_checks_are_specific():
                 if p.name == "liger").import_check == \
         "from liger_kernel.ops.fused_linear_cross_entropy import " \
         "LigerFusedLinearCrossEntropyFunction"
+    assert next(p for p in OPS["sparse_2_4_gemm"].providers
+                if p.name == "vllm-cutlass-sparse").import_check == \
+        "from vllm import _custom_ops as ops; " \
+        "ops.cutlass_scaled_sparse_mm; ops.cutlass_sparse_compress"
+    assert next(p for p in OPS["bitnet_gemm"].providers
+                if p.name == "bitblas").import_check == \
+        "from bitblas import Matmul"
 
 
 def test_mxfp4_providers_are_blackwell_only():
@@ -490,6 +497,7 @@ def test_mxfp4_providers_are_blackwell_only():
 # there and is a legitimate competitive provider, not merely a fallback.)
 COMPUTE_BOUND_OPS = [
     "gemm", "fp8_gemm", "int8_gemm", "w4a16", "w4a8", "w8a16_fp8",
+    "sparse_2_4_gemm", "bitnet_gemm",
     "attention_prefill", "attention_decode", "mla_decode",
     "moe", "selective_scan", "causal_conv1d",
     "gated_delta_rule", "gated_linear_attn", "rwkv_wkv7",
@@ -522,6 +530,8 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("w4a8", {"vllm"}, 80, "int4", "vllm-marlin"),
         ("w4a8", {"vllm"}, 90, "int4", "vllm-machete"),
         ("w8a16_fp8", {"vllm"}, 80, "bf16", "vllm-fp8-marlin"),
+        ("sparse_2_4_gemm", {"vllm"}, 90, "fp8", "vllm-cutlass-sparse"),
+        ("bitnet_gemm", {"bitblas"}, 80, "fp16", "bitblas"),
         ("attention_prefill", {"flash_attn"}, 80, "bf16", "flash-attn"),
         ("attention_decode", {"flashinfer"}, 80, "fp16", "flashinfer"),
         ("mla_decode", {"sgl_kernel"}, 90, "bf16", SGL_KERNEL),
@@ -646,6 +656,85 @@ def test_fused_linear_ce_new_op_liger_and_ks(monkeypatch):
     dispatch.reset_cache()
     _mock_available(monkeypatch, available_libs=set(), sm=90)
     assert dispatch.which("fused_linear_ce", dtype="bf16") == KERNEL_SET
+
+
+def test_sparse_2_4_new_op_cutlass_sparse_hopper(monkeypatch):
+    assert "sparse_2_4_gemm" in dispatch.ops()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=90)
+    assert dispatch.which("sparse_2_4_gemm", dtype="fp8") == \
+        "vllm-cutlass-sparse"
+    assert dispatch.which("sparse_2_4_gemm", dtype="int8") == \
+        "vllm-cutlass-sparse"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"vllm"}, sm=89)
+    assert dispatch.which("sparse_2_4_gemm", dtype="fp8") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs=set(), sm=90)
+    assert dispatch.which("sparse_2_4_gemm", dtype="fp8") == KERNEL_SET
+
+
+def test_bitnet_new_op_bitblas_ampere(monkeypatch):
+    assert "bitnet_gemm" in dispatch.ops()
+    _mock_available(monkeypatch, available_libs={"bitblas"}, sm=80)
+    assert dispatch.which("bitnet_gemm", dtype="fp16") == "bitblas"
+    assert dispatch.which("bitnet_gemm", dtype="int8") == "bitblas"
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"bitblas"}, sm=75)
+    assert dispatch.which("bitnet_gemm", dtype="fp16") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"bitblas"}, sm=80)
+    assert dispatch.which("bitnet_gemm", dtype="bf16") == KERNEL_SET
+
+
+def test_sparse_and_bitnet_adapters_call_expected_external_apis(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    vllm = types.ModuleType("vllm")
+    ops = types.ModuleType("vllm._custom_ops")
+    sparse_calls = []
+
+    def sparse_mm(*args):
+        sparse_calls.append(args)
+        return "sparse_out"
+
+    ops.cutlass_scaled_sparse_mm = sparse_mm
+    ops.cutlass_sparse_compress = object()
+    vllm._custom_ops = ops
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setitem(sys.modules, "vllm._custom_ops", ops)
+
+    a = torch.empty(2, 4)
+    meta = torch.empty(1)
+    bq = torch.empty(4, 8)
+    sa = torch.empty(1)
+    sb = torch.empty(1)
+    assert _registry._sparse_2_4_gemm_vllm(a, meta, bq, sa, sb) == \
+        "sparse_out"
+    assert sparse_calls[-1] == (a, meta, bq, sa, sb, a.dtype, None)
+
+    bitblas = types.ModuleType("bitblas")
+    bitblas_calls = []
+
+    class Matmul:
+        def __init__(self, config):
+            self.config = config
+
+        def __call__(self, *args, **kwargs):
+            bitblas_calls.append((self.config, args, kwargs))
+            return "bitnet_out"
+
+    bitblas.Matmul = Matmul
+    monkeypatch.setitem(sys.modules, "bitblas", bitblas)
+
+    ternary = torch.empty(8, 4)
+    assert _registry._bitnet_gemm_bitblas(a, ternary, scale=sa) == \
+        "bitnet_out"
+    config, args, kwargs = bitblas_calls[-1]
+    assert config["W_dtype"] == "int2"
+    assert config["bitnet"] is True
+    assert args[:2] == (a, ternary)
+    assert kwargs["scale"] is sa
 
 
 def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):

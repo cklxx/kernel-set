@@ -21,6 +21,7 @@
     "moe_gate",
     "moe_grouped_gemm",
     "lm_head",
+    "bitnet_gemm",
     "sampling"
   ],
   "training_ops": [
@@ -51,7 +52,8 @@
     "ssm": "selective state-space scan token-mixer (Mamba selective_scan)",
     "gated_delta": "gated delta-rule linear attention (gated DeltaNet / KDA)",
     "linear_attn": "gated linear attention (GLA / lightning / simple-GLA)",
-    "rwkv_wkv": "RWKV-7 WKV (free DPLR generalized delta rule)"
+    "rwkv_wkv": "RWKV-7 WKV (free DPLR generalized delta rule)",
+    "bitnet_gemm": "BitNet W1.58A8 ternary BitLinear GEMM"
   },
   "models": [
     {
@@ -15499,9 +15501,13 @@
         "sampling": {
           "fn": "ks_sample",
           "dtype": "f32"
+        },
+        "bitnet_gemm": {
+          "fn": "ks_gemm",
+          "dtype": "model"
         }
       },
-      "notes": "2B (~0.4GB packed) first open natively-trained 1.58-bit (ternary) LLM at scale; 4T train tokens; LLaMA-3 tokenizer; 4096 context. NOVEL ARCH: BitLinear (W1.58A8) absent from registry. All linear projections are BitLinear (ternary weights {-1,0,+1} via absmean quant, 8-bit per-token activations via absmax) -> needs ternary BitLinear GEMM kernel (ks_gemm placeholder, NOT load-bearing for the bit-packed path). Standard GQA self-attention -> ks_paged_attn_decode. FFN uses squared-ReLU (ReLU^2), no bias; subln (sub-layer normalization). RoPE. MIT. arXiv:2504.12285. Layer/hidden/head counts in tech report not HF card -> dims partial.",
+      "notes": "2B (~0.4GB packed) first open natively-trained 1.58-bit (ternary) LLM at scale; 4T train tokens; LLaMA-3 tokenizer; 4096 context. NOVEL ARCH: BitLinear (W1.58A8). All linear projections are BitLinear (ternary weights {-1,0,+1} via absmean quant, 8-bit per-token activations via absmax) -> routed through bitnet_gemm with BitBLAS as the optimal provider; ks_gemm remains the ABI-valid terminal placeholder, not the bit-packed load-bearing path. Standard GQA self-attention -> ks_paged_attn_decode. FFN uses squared-ReLU (ReLU^2), no bias; subln (sub-layer normalization). RoPE. MIT. arXiv:2504.12285. Layer/hidden/head counts in tech report not HF card -> dims partial.",
       "examples": [
         "bitnet-b1.58-2B-4T"
       ]

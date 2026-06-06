@@ -273,6 +273,26 @@ HEURISTIC = {
             for sm in (80, 86, 89, 90, 100)
             for dtype in ("fp16", "bf16")
         ],
+        # 2:4 structured sparse GEMM over fp8/int8 compressed weights. vLLM's
+        # CUTLASS sparse path is Hopper+; the int4+2:4 Sparse-Marlin path is
+        # intentionally absent until that standalone project is vendored.
+        *[
+            {"logical_op": "sparse_2_4_gemm", "sm": sm, "dtype": dtype,
+             "provider": "vllm-cutlass-sparse",
+             "fallback_chain": ["vllm-cutlass-sparse", "kernel-set"]}
+            for sm in (90, 100)
+            for dtype in ("fp8", "int8")
+        ],
+        # BitNet W1.58A8 ternary BitLinear GEMM. BitBLAS is the tractable
+        # Python-installable provider for Ampere+; native microsoft/BitNet CUDA
+        # is source-build-only and remains deferred.
+        *[
+            {"logical_op": "bitnet_gemm", "sm": sm, "dtype": dtype,
+             "provider": "bitblas",
+             "fallback_chain": ["bitblas", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+            for dtype in ("fp16", "int8")
+        ],
         # FP8 BLOCKWISE GEMM (DeepSeek-V3 recipe). sm89 has no fp8 HW provider, so
         # kernel-set's portable blockwise kernel IS the winner there (chain
         # collapses to ["kernel-set"]); DeepGEMM wins on Hopper/Blackwell.

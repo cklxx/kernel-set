@@ -1277,6 +1277,53 @@ gemm_quant:
   benchable: true
   confidence: medium
   notes: 'Machete adds fp8-activation W4A8: 4-bit memory savings + fp8 compute. Best W4A8 on Hopper; compressed-tensors W4A8 routes here.'
+- name: vllm (CUTLASS sparse) — sparse_2_4_gemm
+  lib: vllm (CUTLASS sparse)
+  pip_install: pip install vllm
+  build_from_source: null
+  import_check: from vllm import _custom_ops as ops; ops.cutlass_scaled_sparse_mm; ops.cutlass_sparse_compress
+  python_call: from vllm import _custom_ops as ops; out = ops.cutlass_scaled_sparse_mm(a, bt_meta, bt_q, scale_a, scale_b, out_dtype, bias). Compress weights offline with ops.cutlass_sparse_compress.
+  maps_to: []
+  ks_op: sparse_2_4_gemm
+  bench_category: sparse_quant
+  gpu_arch_required:
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: true
+  dtypes:
+  - bf16
+  - fp16
+  - fp8_e4m3
+  - int8
+  benchable: true
+  confidence: medium
+  notes: Tractable no-vendoring 2:4 sparse quant path in vLLM. The int4+2:4 Sparse-Marlin sub-path is deferred because legacy gptq_marlin_24_gemm was removed and standalone IST-DASLab/Sparse-Marlin needs vendoring.
+- name: bitblas — bitnet_gemm
+  lib: bitblas
+  pip_install: pip install bitblas
+  build_from_source: null
+  import_check: from bitblas import Matmul
+  python_call: from bitblas import Matmul; matmul = Matmul(config_for_A8W158); out = matmul(a, b_ternary, scale=scale)
+  maps_to: []
+  ks_op: bitnet_gemm
+  bench_category: bitnet
+  gpu_arch_required:
+  - sm80
+  - sm89
+  - sm90
+  - sm100
+  - sm120
+  blackwell_only: false
+  hopper_only: false
+  dtypes:
+  - bf16
+  - fp16
+  - int8
+  benchable: true
+  confidence: medium
+  notes: Flexible Python-installable GPU path for ternary BitLinear. Native microsoft/BitNet CUDA 2-bit packed dp4a kernels are source-build-only and deferred.
 - name: flashinfer — nvfp4_gemm
   lib: flashinfer
   pip_install: pip install flashinfer-python

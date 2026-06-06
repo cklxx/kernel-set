@@ -103,7 +103,8 @@ BENCH_CATEGORY = {
     "nf4_fp4_blockwise_quant_linear": "w4a16",
     "dequantize_int8": "w8a8", "int8_gemm_w8a8": "w8a8",
     "int8_llm_int8_linear": "w8a8", "quantize_int8_dynamic": "w8a8",
-    "w4a8_gemm": "w4a8",
+    "w4a8_gemm": "w4a8", "sparse_2_4_gemm": "sparse_quant",
+    "bitnet_gemm": "bitnet",
     "fp4_quantize": "fp4_gemm", "mxfp4_gemm": "fp4_gemm", "nvfp4_gemm": "fp4_gemm",
     "dequantize_fp8": "quant", "quantize_fp8_dynamic": "quant",
     # loss-optim-misc

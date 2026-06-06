@@ -47,6 +47,8 @@ _OP_ALIASES = {
     "rope.apply": "rope",
     "act.swiglu": "swiglu",
     "gemm.dense": "gemm",
+    "gemm.sparse_2_4": "sparse_2_4_gemm",
+    "gemm.bitnet": "bitnet_gemm",
     "loss.cross_entropy": "cross_entropy",
     "loss.fused_linear_ce": "fused_linear_ce",
     "loss.fused_linear_cross_entropy": "fused_linear_ce",
