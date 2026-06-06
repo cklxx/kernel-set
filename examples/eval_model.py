@@ -299,6 +299,10 @@ def main() -> int:
     ap.add_argument("--plan-out", default="plan.json")
     ap.add_argument("--plan-only", action="store_true",
                     help="just emit the AOT plan (no model download / GPU)")
+    ap.add_argument("--load-4bit", action="store_true",
+                    help="load the model in bnb 4-bit (NF4) so large checkpoints "
+                         "fit; norms/activations stay bf16 so the hot-swap + the "
+                         "baseline-vs-patched check are unaffected")
     args = ap.parse_args()
 
     dtype = dtype_of(args.dtype)
@@ -336,10 +340,19 @@ def main() -> int:
         return 0
 
     device = "cuda"
-    print(f"\nloading {args.model} ...")
+    print(f"\nloading {args.model} ...{' [4-bit NF4]' if args.load_4bit else ''}")
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=dtype).to(device).eval()
+    if args.load_4bit:
+        from transformers import BitsAndBytesConfig
+        qc = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                bnb_4bit_compute_dtype=dtype,
+                                bnb_4bit_use_double_quant=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, quantization_config=qc, device_map={"": 0},
+            torch_dtype=dtype).eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, torch_dtype=dtype).to(device).eval()
     cfg = model.config
 
     def _as_ids(x):
