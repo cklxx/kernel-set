@@ -18,6 +18,18 @@ func RMSNorm(out, input, weight unsafe.Pointer, rows, cols int64, eps float32,
 	return statusError(st, "ks_rms_norm")
 }
 
+// FusedRMSNormGated computes out = (x/rms(x))*weight*act(gate) — GatedDeltaNet /
+// GLA output norm (gate applied after norm). gateAct: 0 = SiLU, 1 = sigmoid.
+// out, input, weight, gate are device pointers [rows, cols] (weight [cols]).
+// Wraps ks_fused_rmsnorm_gated.
+func FusedRMSNormGated(out, input, weight, gate unsafe.Pointer, rows, cols int64,
+	gateAct int, eps float32, dtype Dtype, stream Stream) error {
+	st := Status(C.ks_fused_rmsnorm_gated(out, input, weight, gate,
+		C.int64_t(rows), C.int64_t(cols), C.int(gateAct), C.float(eps),
+		C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_fused_rmsnorm_gated")
+}
+
 // RMSNormResidual fuses add + RMSNorm between transformer sub-layers:
 //
 //	x   = input + residual   (the new residual, written to residualOut)

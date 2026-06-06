@@ -28,6 +28,16 @@ KS_API ks_status_t ks_rms_norm_residual(void* out, void* residual_out,
                                         int64_t cols, float eps,
                                         ks_dtype_t dtype, ks_stream_t stream);
 
+/* Gated RMSNorm — GatedDeltaNet / GLA output norm (matches FLA FusedRMSNormGated):
+ *   out = (x * rsqrt(mean(x^2) + eps)) * weight * act(gate)
+ * gate_act: 0 = SiLU (g*sigmoid(g)), 1 = sigmoid. x/gate/out [rows, cols] (model
+ * dtype); weight [cols]. The gate is applied AFTER normalization (output gating). */
+KS_API ks_status_t ks_fused_rmsnorm_gated(void* out, const void* input,
+                                          const void* weight, const void* gate,
+                                          int64_t rows, int64_t cols,
+                                          int gate_act, float eps,
+                                          ks_dtype_t dtype, ks_stream_t stream);
+
 /* out = (x - mean) / sqrt(var + eps) * weight + bias. `bias` may be NULL. */
 KS_API ks_status_t ks_layer_norm(void* out, const void* input,
                                  const void* weight, const void* bias,

@@ -260,6 +260,19 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_fused_rmsnorm_gated(
+        out: *mut c_void,
+        input: *const c_void,
+        weight: *const c_void,
+        gate: *const c_void,
+        rows: i64,
+        cols: i64,
+        gate_act: c_int,
+        eps: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     // ===== activation.h ====================================================
 
     pub fn ks_silu(
@@ -415,6 +428,19 @@ extern "C" {
         block_size: c_int,
         max_blocks_per_seq: c_int,
         softmax_scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_attention_state_merge(
+        out: *mut c_void,
+        lse: *mut f32,
+        out_a: *const c_void,
+        lse_a: *const f32,
+        out_b: *const c_void,
+        lse_b: *const f32,
+        n_rows: i64,
+        v_dim: i64,
         dtype: ks_dtype_t,
         stream: ks_stream_t,
     ) -> ks_status_t;

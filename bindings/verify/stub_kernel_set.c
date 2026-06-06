@@ -770,6 +770,26 @@ ks_status_t ks_rms_norm(void* out, const void* input, const void* weight,
   return KS_SUCCESS;
 }
 
+ks_status_t ks_fused_rmsnorm_gated(void* out, const void* input,
+                                   const void* weight, const void* gate,
+                                   int64_t rows, int64_t cols, int gate_act,
+                                   float eps, ks_dtype_t dtype,
+                                   ks_stream_t stream) {
+  (void)out; (void)input; (void)weight; (void)gate; (void)rows; (void)cols;
+  (void)gate_act; (void)eps; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_attention_state_merge(void* out, float* lse, const void* out_a,
+                                     const float* lse_a, const void* out_b,
+                                     const float* lse_b, int64_t n_rows,
+                                     int64_t v_dim, ks_dtype_t dtype,
+                                     ks_stream_t stream) {
+  (void)out; (void)lse; (void)out_a; (void)lse_a; (void)out_b; (void)lse_b;
+  (void)n_rows; (void)v_dim; (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
 ks_status_t ks_rms_norm_residual(void* out, void* residual_out,
                                  const void* input, const void* residual,
                                  const void* weight, int64_t rows, int64_t cols,

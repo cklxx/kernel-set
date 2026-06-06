@@ -223,6 +223,9 @@ export const ks_rms_norm_backward = L.func(
 export const ks_layer_norm_backward = L.func(
   'ks_status_t ks_layer_norm_backward(ks_devptr grad_input, ks_devptr grad_weight_fp32, ks_devptr grad_bias_fp32, ks_devptr grad_out, ks_devptr input, ks_devptr weight, int64 rows, int64 cols, float eps, ks_dtype_t dtype, ks_stream_t stream)',
 );
+export const ks_fused_rmsnorm_gated = L.func(
+  'ks_status_t ks_fused_rmsnorm_gated(ks_devptr out, ks_devptr input, ks_devptr weight, ks_devptr gate, int64 rows, int64 cols, int gate_act, float eps, ks_dtype_t dtype, ks_stream_t stream)',
+);
 
 /* ============================== activation.h ========================== */
 
@@ -264,6 +267,9 @@ export const ks_reshape_and_cache = L.func(
 );
 export const ks_mla_decode = L.func(
   'ks_status_t ks_mla_decode(ks_devptr out, ks_devptr q_nope, ks_devptr q_pe, ks_devptr kv_cache, ks_devptr block_tables, ks_devptr seq_lens, int num_seqs, int num_heads, int kv_lora_rank, int rope_dim, int block_size, int max_blocks_per_seq, float softmax_scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_attention_state_merge = L.func(
+  'ks_status_t ks_attention_state_merge(ks_devptr out, ks_devptr lse, ks_devptr out_a, ks_devptr lse_a, ks_devptr out_b, ks_devptr lse_b, int64 n_rows, int64 v_dim, ks_dtype_t dtype, ks_stream_t stream)',
 );
 export const ks_flash_attn_backward = L.func(
   'ks_status_t ks_flash_attn_backward(ks_devptr grad_q, ks_devptr grad_k, ks_devptr grad_v, ks_devptr grad_out, ks_devptr q, ks_devptr k, ks_devptr v, ks_devptr out, ks_devptr softmax_lse, int batch, int seqlen_q, int seqlen_k, int num_heads, int num_kv_heads, int head_dim, float softmax_scale, int causal, ks_dtype_t dtype, ks_stream_t stream)',

@@ -385,6 +385,10 @@ _decl(
     "ks_layer_norm_backward",
     [_VP, _VP, _VP, _VP, _VP, _VP, c_int64, c_int64, c_float, _DTYPE, _STREAM],
 )
+_decl(
+    "ks_fused_rmsnorm_gated",
+    [_VP, _VP, _VP, _VP, c_int64, c_int64, c_int, c_float, _DTYPE, _STREAM],
+)
 
 # ---- activation.h ---------------------------------------------------------
 
@@ -447,6 +451,15 @@ _decl(
         c_int, c_int, c_int, c_int,        # num_seqs, num_heads, kv_lora_rank, rope_dim
         c_int, c_int,                      # block_size, max_blocks_per_seq
         c_float, _DTYPE, _STREAM,
+    ],
+)
+_decl(
+    "ks_attention_state_merge",
+    [
+        _VP, POINTER(c_float),             # out, lse
+        _VP, POINTER(c_float),             # out_a, lse_a
+        _VP, POINTER(c_float),             # out_b, lse_b
+        c_int64, c_int64, _DTYPE, _STREAM, # n_rows, v_dim, dtype, stream
     ],
 )
 _decl(

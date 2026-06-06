@@ -19,10 +19,13 @@ from ._tensor import TensorLike, default_stream, infer_dtype, ptr
 __all__ = [
     "rms_norm",
     "rms_norm_residual",
+    "fused_rmsnorm_gated",
     "layer_norm",
     "rms_norm_backward",
     "layer_norm_backward",
 ]
+
+_GATE_ACT = {"silu": 0, "swish": 0, "sigmoid": 1}
 
 
 def _rows_cols(reference, rows, cols):
@@ -70,6 +73,46 @@ def rms_norm(
             default_stream(stream, input),
         ),
         "ks_rms_norm",
+    )
+    return out
+
+
+def fused_rmsnorm_gated(
+    out: TensorLike,
+    input: TensorLike,
+    weight: TensorLike,
+    gate: TensorLike,
+    rows: Optional[int] = None,
+    cols: Optional[int] = None,
+    activation: str = "silu",
+    eps: float = 1e-6,
+    dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Gated RMSNorm (GatedDeltaNet / GLA output norm):
+    ``out = (x / rms(x)) * weight * act(gate)`` — gate applied after norm.
+
+    ``activation`` is ``"silu"`` (default) or ``"sigmoid"``. Returns ``out``.
+    """
+    rows, cols = _rows_cols(input, rows, cols)
+    dt = infer_dtype(input, dtype)
+    act = _GATE_ACT.get(activation)
+    if act is None:
+        raise ValueError(f"activation must be one of {sorted(_GATE_ACT)}")
+    check(
+        lib.ks_fused_rmsnorm_gated(
+            ptr(out, name="out"),
+            ptr(input, name="input"),
+            ptr(weight, name="weight"),
+            ptr(gate, name="gate"),
+            rows,
+            cols,
+            int(act),
+            float(eps),
+            dt,
+            default_stream(stream, input),
+        ),
+        "ks_fused_rmsnorm_gated",
     )
     return out
 

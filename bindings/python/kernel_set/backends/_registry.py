@@ -790,6 +790,16 @@ def _fused_rmsnorm_gated_fla(x, weight, gate, *, eps=1e-6,
     return mod(x, gate)
 
 
+def _fused_rmsnorm_gated_ks(x, weight, gate, *, eps=1e-6, activation="silu", **_):
+    # Portable kernel-set fallback (matches FLA convention: norm then gate;
+    # GPU-verified vs FLA FusedRMSNormGated, rel ~2.5e-3).
+    import torch
+    from .. import norm as _norm
+    out = torch.empty_like(x)
+    _norm.fused_rmsnorm_gated(out, x, weight, gate, activation=activation, eps=eps)
+    return out
+
+
 def _swiglu_ks(gate, up, **_):
     from .. import activation
     import torch
@@ -1211,6 +1221,26 @@ def _attention_state_merge_flashinfer(v, s, v_other=None, s_other=None, **_):
     if v_other is None:
         return cascade.merge_states(v, s)
     return cascade.merge_state(v, s, v_other, s_other)
+
+
+def _attention_state_merge_ks(v, s, v_other=None, s_other=None, **_):
+    # Portable kernel-set 2-way log-sum-exp merge (GPU-verified rel ~1.7e-3).
+    # N-way merge_states (v_other is None) needs FlashInfer.
+    import torch
+    from .. import attention as _attn
+    if v_other is None:
+        raise NotImplementedError(
+            "ks attention_state_merge fallback supports 2-way merge only; "
+            "N-way merge_states needs FlashInfer")
+    rows = 1
+    for d in v.shape[:-1]:
+        rows *= int(d)
+    v_dim = int(v.shape[-1])
+    out = torch.empty_like(v)
+    lse = torch.empty_like(s, dtype=torch.float32)
+    _attn.attention_state_merge(out, lse, v, s.float(), v_other, s_other.float(),
+                                n_rows=rows, v_dim=v_dim)
+    return out, lse
 
 
 def _mxfp8_quantize_vllm(x, problem_sizes, expert_offsets,
@@ -2107,14 +2137,14 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_ks_unsupported("fp8 KV-cache quant"), "",
                      "ks_reshape_and_cache is dtype-preserving; needs vLLM"),
     ]),
-    Op("attention_state_merge", "attention", None, [
+    Op("attention_state_merge", "attention", "ks_attention_state_merge", [
         Provider("flashinfer", 1, 80, "fp16, bf16, fp8",
                  "import flashinfer.cascade; flashinfer.cascade.merge_state; "
                  "flashinfer.cascade.merge_states",
                  _attention_state_merge_flashinfer,
                  "FlashInfer cascade merge_state/merge_states (online softmax)"),
-        _ks_provider(_ks_unsupported("attention_state_merge"), "",
-                     "no portable attention-state merge; needs FlashInfer"),
+        _ks_provider(_attention_state_merge_ks, "ks_attention_state_merge",
+                     "portable 2-way log-sum-exp state merge (fp32)"),
     ]),
     Op("rmsnorm", "norm-act-rope", "ks_rmsnorm", [
         Provider("quack", 0, 90, "fp16, bf16, fp32",
@@ -2144,13 +2174,13 @@ _OPS_RAW: List[Op] = [
                  _far_vllm, "vLLM fused add-RMSNorm"),
         _ks_provider(_far_ks, "ks_fused_add_rmsnorm"),
     ]),
-    Op("fused_rmsnorm_gated", "norm-act-rope", None, [
+    Op("fused_rmsnorm_gated", "norm-act-rope", "ks_fused_rmsnorm_gated", [
         Provider("flash-linear-attention", 1, 80, "fp16, bf16",
                  "from fla.modules import FusedRMSNormGated",
                  _fused_rmsnorm_gated_fla,
                  "FLA fused RMSNorm plus SiLU/sigmoid gate"),
-        _ks_provider(_ks_unsupported("fused_rmsnorm_gated"), "",
-                     "no portable fused gated RMSNorm; needs FLA"),
+        _ks_provider(_fused_rmsnorm_gated_ks, "ks_fused_rmsnorm_gated",
+                     "portable gated RMSNorm (norm-then-gate, matches FLA)"),
     ]),
     Op("gemma_rmsnorm", "norm-act-rope", "ks_gemma_rmsnorm", [
         Provider("flashinfer", 1, 75, "fp16, bf16",

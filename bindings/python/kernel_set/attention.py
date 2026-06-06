@@ -13,7 +13,7 @@ Conventions (see attention.h):
 
 from __future__ import annotations
 
-from ctypes import POINTER, c_int32, cast
+from ctypes import POINTER, c_float, c_int32, cast
 from typing import Optional
 
 from ._lib import check, lib
@@ -25,10 +25,19 @@ __all__ = [
     "paged_attn_decode",
     "reshape_and_cache",
     "mla_decode",
+    "attention_state_merge",
     "flash_attn_backward",
 ]
 
 _I32P = POINTER(c_int32)
+_F32P = POINTER(c_float)
+
+
+def _f32(obj: TensorLike, *, name: str):
+    """Resolve an fp32 tensor/pointer to a ``POINTER(c_float)`` (required)."""
+    if obj is None:
+        raise ValueError(f"{name} must not be None")
+    return cast(ptr(obj, name=name, allow_none=False), _F32P)
 
 
 def _i32(obj: TensorLike, *, name: str):
@@ -242,6 +251,51 @@ def mla_decode(
             float(softmax_scale), dt, default_stream(stream, q_nope),
         ),
         "ks_mla_decode",
+    )
+    return out
+
+
+def attention_state_merge(
+    out: TensorLike,
+    lse: TensorLike,
+    out_a: TensorLike,
+    lse_a: TensorLike,
+    out_b: TensorLike,
+    lse_b: TensorLike,
+    n_rows: Optional[int] = None,
+    v_dim: Optional[int] = None,
+    dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Merge two partial attention states by log-sum-exp (cascade / chunked /
+    ring attention): ``out = softmax-weighted combine of (out_a,lse_a),(out_b,
+    lse_b)``; ``lse = logaddexp(lse_a, lse_b)``. ``out*`` are ``[n_rows, v_dim]``
+    (model dtype); ``lse*`` are ``[n_rows]`` fp32. ``out`` may alias ``out_a``.
+    Returns ``out``.
+    """
+    if n_rows is None or v_dim is None:
+        try:
+            if hasattr(out_a, "shape") and len(out_a.shape) >= 2:
+                r = 1
+                for s in out_a.shape[:-1]:
+                    r *= s
+                n_rows, v_dim = int(r), int(out_a.shape[-1])
+        except Exception:
+            pass
+    if n_rows is None or v_dim is None:
+        raise ValueError("n_rows and v_dim are required for raw-pointer inputs")
+    dt = infer_dtype(out_a, dtype)
+    check(
+        lib.ks_attention_state_merge(
+            ptr(out, name="out"),
+            _f32(lse, name="lse"),
+            ptr(out_a, name="out_a"),
+            _f32(lse_a, name="lse_a"),
+            ptr(out_b, name="out_b"),
+            _f32(lse_b, name="lse_b"),
+            int(n_rows), int(v_dim), dt, default_stream(stream, out_a),
+        ),
+        "ks_attention_state_merge",
     )
     return out
 

@@ -105,6 +105,19 @@ func MLADecode(out, qNope, qPE, kvCache unsafe.Pointer,
 	return statusError(st, "ks_mla_decode")
 }
 
+// AttentionStateMerge merges two partial attention states by log-sum-exp
+// (cascade / chunked / ring attention). out, outA, outB are [nRows, vDim] device
+// pointers (model dtype); lse, lseA, lseB are [nRows] fp32 device pointers. out
+// may alias outA. Wraps ks_attention_state_merge.
+func AttentionStateMerge(out unsafe.Pointer, lse *float32, outA unsafe.Pointer,
+	lseA *float32, outB unsafe.Pointer, lseB *float32, nRows, vDim int64,
+	dtype Dtype, stream Stream) error {
+	st := Status(C.ks_attention_state_merge(out, (*C.float)(lse), outA,
+		(*C.float)(lseA), outB, (*C.float)(lseB), C.int64_t(nRows), C.int64_t(vDim),
+		C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_attention_state_merge")
+}
+
 // FlashAttnBackward runs FlashAttention backward (training). Requires the
 // forward out and softmaxLSE. grad_q/grad_k/grad_v match q/k/v shapes. Wraps
 // ks_flash_attn_backward.

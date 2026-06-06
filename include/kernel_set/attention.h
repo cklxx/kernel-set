@@ -59,6 +59,17 @@ KS_API ks_status_t ks_reshape_and_cache(
     const int32_t* slot_mapping, int num_tokens, int num_kv_heads,
     int head_dim, int block_size, ks_dtype_t dtype, ks_stream_t stream);
 
+/* Merge two partial attention states by log-sum-exp (cascade / chunked / ring
+ * attention glue): for each row,
+ *   out = (out_a*exp(lse_a) + out_b*exp(lse_b)) / (exp(lse_a)+exp(lse_b))
+ *   lse = log(exp(lse_a) + exp(lse_b))           (numerically stable)
+ * out/out_a/out_b: [n_rows, v_dim] (model dtype); lse/lse_a/lse_b: [n_rows] fp32.
+ * `out` may alias out_a and `lse` may alias lse_a (in-place accumulate). */
+KS_API ks_status_t ks_attention_state_merge(
+    void* out, float* lse, const void* out_a, const float* lse_a,
+    const void* out_b, const float* lse_b, int64_t n_rows, int64_t v_dim,
+    ks_dtype_t dtype, ks_stream_t stream);
+
 /* DeepSeek Multi-head Latent Attention decode over a compressed KV cache.
  *   q_nope: [num_seqs, num_heads, kv_lora_rank]
  *   q_pe:   [num_seqs, num_heads, rope_dim]
