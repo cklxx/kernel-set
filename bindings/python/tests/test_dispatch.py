@@ -191,6 +191,217 @@ def test_dtype_gating(monkeypatch):
     assert dispatch.which("attention_prefill", dtype="fp8") == KERNEL_SET
 
 
+def test_attention_plain_path_does_not_pass_new_optional_kwargs(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    flash_attn = types.ModuleType("flash_attn")
+    calls = []
+
+    def flash_attn_func(q, k, v, *, causal=True, softmax_scale=None):
+        calls.append((q, k, v, {"causal": causal,
+                                "softmax_scale": softmax_scale}))
+        return "plain_attn"
+
+    flash_attn.flash_attn_func = flash_attn_func
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+    _mock_available(monkeypatch, available_libs={"flash_attn"}, sm=90)
+
+    q = torch.empty(1, 2, 1, 4)
+    k = torch.empty(1, 2, 1, 4)
+    v = torch.empty(1, 2, 1, 4)
+    assert dispatch.attention_prefill(
+        q, k, v, _dtype="bf16", causal=True) == "plain_attn"
+    assert calls[-1][3] == {"causal": True, "softmax_scale": None}
+
+
+def test_attention_flash_attn_kwargs_thread_through(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    flash_attn = types.ModuleType("flash_attn")
+    flash_attn_interface = types.ModuleType("flash_attn_interface")
+    calls = []
+
+    def flash_attn_func(q, k, v, *, causal=True, softmax_scale=None,
+                        window_size=None, softcap=0.0, sinks=None):
+        calls.append({
+            "causal": causal,
+            "softmax_scale": softmax_scale,
+            "window_size": window_size,
+            "softcap": softcap,
+            "sinks": sinks,
+        })
+        return "feature_attn"
+
+    flash_attn.flash_attn_func = flash_attn_func
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+    monkeypatch.setitem(sys.modules, "flash_attn_interface",
+                        flash_attn_interface)
+    _mock_available(monkeypatch, available_libs={"flash_attn"}, sm=90)
+
+    q = torch.empty(1, 2, 1, 4)
+    k = torch.empty(1, 2, 1, 4)
+    v = torch.empty(1, 2, 1, 4)
+    sinks = torch.empty(1)
+    assert dispatch.attention_prefill(
+        q, k, v, _dtype="bf16", window_size=(128, 0),
+        softcap=50.0, sinks=sinks) == "feature_attn"
+    assert calls[-1]["window_size"] == (128, 0)
+    assert calls[-1]["softcap"] == 50.0
+    assert calls[-1]["sinks"] is sinks
+
+    def flash_attn_with_kvcache(q, k, v, *, page_table=None,
+                                cache_seqlens=None, softmax_scale=None,
+                                causal=False, window_size=None, softcap=0.0,
+                                sinks=None):
+        calls.append({
+            "decode": True,
+            "window_size": window_size,
+            "softcap": softcap,
+            "sinks": sinks,
+            "page_table": page_table,
+            "cache_seqlens": cache_seqlens,
+        })
+        return q
+
+    flash_attn_interface.flash_attn_with_kvcache = flash_attn_with_kvcache
+    qd = torch.empty(2, 1, 4)
+    kc = torch.empty(4, 1, 8, 4)
+    vc = torch.empty(4, 1, 8, 4)
+    block_tables = torch.zeros(2, 1, dtype=torch.int32)
+    seq_lens = torch.full((2,), 8, dtype=torch.int32)
+    assert _registry._attn_decode_fa3(
+        qd, kc, vc, block_tables, seq_lens, block_size=8,
+        max_blocks_per_seq=1, window_size=(64, 0),
+        softcap=25.0, sinks=sinks).shape == qd.shape
+    assert calls[-1]["decode"] is True
+    assert calls[-1]["window_size"] == (64, 0)
+    assert calls[-1]["softcap"] == 25.0
+    assert calls[-1]["sinks"] is sinks
+
+
+def test_attention_flashinfer_kwargs_thread_through(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    flashinfer = types.ModuleType("flashinfer")
+    prefill = types.ModuleType("flashinfer.prefill")
+    decode = types.ModuleType("flashinfer.decode")
+    calls = []
+
+    def single_prefill_with_kv_cache(
+            q, k, v, *, causal=True, kv_layout="NHD", sm_scale=None,
+            window_left=None, logits_soft_cap=0.0, custom_mask=None,
+            packed_custom_mask=None):
+        calls.append(("prefill", {
+            "causal": causal,
+            "kv_layout": kv_layout,
+            "sm_scale": sm_scale,
+            "window_left": window_left,
+            "logits_soft_cap": logits_soft_cap,
+            "custom_mask": custom_mask,
+            "packed_custom_mask": packed_custom_mask,
+        }))
+        return q
+
+    class BatchDecodeWithPagedKVCacheWrapper:
+        def __init__(self, workspace, kv_layout="NHD"):
+            calls.append(("decode_init", {"kv_layout": kv_layout,
+                                          "device": workspace.device}))
+
+        def plan(self, kv_indptr, kv_indices, last, qh, kvh, hd, block_size,
+                 *, pos_encoding_mode="NONE", data_type=None,
+                 q_data_type=None, window_left=None, logits_soft_cap=0.0):
+            calls.append(("decode_plan", {
+                "window_left": window_left,
+                "logits_soft_cap": logits_soft_cap,
+                "pos_encoding_mode": pos_encoding_mode,
+                "data_type": data_type,
+                "q_data_type": q_data_type,
+            }))
+
+        def run(self, q, kv):
+            calls.append(("decode_run", kv))
+            return q
+
+    prefill.single_prefill_with_kv_cache = single_prefill_with_kv_cache
+    decode.BatchDecodeWithPagedKVCacheWrapper = BatchDecodeWithPagedKVCacheWrapper
+    flashinfer.prefill = prefill
+    flashinfer.decode = decode
+    monkeypatch.setitem(sys.modules, "flashinfer", flashinfer)
+    monkeypatch.setitem(sys.modules, "flashinfer.prefill", prefill)
+    monkeypatch.setitem(sys.modules, "flashinfer.decode", decode)
+
+    q = torch.empty(1, 2, 1, 4)
+    k = torch.empty(1, 2, 1, 4)
+    v = torch.empty(1, 2, 1, 4)
+    mask = torch.ones(2, 2, dtype=torch.bool)
+
+    out = _registry._attn_prefill_flashinfer(
+        q, k, v, window_size=(128, 0), softcap=50.0, custom_mask=mask)
+    assert tuple(out.shape) == tuple(q.shape)
+    assert calls[-1][0] == "prefill"
+    assert calls[-1][1]["window_left"] == 128
+    assert calls[-1][1]["logits_soft_cap"] == 50.0
+    assert calls[-1][1]["custom_mask"] is mask
+
+    qd = torch.empty(2, 1, 4)
+    kc = torch.empty(4, 1, 8, 4)
+    vc = torch.empty(4, 1, 8, 4)
+    block_tables = torch.zeros(2, 1, dtype=torch.int32)
+    seq_lens = torch.full((2,), 8, dtype=torch.int32)
+    assert _registry._attn_decode_flashinfer(
+        qd, kc, vc, block_tables, seq_lens, block_size=8,
+        max_blocks_per_seq=1, window_size=(64, 0), softcap=25.0) is qd
+    plan = next(c for c in reversed(calls) if c[0] == "decode_plan")
+    assert plan[1]["window_left"] == 64
+    assert plan[1]["logits_soft_cap"] == 25.0
+
+
+def test_attention_call_specific_fallback_and_ks_error(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    flash_attn = types.ModuleType("flash_attn")
+
+    def flash_attn_func(q, k, v, *, causal=True, softmax_scale=None):
+        raise AssertionError("custom mask must skip flash-attn")
+
+    flash_attn.flash_attn_func = flash_attn_func
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+
+    flashinfer = types.ModuleType("flashinfer")
+    prefill = types.ModuleType("flashinfer.prefill")
+
+    def single_prefill_with_kv_cache(
+            q, k, v, *, causal=True, kv_layout="NHD", sm_scale=None,
+            custom_mask=None):
+        assert custom_mask is not None
+        return q
+
+    prefill.single_prefill_with_kv_cache = single_prefill_with_kv_cache
+    flashinfer.prefill = prefill
+    monkeypatch.setitem(sys.modules, "flashinfer", flashinfer)
+    monkeypatch.setitem(sys.modules, "flashinfer.prefill", prefill)
+
+    q = torch.empty(1, 2, 1, 4)
+    k = torch.empty(1, 2, 1, 4)
+    v = torch.empty(1, 2, 1, 4)
+    mask = torch.ones(2, 2, dtype=torch.bool)
+
+    _mock_available(monkeypatch, available_libs={"flash_attn", "flashinfer"},
+                    sm=90)
+    out = dispatch.attention_prefill(q, k, v, _dtype="bf16", custom_mask=mask)
+    assert tuple(out.shape) == tuple(q.shape)
+
+    # SDPA is a valid plain-attention fallback, but extras must skip it and
+    # reach the terminal ks error when no feature-capable provider is installed.
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"torch"}, sm=80)
+    with pytest.raises(NotImplementedError, match="kernel-set attention fallback"):
+        dispatch.attention_prefill(
+            q, k, v, _dtype="bf16", window_size=(128, 0))
+
+
 def test_tf32_arch_gating():
     from kernel_set.backends import dtype_arch_ok, normalize_dtype
 

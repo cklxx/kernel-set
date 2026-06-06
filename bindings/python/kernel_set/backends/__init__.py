@@ -37,6 +37,7 @@ from ._registry import (  # noqa: F401
     SGL_KERNEL,
     Op,
     Provider,
+    ProviderCallUnsupported,
     optimal_order,
 )
 from .optimal import (  # noqa: F401
@@ -50,6 +51,7 @@ __all__ = [
     "OP_ORDER",
     "Op",
     "Provider",
+    "ProviderCallUnsupported",
     "KERNEL_SET",
     "SGL_KERNEL",
     "GPU_SM",

@@ -51,6 +51,7 @@ from .backends import (
     OP_ORDER,
     OPS,
     Provider,
+    ProviderCallUnsupported,
     arch_ok,
     can_import,
     dtype_arch_ok,
@@ -207,6 +208,18 @@ def _dispatch(op: str, args, kwargs):
     passed as kwargs to influence selection (and are consumed, not forwarded)."""
     gpu = kwargs.pop("_gpu", None)
     dtype = kwargs.pop("_dtype", None)
+    sm = resolve_sm(gpu)
+    last_unsupported = None
+    for p in optimal_order(op, sm, dtype):
+        if not _is_selectable(p, sm, dtype):
+            continue
+        try:
+            return p.call(*args, **kwargs)
+        except ProviderCallUnsupported as exc:
+            last_unsupported = exc
+            continue
+    if last_unsupported is not None:
+        raise NotImplementedError(str(last_unsupported)) from last_unsupported
     return select(op, gpu, dtype).call(*args, **kwargs)
 
 
@@ -214,19 +227,28 @@ def _dispatch(op: str, args, kwargs):
 # Public auto-routing op API. Signatures mirror the kernel-set wrappers but
 # return the output tensor (and auto-pick the backend).
 # --------------------------------------------------------------------------- #
-def attention_prefill(q, k, v, *, causal=True, softmax_scale=None, **kw):
+def attention_prefill(q, k, v, *, causal=True, softmax_scale=None,
+                      window_size=None, softcap=0.0, sinks=None,
+                      custom_mask=None, packed_custom_mask=None, **kw):
     """Dense prefill attention. q/k/v: ``(batch, seqlen, heads, head_dim)``."""
     return _dispatch("attention_prefill", (q, k, v),
-                     dict(causal=causal, softmax_scale=softmax_scale, **kw))
+                     dict(causal=causal, softmax_scale=softmax_scale,
+                          window_size=window_size, softcap=softcap,
+                          sinks=sinks, custom_mask=custom_mask,
+                          packed_custom_mask=packed_custom_mask, **kw))
 
 
 def attention_decode(q, k_cache, v_cache, block_tables, seq_lens, *,
-                     block_size, max_blocks_per_seq, softmax_scale=None, **kw):
+                     block_size, max_blocks_per_seq, softmax_scale=None,
+                     window_size=None, softcap=0.0, sinks=None,
+                     custom_mask=None, packed_custom_mask=None, **kw):
     """Paged KV-cache decode. q: ``(num_seqs, heads, head_dim)``."""
     return _dispatch(
         "attention_decode", (q, k_cache, v_cache, block_tables, seq_lens),
         dict(block_size=block_size, max_blocks_per_seq=max_blocks_per_seq,
-             softmax_scale=softmax_scale, **kw))
+             softmax_scale=softmax_scale, window_size=window_size,
+             softcap=softcap, sinks=sinks, custom_mask=custom_mask,
+             packed_custom_mask=packed_custom_mask, **kw))
 
 
 def mla_decode(q_nope, q_pe, kv_cache, block_tables, seq_lens, *, heads, lora,

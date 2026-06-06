@@ -25,6 +25,7 @@ unsupported host (the dispatcher never calls an arch-/import-gated adapter).
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -83,16 +84,111 @@ def _scale(head_dim: int, scale: Optional[float]) -> float:
     return float(scale) if scale else 1.0 / math.sqrt(head_dim)
 
 
+class ProviderCallUnsupported(NotImplementedError):
+    """Raised by an adapter when this provider cannot serve the requested
+    optional call features, allowing dispatch to try the next provider."""
+
+
+def _kw_meaningful(name, value) -> bool:
+    if name == "softcap" or name == "logits_soft_cap":
+        return value is not None and float(value) != 0.0
+    if name == "window_size":
+        return value not in (None, (-1, -1), [-1, -1])
+    if name == "window_left":
+        return value is not None and int(value) >= 0
+    return value is not None
+
+
+def _attention_extras_set(window_size=None, softcap=0.0, sinks=None,
+                          custom_mask=None, packed_custom_mask=None) -> bool:
+    return (_kw_meaningful("window_size", window_size) or
+            _kw_meaningful("softcap", softcap) or sinks is not None or
+            custom_mask is not None or packed_custom_mask is not None)
+
+
+def _flashinfer_window_left(window_size, label: str):
+    if not _kw_meaningful("window_size", window_size):
+        return None
+    if isinstance(window_size, (tuple, list)):
+        if len(window_size) != 2:
+            raise ProviderCallUnsupported(
+                f"{label}: window_size must be (left, right)")
+        left, right = window_size
+        if right not in (None, -1, 0):
+            raise ProviderCallUnsupported(
+                f"{label}: FlashInfer supports left-window attention only")
+        return int(left)
+    return int(window_size)
+
+
+def _call_with_optional_kwargs(fn, args, base_kwargs, optional_kwargs,
+                               label: str):
+    """Call ``fn`` with only requested optional kwargs it actually supports.
+
+    Plain-path defaults are not passed, so older provider versions keep working.
+    If a caller requested a real feature and this installed function has no such
+    kwarg, raise ProviderCallUnsupported so dispatch can try the next backend.
+    """
+    requested = {k: v for k, v in optional_kwargs.items()
+                 if _kw_meaningful(k, v)}
+    call_kwargs = dict(base_kwargs)
+    if requested:
+        try:
+            sig = inspect.signature(fn)
+            has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in sig.parameters.values())
+            missing = [k for k in requested
+                       if not has_varkw and k not in sig.parameters]
+        except (TypeError, ValueError):
+            missing = []
+        if missing:
+            raise ProviderCallUnsupported(
+                f"{label}: installed provider does not support "
+                f"{', '.join(missing)}")
+        call_kwargs.update(requested)
+    try:
+        return fn(*args, **call_kwargs)
+    except TypeError as exc:
+        msg = str(exc)
+        if requested and ("unexpected keyword" in msg or
+                          "got an unexpected" in msg):
+            raise ProviderCallUnsupported(
+                f"{label}: installed provider rejected optional attention "
+                f"kwargs {sorted(requested)}") from exc
+        raise
+
+
+def _attention_ks_unsupported():
+    raise NotImplementedError(
+        "kernel-set attention fallback does not yet support "
+        "window_size/softcap/sinks/custom_mask/packed_custom_mask; install "
+        "flash-attn or flashinfer for these attention features.")
+
+
 # =========================================================================== #
 # ATTENTION — prefill (dense). q/k/v: (batch, seqlen, heads, head_dim).
 # =========================================================================== #
-def _attn_prefill_flash_attn(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_flash_attn(q, k, v, *, causal=True, softmax_scale=None,
+                             window_size=None, softcap=0.0, sinks=None,
+                             custom_mask=None, packed_custom_mask=None, **_):
+    if custom_mask is not None or packed_custom_mask is not None:
+        raise ProviderCallUnsupported(
+            "flash-attn dense prefill does not support custom/tree masks")
     fa = _imp("flash_attn")
-    return fa.flash_attn_func(q, k, v, causal=causal,
-                              softmax_scale=softmax_scale)
+    return _call_with_optional_kwargs(
+        fa.flash_attn_func, (q, k, v),
+        {"causal": causal, "softmax_scale": softmax_scale},
+        {"window_size": window_size, "softcap": softcap, "sinks": sinks},
+        "flash-attn prefill")
 
 
-def _attn_prefill_sdpa(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_sdpa(q, k, v, *, causal=True, softmax_scale=None,
+                       window_size=None, softcap=0.0, sinks=None,
+                       custom_mask=None, packed_custom_mask=None, **_):
+    if _attention_extras_set(window_size, softcap, sinks, custom_mask,
+                             packed_custom_mask):
+        raise ProviderCallUnsupported(
+            "torch SDPA adapter cannot serve window/softcap/sinks/custom_mask")
     import torch
     qt, kt, vt = (t.transpose(1, 2) for t in (q, k, v))
     enable_gqa = q.shape[-2] != k.shape[-2]
@@ -102,24 +198,45 @@ def _attn_prefill_sdpa(q, k, v, *, causal=True, softmax_scale=None, **_):
     return o.transpose(1, 2)
 
 
-def _attn_prefill_flashinfer(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_flashinfer(q, k, v, *, causal=True, softmax_scale=None,
+                             window_size=None, softcap=0.0, sinks=None,
+                             custom_mask=None, packed_custom_mask=None, **_):
     fi = _imp("flashinfer")
     if q.shape[0] != 1:
         raise NotImplementedError("flashinfer single_prefill adapter is b==1")
-    return fi.prefill.single_prefill_with_kv_cache(
-        q[0], k[0], v[0], causal=causal, kv_layout="NHD",
-        sm_scale=softmax_scale).unsqueeze(0)
+    window_left = _flashinfer_window_left(window_size, "flashinfer prefill")
+    out = _call_with_optional_kwargs(
+        fi.prefill.single_prefill_with_kv_cache, (q[0], k[0], v[0]),
+        {"causal": causal, "kv_layout": "NHD", "sm_scale": softmax_scale},
+        {"window_left": window_left, "logits_soft_cap": softcap,
+         "sinks": sinks, "custom_mask": custom_mask,
+         "packed_custom_mask": packed_custom_mask},
+        "flashinfer prefill")
+    return out.unsqueeze(0)
 
 
-def _attn_prefill_fa4(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_fa4(q, k, v, *, causal=True, softmax_scale=None,
+                      window_size=None, softcap=0.0, sinks=None,
+                      custom_mask=None, packed_custom_mask=None, **_):
     # FlashAttention-4 (Blackwell sm100): the CuTe-DSL kernel exported as
     # flash_attn.cute.flash_attn_func. Same dense (b, s, h, d) ergonomics as FA2.
+    if custom_mask is not None or packed_custom_mask is not None:
+        raise ProviderCallUnsupported(
+            "FlashAttention-4 dense prefill does not support custom/tree masks")
     fac = _imp("flash_attn.cute")
-    return fac.flash_attn_func(q, k, v, causal=causal,
-                               softmax_scale=softmax_scale)
+    return _call_with_optional_kwargs(
+        fac.flash_attn_func, (q, k, v),
+        {"causal": causal, "softmax_scale": softmax_scale},
+        {"window_size": window_size, "softcap": softcap, "sinks": sinks},
+        "flash-attn-cute prefill")
 
 
-def _attn_prefill_ks(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_ks(q, k, v, *, causal=True, softmax_scale=None,
+                     window_size=None, softcap=0.0, sinks=None,
+                     custom_mask=None, packed_custom_mask=None, **_):
+    if _attention_extras_set(window_size, softcap, sinks, custom_mask,
+                             packed_custom_mask):
+        _attention_ks_unsupported()
     from .. import attention
     import torch
     b, s, qh, hd = q.shape
@@ -135,7 +252,8 @@ def _attn_prefill_ks(q, k, v, *, causal=True, softmax_scale=None, **_):
 # =========================================================================== #
 def _attn_decode_flashinfer(q, k_cache, v_cache, block_tables, seq_lens, *,
                             block_size, max_blocks_per_seq, softmax_scale=None,
-                            **_):
+                            window_size=None, softcap=0.0, sinks=None,
+                            custom_mask=None, packed_custom_mask=None, **_):
     import torch
     fi = _imp("flashinfer")
     num_seqs, qh, hd = q.shape
@@ -152,25 +270,46 @@ def _attn_decode_flashinfer(q, k_cache, v_cache, block_tables, seq_lens, *,
                              device=device, dtype=torch.int32)
     kv_indices = torch.arange(num_seqs * bps, device=device, dtype=torch.int32)
     last = (seq_lens - (bps - 1) * block_size).clamp(min=1).to(torch.int32)
-    wrapper.plan(kv_indptr, kv_indices, last, qh, kvh, hd, block_size,
-                 pos_encoding_mode="NONE", data_type=q.dtype, q_data_type=q.dtype)
+    window_left = _flashinfer_window_left(window_size, "flashinfer decode")
+    _call_with_optional_kwargs(
+        wrapper.plan,
+        (kv_indptr, kv_indices, last, qh, kvh, hd, block_size),
+        {"pos_encoding_mode": "NONE", "data_type": q.dtype,
+         "q_data_type": q.dtype},
+        {"window_left": window_left, "logits_soft_cap": softcap,
+         "sinks": sinks, "custom_mask": custom_mask,
+         "packed_custom_mask": packed_custom_mask},
+        "flashinfer decode plan")
     return wrapper.run(q, (k_fi, v_fi))
 
 
 def _attn_decode_fa3(q, k_cache, v_cache, block_tables, seq_lens, *,
-                     block_size, max_blocks_per_seq, softmax_scale=None, **_):
+                     block_size, max_blocks_per_seq, softmax_scale=None,
+                     window_size=None, softcap=0.0, sinks=None,
+                     custom_mask=None, packed_custom_mask=None, **_):
+    if custom_mask is not None or packed_custom_mask is not None:
+        raise ProviderCallUnsupported(
+            "flash-attn-3 paged decode does not support custom/tree masks")
     from flash_attn_interface import flash_attn_with_kvcache
     qf = q.unsqueeze(1)
     k_fa = k_cache.permute(0, 2, 1, 3).contiguous()
     v_fa = v_cache.permute(0, 2, 1, 3).contiguous()
-    out = flash_attn_with_kvcache(
-        qf, k_fa, v_fa, page_table=block_tables, cache_seqlens=seq_lens,
-        softmax_scale=softmax_scale, causal=False)
+    out = _call_with_optional_kwargs(
+        flash_attn_with_kvcache, (qf, k_fa, v_fa),
+        {"page_table": block_tables, "cache_seqlens": seq_lens,
+         "softmax_scale": softmax_scale, "causal": False},
+        {"window_size": window_size, "softcap": softcap, "sinks": sinks},
+        "flash-attn-3 decode")
     return out.reshape_as(q)
 
 
 def _attn_decode_ks(q, k_cache, v_cache, block_tables, seq_lens, *,
-                    block_size, max_blocks_per_seq, softmax_scale=None, **_):
+                    block_size, max_blocks_per_seq, softmax_scale=None,
+                    window_size=None, softcap=0.0, sinks=None,
+                    custom_mask=None, packed_custom_mask=None, **_):
+    if _attention_extras_set(window_size, softcap, sinks, custom_mask,
+                             packed_custom_mask):
+        _attention_ks_unsupported()
     from .. import attention
     import torch
     num_seqs, qh, hd = q.shape
@@ -1394,9 +1533,14 @@ def _reshape_and_cache_fp8_sgl(key, value, key_cache, value_cache, slot_mapping,
     return key_cache, value_cache
 
 
-def _attn_prefill_sgl(q, k, v, *, causal=True, softmax_scale=None, **_):
+def _attn_prefill_sgl(q, k, v, *, causal=True, softmax_scale=None,
+                      window_size=None, softcap=0.0, sinks=None,
+                      custom_mask=None, packed_custom_mask=None, **_):
     # sgl_kernel.flash_attn_varlen_func (FA3) needs cu_seqlens + max_seqlens.
     # Build them for the dense (batch, seqlen, heads, head_dim) layout.
+    if custom_mask is not None or packed_custom_mask is not None:
+        raise ProviderCallUnsupported(
+            "sgl-kernel dense prefill adapter does not support custom/tree masks")
     import torch
     sk = _imp("sgl_kernel")
     b, s, qh, hd = q.shape
@@ -1405,16 +1549,24 @@ def _attn_prefill_sgl(q, k, v, *, causal=True, softmax_scale=None, **_):
     kf = k.reshape(b * s, kvh, hd)
     vf = v.reshape(b * s, kvh, hd)
     cu = torch.arange(0, (b + 1) * s, s, device=q.device, dtype=torch.int32)
-    out = sk.flash_attn_varlen_func(
-        qf, kf, vf, cu, cu, max_seqlen_q=s, max_seqlen_k=s,
-        softmax_scale=_scale(hd, softmax_scale), causal=causal)
+    out = _call_with_optional_kwargs(
+        sk.flash_attn_varlen_func, (qf, kf, vf, cu, cu),
+        {"max_seqlen_q": s, "max_seqlen_k": s,
+         "softmax_scale": _scale(hd, softmax_scale), "causal": causal},
+        {"window_size": window_size, "softcap": softcap, "sinks": sinks},
+        "sgl-kernel prefill")
     return out.reshape(b, s, qh, hd)
 
 
 def _attn_decode_sgl(q, k_cache, v_cache, block_tables, seq_lens, *,
-                     block_size, max_blocks_per_seq, softmax_scale=None, **_):
+                     block_size, max_blocks_per_seq, softmax_scale=None,
+                     window_size=None, softcap=0.0, sinks=None,
+                     custom_mask=None, packed_custom_mask=None, **_):
     # sgl_kernel.flash_attn_with_kvcache: paged decode with FA3. ks caches are
     # (num_blocks, kvh, page, hd); FA3 wants (num_blocks, page, kvh, hd).
+    if custom_mask is not None or packed_custom_mask is not None:
+        raise ProviderCallUnsupported(
+            "sgl-kernel decode adapter does not support custom/tree masks")
     import torch
     sk = _imp("sgl_kernel")
     num_seqs, qh, hd = q.shape
@@ -1422,9 +1574,12 @@ def _attn_decode_sgl(q, k_cache, v_cache, block_tables, seq_lens, *,
     qf = q.reshape(num_seqs, 1, qh, hd)
     k_fa = k_cache.permute(0, 2, 1, 3).contiguous()
     v_fa = v_cache.permute(0, 2, 1, 3).contiguous()
-    out = sk.flash_attn_with_kvcache(
-        qf, k_fa, v_fa, page_table=block_tables, cache_seqlens=seq_lens,
-        softmax_scale=_scale(hd, softmax_scale), causal=False)
+    out = _call_with_optional_kwargs(
+        sk.flash_attn_with_kvcache, (qf, k_fa, v_fa),
+        {"page_table": block_tables, "cache_seqlens": seq_lens,
+         "softmax_scale": _scale(hd, softmax_scale), "causal": False},
+        {"window_size": window_size, "softcap": softcap, "sinks": sinks},
+        "sgl-kernel decode")
     return out.reshape(num_seqs, qh, hd)
 
 
@@ -1539,31 +1694,42 @@ _OPS_RAW: List[Op] = [
         Provider("flash-attn-cute", 0, 100, "fp16, bf16",
                  "import flash_attn.cute",
                  _attn_prefill_fa4,
-                 "FlashAttention-4 CuTe-DSL (Blackwell sm100)"),
+                 "FlashAttention-4 CuTe-DSL (Blackwell sm100; SWA/softcap "
+                 "when exposed by installed build)"),
         Provider("flash-attn", 1, 80, "fp16, bf16",
                  "from flash_attn import flash_attn_func",
                  _attn_prefill_flash_attn,
-                 "industry-standard exact attention (FA2 sm80/89, FA3 sm90)"),
+                 "FA2/FA3 dense attention; forwards window_size, softcap, "
+                 "and sinks when the installed API supports them"),
         _sgl_provider(2, _attn_prefill_sgl, min_sm=90,
-                      note="SGLang FA3 (flash_attn_varlen_func, sm90)"),
+                      note="SGLang FA3 varlen prefill; forwards SWA/softcap/sinks "
+                      "when present"),
         Provider("torch-sdpa", 3, 80, "fp16, bf16, fp32",
                  "import torch",
-                 _attn_prefill_sdpa, "PyTorch SDPA flash/efficient backend"),
+                 _attn_prefill_sdpa,
+                 "PyTorch SDPA plain attention only; skipped for "
+                 "window/softcap/sinks/custom masks"),
         Provider("flashinfer", 4, 75, "fp16, bf16, fp8",
                  "from flashinfer.prefill import single_prefill_with_kv_cache",
-                 _attn_prefill_flashinfer, "NVIDIA serving kernels (b==1)"),
+                 _attn_prefill_flashinfer,
+                 "FlashInfer prefill (b==1 adapter); forwards window_left, "
+                 "logits_soft_cap, and custom/packed masks when supported"),
         _ks_provider(_attn_prefill_ks, "ks_flash_attn"),
     ]),
     Op("attention_decode", "attention", None, [
         Provider("flashinfer", 1, 75, "fp16, bf16, fp8 KV",
                  "from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper",
-                 _attn_decode_flashinfer, "paged decode plan/run, FA-class"),
+                 _attn_decode_flashinfer,
+                 "FlashInfer paged decode; forwards window_left/logits_soft_cap "
+                 "and supported mask/sink kwargs"),
         _sgl_provider(2, _attn_decode_sgl, min_sm=90,
-                      note="SGLang FA3 paged decode (flash_attn_with_kvcache)"),
+                      note="SGLang FA3 paged decode; forwards SWA/softcap/sinks "
+                      "when present"),
         Provider("flash-attn-3", 3, 90, "fp16, bf16, fp8 e4m3",
                  "from flash_attn_interface import flash_attn_with_kvcache",
                  _attn_decode_fa3,
-                 "native FlashAttention-3 paged decode (Hopper+)"),
+                 "native FlashAttention-3 paged decode; forwards window_size, "
+                 "softcap, and sinks when supported"),
         _ks_provider(_attn_decode_ks, "ks_paged_attn_decode"),
     ]),
     Op("mla_decode", "attention", None, [
