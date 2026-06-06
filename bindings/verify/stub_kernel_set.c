@@ -790,6 +790,14 @@ ks_status_t ks_attention_state_merge(void* out, float* lse, const void* out_a,
   return KS_SUCCESS;
 }
 
+ks_status_t ks_dsa_topk_select(int32_t* indices, const void* scores,
+                               int64_t n_rows, int64_t n_cols, int topk,
+                               ks_dtype_t dtype, ks_stream_t stream) {
+  (void)indices; (void)scores; (void)n_rows; (void)n_cols; (void)topk;
+  (void)dtype; (void)stream;
+  return KS_SUCCESS;
+}
+
 ks_status_t ks_rms_norm_residual(void* out, void* residual_out,
                                  const void* input, const void* residual,
                                  const void* weight, int64_t rows, int64_t cols,

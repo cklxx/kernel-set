@@ -70,6 +70,16 @@ KS_API ks_status_t ks_attention_state_merge(
     const void* out_b, const float* lse_b, int64_t n_rows, int64_t v_dim,
     ks_dtype_t dtype, ks_stream_t stream);
 
+/* Row-wise top-k selection over an indexer score matrix -> packed int32 column
+ * indices (DeepSeek sparse-attention KV selection). scores: [n_rows, n_cols]
+ * (model dtype); indices: [n_rows, topk] int32, written largest-score first and
+ * padded with -1 when n_cols < topk. Ties resolve to the lower column index.
+ * Correctness-first fallback (k passes of arg-max); the fast path is a radix
+ * top-k provider (flashinfer.top_k). */
+KS_API ks_status_t ks_dsa_topk_select(int32_t* indices, const void* scores,
+                                      int64_t n_rows, int64_t n_cols, int topk,
+                                      ks_dtype_t dtype, ks_stream_t stream);
+
 /* DeepSeek Multi-head Latent Attention decode over a compressed KV cache.
  *   q_nope: [num_seqs, num_heads, kv_lora_rank]
  *   q_pe:   [num_seqs, num_heads, rope_dim]

@@ -118,6 +118,18 @@ func AttentionStateMerge(out unsafe.Pointer, lse *float32, outA unsafe.Pointer,
 	return statusError(st, "ks_attention_state_merge")
 }
 
+// DSATopkSelect selects the topk largest scores per row -> packed int32 column
+// indices (DeepSeek sparse attention). scores is [nRows, nCols] (model dtype);
+// indices is [nRows, topk] int32 (largest first, -1 padded). Wraps
+// ks_dsa_topk_select.
+func DSATopkSelect(indices *int32, scores unsafe.Pointer, nRows, nCols int64,
+	topk int, dtype Dtype, stream Stream) error {
+	st := Status(C.ks_dsa_topk_select((*C.int32_t)(indices), scores,
+		C.int64_t(nRows), C.int64_t(nCols), C.int(topk),
+		C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_dsa_topk_select")
+}
+
 // FlashAttnBackward runs FlashAttention backward (training). Requires the
 // forward out and softmaxLSE. grad_q/grad_k/grad_v match q/k/v shapes. Wraps
 // ks_flash_attn_backward.

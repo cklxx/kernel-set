@@ -463,6 +463,10 @@ _decl(
     ],
 )
 _decl(
+    "ks_dsa_topk_select",
+    [POINTER(c_int32), _VP, c_int64, c_int64, c_int, _DTYPE, _STREAM],
+)
+_decl(
     "ks_flash_attn_backward",
     [
         _VP, _VP, _VP,                     # grad_q, grad_k, grad_v

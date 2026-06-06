@@ -271,6 +271,9 @@ export const ks_mla_decode = L.func(
 export const ks_attention_state_merge = L.func(
   'ks_status_t ks_attention_state_merge(ks_devptr out, ks_devptr lse, ks_devptr out_a, ks_devptr lse_a, ks_devptr out_b, ks_devptr lse_b, int64 n_rows, int64 v_dim, ks_dtype_t dtype, ks_stream_t stream)',
 );
+export const ks_dsa_topk_select = L.func(
+  'ks_status_t ks_dsa_topk_select(ks_devptr indices, ks_devptr scores, int64 n_rows, int64 n_cols, int topk, ks_dtype_t dtype, ks_stream_t stream)',
+);
 export const ks_flash_attn_backward = L.func(
   'ks_status_t ks_flash_attn_backward(ks_devptr grad_q, ks_devptr grad_k, ks_devptr grad_v, ks_devptr grad_out, ks_devptr q, ks_devptr k, ks_devptr v, ks_devptr out, ks_devptr softmax_lse, int batch, int seqlen_q, int seqlen_k, int num_heads, int num_kv_heads, int head_dim, float softmax_scale, int causal, ks_dtype_t dtype, ks_stream_t stream)',
 );

@@ -26,6 +26,7 @@ __all__ = [
     "reshape_and_cache",
     "mla_decode",
     "attention_state_merge",
+    "dsa_topk_select",
     "flash_attn_backward",
 ]
 
@@ -298,6 +299,45 @@ def attention_state_merge(
         "ks_attention_state_merge",
     )
     return out
+
+
+def dsa_topk_select(
+    indices: TensorLike,
+    scores: TensorLike,
+    n_rows: Optional[int] = None,
+    n_cols: Optional[int] = None,
+    topk: Optional[int] = None,
+    dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Row-wise top-k KV selection (DeepSeek sparse attention). ``scores`` is
+    ``[n_rows, n_cols]`` (model dtype); ``indices`` is ``[n_rows, topk]`` int32,
+    largest-score first, ``-1`` padded. Returns ``indices``.
+    """
+    if n_rows is None or n_cols is None:
+        try:
+            if hasattr(scores, "shape") and len(scores.shape) >= 2:
+                r = 1
+                for s in scores.shape[:-1]:
+                    r *= s
+                n_rows, n_cols = int(r), int(scores.shape[-1])
+        except Exception:
+            pass
+    if topk is None and hasattr(indices, "shape"):
+        topk = int(indices.shape[-1])
+    if n_rows is None or n_cols is None or topk is None:
+        raise ValueError("n_rows, n_cols and topk are required for raw-pointer inputs")
+    dt = infer_dtype(scores, dtype)
+    check(
+        lib.ks_dsa_topk_select(
+            _i32(indices, name="indices"),
+            ptr(scores, name="scores"),
+            int(n_rows), int(n_cols), int(topk), dt,
+            default_stream(stream, scores),
+        ),
+        "ks_dsa_topk_select",
+    )
+    return indices
 
 
 def flash_attn_backward(

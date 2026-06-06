@@ -445,6 +445,16 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_dsa_topk_select(
+        indices: *mut i32,
+        scores: *const c_void,
+        n_rows: i64,
+        n_cols: i64,
+        topk: c_int,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     pub fn ks_flash_attn_backward(
         grad_q: *mut c_void,
         grad_k: *mut c_void,

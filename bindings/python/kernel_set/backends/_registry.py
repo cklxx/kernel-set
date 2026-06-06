@@ -1871,6 +1871,22 @@ def _dsa_topk_select_flashinfer(scores, topk, *, indices_out=None,
     return indices
 
 
+def _dsa_topk_select_ks(scores, topk, *, indices_out=None, **_):
+    # Portable kernel-set fallback (k passes of arg-max; GPU-verified).
+    import torch
+    from .. import attention as _attn
+    rows = 1
+    for d in scores.shape[:-1]:
+        rows *= int(d)
+    n_cols = int(scores.shape[-1])
+    if indices_out is None:
+        indices_out = torch.empty((rows, int(topk)), device=scores.device,
+                                  dtype=torch.int32)
+    _attn.dsa_topk_select(indices_out, scores, n_rows=rows, n_cols=n_cols,
+                          topk=int(topk))
+    return indices_out
+
+
 def _nsa_selection_attention_fla(q, k, v, *args, **kw):
     ops = _imp("fla.ops")
     fn = (getattr(ops, "parallel_nsa", None) or
@@ -1988,14 +2004,14 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_ks_unsupported("dsa_indexer_logits"), "",
                      "no portable DSA indexer; needs DeepGEMM"),
     ]),
-    Op("dsa_topk_select", "attention", None, [
+    Op("dsa_topk_select", "attention", "ks_dsa_topk_select", [
         Provider("flashinfer", 1, 80,
                  "fp32, fp16, bf16 scores; int32 indices",
                  "import flashinfer; flashinfer.top_k",
                  _dsa_topk_select_flashinfer,
                  "FlashInfer radix/top-k selector for sparse-attention indices"),
-        _ks_provider(_ks_unsupported("dsa_topk_select"), "",
-                     "no portable DSA top-k selector; needs FlashInfer"),
+        _ks_provider(_dsa_topk_select_ks, "ks_dsa_topk_select",
+                     "portable k-pass arg-max top-k (correctness-first)"),
     ]),
     Op("nsa_selection_attention", "attention", None, [
         Provider("flash-linear-attention", 1, 80, "fp16, bf16",
