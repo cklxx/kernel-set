@@ -20,6 +20,8 @@ __all__ = [
     "quantize_int8",
     "dequantize_int8",
     "dequantize_int4",
+    "repack_int4",
+    "quantize_nvfp4",
 ]
 
 _F32P = POINTER(c_float)
@@ -170,16 +172,66 @@ def dequantize_int4(
     out_dtype: Optional[int] = None,
     stream: TensorLike = None,
 ) -> TensorLike:
-    """Dequantize group-wise INT4 weights (AWQ/GPTQ): packed ``[K/8, N]`` int32
-    -> ``[K, N]`` of ``out_dtype`` using ``scales``/``zeros`` ``[K/group_size,
-    N]``."""
+    """Dequantize AWQ/GPTQ group-wise INT4 weights.
+
+    ``qweight_packed``: int32 ``[k/8, n]`` (8 signed-less nibbles per word, packed
+    along K. Nibble j (j=0..7) of word is ``(word >> (4*j)) & 0xF``).
+    ``scales``/``zeros``: ``out_dtype`` ``[k/group_size, n]``.
+    """
     dt = infer_dtype(out, out_dtype)
     check(
         lib.ks_dequantize_int4(
             ptr(out, name="out"), ptr(qweight_packed, name="qweight_packed"),
             ptr(scales, name="scales"), ptr(zeros, name="zeros"),
-            int(k), int(n), int(group_size), dt, default_stream(stream, out),
+            int(k), int(n), int(group_size), dt,
+            default_stream(stream, out),
         ),
         "ks_dequantize_int4",
     )
     return out
+
+
+def repack_int4(
+    out_packed: TensorLike,
+    qweight: TensorLike,
+    perm: TensorLike,
+    size_k: int,
+    size_n: int,
+    num_bits: int = 4,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Repack GPTQ/AWQ weights to Marlin/Machete format."""
+    check(
+        lib.ks_repack_int4(
+            ptr(out_packed, name="out_packed"), ptr(qweight, name="qweight"),
+            ptr(perm, name="perm", allow_none=True),
+            int(size_k), int(size_n), int(num_bits),
+            default_stream(stream, out_packed),
+        ),
+        "ks_repack_int4",
+    )
+    return out_packed
+
+
+def quantize_nvfp4(
+    out_fp4: TensorLike,
+    out_scales: TensorLike,
+    input: TensorLike,
+    global_scale: float,
+    rows: int,
+    cols: int,
+    in_dtype: Optional[int] = None,
+    stream: TensorLike = None,
+):
+    """NVFP4 quantization correctness fallback."""
+    dt = infer_dtype(input, in_dtype)
+    check(
+        lib.ks_quantize_nvfp4(
+            ptr(out_fp4, name="out_fp4"), ptr(out_scales, name="out_scales"),
+            ptr(input, name="input"), float(global_scale),
+            int(rows), int(cols), dt,
+            default_stream(stream, input),
+        ),
+        "ks_quantize_nvfp4",
+    )
+    return out_fp4, out_scales

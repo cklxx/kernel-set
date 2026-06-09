@@ -89,6 +89,9 @@ try:
         ssm,
     )
 
+    from .gemm import gemm_nvfp4  # noqa: F401
+    from .quant import quantize_nvfp4, repack_int4  # noqa: F401
+
     # Frequently-used runtime functions promoted to the top level.
     from .runtime import (  # noqa: F401
         Stream,
@@ -178,4 +181,7 @@ __all__ = [
     "loss",
     "optimizer",
     "ssm",
+    "gemm_nvfp4",
+    "quantize_nvfp4",
+    "repack_int4",
 ]

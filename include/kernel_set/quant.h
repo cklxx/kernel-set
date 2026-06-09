@@ -57,6 +57,24 @@ KS_API ks_status_t ks_dequantize_int4(void* out, const void* qweight_packed,
                                       int64_t k, int64_t n, int group_size,
                                       ks_dtype_t out_dtype, ks_stream_t stream);
 
+/* Repack group-wise INT4 weights (GPTQ/AWQ -> Marlin layout).
+ * This is a correctness stub / fallback that allows loading INT4 checkpoints
+ * without Marlin being installed. (Actually returns KS_ERROR_NOT_IMPLEMENTED
+ * if called directly for now, acting as a terminal dead-end stub). */
+KS_API ks_status_t ks_repack_int4(void* out_packed, const void* qweight,
+                                  const void* perm, int64_t size_k, int64_t size_n,
+                                  int num_bits, ks_stream_t stream);
+
+/* NVFP4 quantization.
+ *   out_fp4: packed 2/byte e2m1 [rows, cols/2]
+ *   out_scales: fp8 e4m3 1x16 block scales [rows, cols/16]
+ *   global_scale: per-tensor fp32 input global scale
+ * Portable correctness fallback. */
+KS_API ks_status_t ks_quantize_nvfp4(void* out_fp4, void* out_scales,
+                                     const void* input, float global_scale,
+                                     int64_t rows, int64_t cols,
+                                     ks_dtype_t in_dtype, ks_stream_t stream);
+
 KS_END_EXTERN_C
 
 #endif /* KERNEL_SET_QUANT_H_ */

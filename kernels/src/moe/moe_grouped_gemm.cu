@@ -145,8 +145,9 @@ ks_status_t ks_moe_grouped_gemm(void* c, const void* a, const void* b,
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_moe_grouped_gemm: bad shape");
   if (total_rows == 0) return KS_SUCCESS;  // nothing routed
   // Validate the dtype up front so we never leak the schedule scratch on the
-  // unsupported-dtype path of KS_DISPATCH_FLOATING_TYPES (which returns early).
-  if (dtype != KS_DTYPE_F32 && dtype != KS_DTYPE_F16 && dtype != KS_DTYPE_BF16)
+  // unsupported-dtype path of KS_DISPATCH_FLOATING_AND_FP8_TYPES (which returns early).
+  if (dtype != KS_DTYPE_F32 && dtype != KS_DTYPE_F16 && dtype != KS_DTYPE_BF16 &&
+      dtype != KS_DTYPE_F8E4M3 && dtype != KS_DTYPE_F8E5M2)
     KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_DTYPE,
                     "ks_moe_grouped_gemm: unsupported dtype");
 
@@ -178,7 +179,7 @@ ks_status_t ks_moe_grouped_gemm(void* c, const void* a, const void* b,
                   static_cast<unsigned>(n_tiles));
   const dim3 block(moe::kGemmThreads);
 
-  KS_DISPATCH_FLOATING_TYPES(dtype, "ks_moe_grouped_gemm", {
+  KS_DISPATCH_FLOATING_AND_FP8_TYPES(dtype, "ks_moe_grouped_gemm", {
     moe::grouped_gemm_kernel<scalar_t><<<grid, block, 0, s>>>(
         static_cast<scalar_t*>(c), static_cast<const scalar_t*>(a),
         static_cast<const scalar_t*>(b), tile_expert, tile_mstart, num_tiles,

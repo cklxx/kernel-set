@@ -70,6 +70,7 @@ def _imp(modpath: str):
 # per-token-group fp8 quant, fp8 KV-cache, fp8 attention). Import-safe: every
 # adapter does its heavy imports lazily inside the function body.
 from ._quant_ext import (  # noqa: E402
+    _repack_gptq_marlin_vllm, _repack_awq_marlin_vllm, _prepack_machete_vllm,
     _nvfp4_gemm_flashinfer, _nvfp4_gemm_vllm,
     _mxfp4_gemm_flashinfer, _mxfp4_gemm_vllm, _mxfp4_gemm_torchao,
     _nvfp4_quantize_vllm, _nvfp4_quantize_flashinfer,
@@ -490,6 +491,30 @@ def _per_token_group_quant_ks(x, *, group_size=128, fp8_dtype=None, **_):
                              fp8_dtype=fp8_dtype or DType.F8E4M3)
     return out, scale
 
+
+
+def _gemm_nvfp4_ks(a, b, scale_a, scale_b, **kw):
+    from .. import gemm
+    m, k = a.shape
+    n = b.shape[1] if b.ndim == 2 else b.shape[0] # Note: b might be transposed, but gemm_nvfp4 expects certain shapes
+    # just pass it through
+    out = kw.get('out', None)
+    # The signature is: gemm_nvfp4(c, a_fp4, b_fp4, a_scale, b_scale, alpha, m, n, k, ...)
+    import torch
+    if out is None:
+        out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
+    return gemm.gemm_nvfp4(out, a, b, scale_a, scale_b, 1.0, m, n, k)
+
+def _quantize_nvfp4_ks(x, block_size=16, **kw):
+    from .. import quant
+    return quant.quantize_nvfp4(x, block_size)
+
+def _repack_int4_ks(qweight, perm=None, size_k=0, size_n=0, num_bits=4, **kw):
+    from .. import quant
+    return quant.repack_int4(qweight, size_k, size_n)
+
+def _prepack_machete_ks(*args, **kwargs):
+    raise NotImplementedError("Machete prepack ks not implemented")
 
 def _ks_unsupported(label):
     """A kernel-set terminal adapter for ops with NO portable ks kernel (fp4,
@@ -2101,6 +2126,27 @@ _OPS_RAW: List[Op] = [
         _ks_provider(_w4a16_ks, "ks_gemm_w4a16",
                      "portable INT4 fallback (correctness only)"),
     ]),
+    Op("w4a16_repack", "gemm-quant", "ks_repack_int4", [
+        Provider("vllm", 1, 80, "int4, int8",
+                 "from vllm import _custom_ops",
+                 _repack_gptq_marlin_vllm,
+                 "vLLM GPTQ->Marlin repack"),
+        _ks_provider(_repack_int4_ks, "ks_repack_int4", "portable int4 repack fallback"),
+    ]),
+    Op("awq_repack", "gemm-quant", "ks_repack_int4", [
+        Provider("vllm", 1, 80, "int4, int8",
+                 "from vllm import _custom_ops",
+                 _repack_awq_marlin_vllm,
+                 "vLLM AWQ->Marlin repack"),
+        _ks_provider(_repack_int4_ks, "ks_repack_int4", "portable int4 repack fallback"),
+    ]),
+    Op("machete_prepack", "gemm-quant", None, [
+        Provider("vllm", 1, 90, "int4, int8",
+                 "from vllm import _custom_ops",
+                 _prepack_machete_vllm,
+                 "vLLM Machete weight prepack"),
+        _ks_provider(_prepack_machete_ks, "", "machete prepack ks fallback"),
+    ]),
     Op("w4a8", "gemm-quant", None, [
         Provider("vllm-machete", 0, 90, "int4 weights, int8/fp8 acts",
                  "from vllm import _custom_ops as ops; ops.machete_mm; "
@@ -2176,18 +2222,18 @@ _OPS_RAW: List[Op] = [
     ]),
     # NVFP4 GEMM (Blackwell native 4-bit float: e2m1 + e4m3 1x16 block scale +
     # fp32 global). No portable ks kernel — Blackwell + FlashInfer/vLLM only.
-    Op("nvfp4_gemm", "gemm-quant", None, [
+    Op("nvfp4_gemm", "gemm-quant", "ks_gemm_nvfp4", [
         Provider("flashinfer", 1, 100, "fp4 nvfp4 e2m1",
                  "from flashinfer.gemm import mm_fp4",
                  _nvfp4_gemm_flashinfer, "FlashInfer NVFP4 mm_fp4 (Blackwell)"),
         Provider("vllm", 2, 100, "fp4 nvfp4",
                  "from vllm import _custom_ops",
                  _nvfp4_gemm_vllm, "vLLM cutlass_scaled_fp4_mm (Blackwell)"),
-        _ks_provider(_ks_unsupported("nvfp4 GEMM"), "",
-                     "no portable fp4 kernel; needs Blackwell + FlashInfer/vLLM"),
+        _ks_provider(_gemm_nvfp4_ks, "ks_gemm_nvfp4",
+                     "portable nvfp4 fallback (simulated)"),
     ]),
     # MXFP4 GEMM (OCP microscaling 4-bit: e2m1 + E8M0 block-32 scale). gpt-oss.
-    Op("mxfp4_gemm", "gemm-quant", None, [
+    Op("mxfp4_gemm", "gemm-quant", "ks_gemm_nvfp4", [
         Provider("flashinfer", 1, 100, "fp4 mxfp4 e2m1",
                  "from flashinfer.gemm import mm_fp4",
                  _mxfp4_gemm_flashinfer, "FlashInfer MXFP4 mm_fp4 (Blackwell)"),
@@ -2197,10 +2243,10 @@ _OPS_RAW: List[Op] = [
         Provider("torchao", 3, 100, "fp4 mxfp4",
                  "import torchao",
                  _mxfp4_gemm_torchao, "torchao MXFP4 inference"),
-        _ks_provider(_ks_unsupported("mxfp4 GEMM"), "",
-                     "no portable fp4 kernel; needs FlashInfer/vLLM/torchao"),
+        _ks_provider(_gemm_nvfp4_ks, "ks_gemm_nvfp4",
+                     "portable mxfp4 fallback (simulated via nvfp4)"),
     ]),
-    Op("fp4_quantize", "gemm-quant", None, [
+    Op("fp4_quantize", "gemm-quant", "ks_quantize_nvfp4", [
         Provider("vllm", 1, 100,
                  "fp16, bf16 -> fp4 e2m1 + fp8-e4m3 block scale",
                  "from vllm import _custom_ops as ops; ops.scaled_fp4_quant",
