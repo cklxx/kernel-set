@@ -561,6 +561,20 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_gemm_nvfp4(
+        c: *mut c_void,
+        a_fp4: *const c_void,
+        b_fp4: *const c_void,
+        a_scale: *const c_void,
+        b_scale: *const c_void,
+        alpha: f32,
+        m: i64,
+        n: i64,
+        k: i64,
+        out_dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     pub fn ks_gemm_fp8(
         out: *mut c_void,
         a_fp8: *const c_void,
@@ -910,6 +924,27 @@ extern "C" {
         n: i64,
         group_size: c_int,
         out_dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_repack_int4(
+        out_packed: *mut c_void,
+        qweight: *const c_void,
+        perm: *const c_void,
+        size_k: i64,
+        size_n: i64,
+        num_bits: c_int,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_quantize_nvfp4(
+        out_fp4: *mut c_void,
+        out_scales: *mut c_void,
+        input: *const c_void,
+        global_scale: f32,
+        rows: i64,
+        cols: i64,
+        in_dtype: ks_dtype_t,
         stream: ks_stream_t,
     ) -> ks_status_t;
 
