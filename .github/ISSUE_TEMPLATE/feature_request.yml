@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new kernel, backend, dtype, or binding capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case / motivation, not just the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        If it's a new operator, note the proposed C ABI signature and which
+        models/backends need it. If it's auto-selection routing, name the
+        (op, GPU, dtype) cells affected.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Kernel (kernels/src)
+        - C ABI (include)
+        - Auto-selection / routing
+        - Python binding
+        - Rust binding
+        - Go binding
+        - TypeScript binding
+        - Benchmarks
+        - Docs

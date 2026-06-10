@@ -1,0 +1,136 @@
+name: Release
+
+# Builds the prebuilt libkernel_set shared library, vendors it into a Python
+# wheel, and (on a version tag) publishes the wheel to PyPI plus the Rust / npm
+# packages. Tag a release with `vX.Y.Z` to trigger publishing; `workflow_dispatch`
+# builds the artifacts without publishing (dry run).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to PyPI / crates.io / npm (true) or just build (false)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the multi-arch fatbin .so (sm75-sm120, static CUDA runtime) and vendor
+  # it into the Python package, then build an sdist + wheel. nvcc compiles fine
+  # without a physical GPU on the runner.
+  # ---------------------------------------------------------------------------
+  build-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA toolkit (nvcc, no GPU)
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: "12.5.1"
+          method: "network"
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - run: pip install "cmake>=3.24" ninja build
+
+      - name: Build libkernel_set.so (sm75;80;86;89;90;100;120, static cudart)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;100;120" \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Static
+          cmake --build build -j
+          ls -la build/libkernel_set.so
+
+      - name: Vendor the .so into the Python package
+        run: |
+          mkdir -p bindings/python/kernel_set/lib
+          cp build/libkernel_set.so bindings/python/kernel_set/lib/
+
+      - name: Build sdist + wheel
+        working-directory: bindings/python
+        run: python -m build
+
+      - name: Smoke-test the wheel (dlopen + dispatch table, no GPU)
+        run: |
+          python -m venv /tmp/wheeltest
+          . /tmp/wheeltest/bin/activate
+          pip install bindings/python/dist/*.whl
+          python -c "import kernel_set as ks; print('import OK', ks.__version__); ks.dispatch.available()"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: bindings/python/dist/*
+
+  # ---------------------------------------------------------------------------
+  # Publish the wheel + sdist to PyPI on a version tag (or when manually asked).
+  # Uses PyPI Trusted Publishing (OIDC) — no API token stored in the repo.
+  # ---------------------------------------------------------------------------
+  publish-pypi:
+    needs: build-wheel
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # ---------------------------------------------------------------------------
+  # Publish the Rust crate on a version tag. Requires CARGO_REGISTRY_TOKEN.
+  # ---------------------------------------------------------------------------
+  publish-crate:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        working-directory: bindings/rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::warning::CARGO_REGISTRY_TOKEN not set — skipping crates.io publish"
+            exit 0
+          fi
+          cargo publish --allow-dirty
+
+  # ---------------------------------------------------------------------------
+  # Publish the TypeScript package to npm on a version tag. Requires NPM_TOKEN.
+  # ---------------------------------------------------------------------------
+  publish-npm:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish to npm
+        working-directory: bindings/ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN not set — skipping npm publish"
+            exit 0
+          fi
+          npm install
+          npm run build --if-present
+          npm publish --access public

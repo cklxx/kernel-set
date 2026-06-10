@@ -1,6 +1,6 @@
 {
   "name": "kernel-set",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "TypeScript/Node bindings for the kernel-set LLM inference & training kernel library (pure FFI via koffi, no native build).",
   "license": "Apache-2.0",
   "type": "commonjs",

@@ -95,12 +95,17 @@ jobs:
       - name: Configure + build (sm_${{ matrix.arch }})
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }}
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }} \
+            -DKS_ENABLE_TESTS=ON
           cmake --build build -j
       - name: dlopen the library (no undefined symbols)
         run: |
           LD_LIBRARY_PATH="${{ steps.cuda.outputs.CUDA_PATH }}/lib64:${LD_LIBRARY_PATH:-}" \
           python -c "import ctypes; ctypes.CDLL('build/libkernel_set.so'); print('dlopen OK sm_${{ matrix.arch }}')"
+      - name: ctest (kernels compile + link; cases skip without a GPU)
+        run: |
+          LD_LIBRARY_PATH="${{ steps.cuda.outputs.CUDA_PATH }}/lib64:${LD_LIBRARY_PATH:-}" \
+          ctest --test-dir build --output-on-failure
 
   # ---------------------------------------------------------------------------
   # Language-binding FFI: build a CPU stub of libkernel_set from the headers and
