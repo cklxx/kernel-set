@@ -505,13 +505,22 @@ def _gemm_nvfp4_ks(a, b, scale_a, scale_b, **kw):
         out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
     return gemm.gemm_nvfp4(out, a, b, scale_a, scale_b, 1.0, m, n, k)
 
-def _quantize_nvfp4_ks(x, block_size=16, **kw):
+def _quantize_nvfp4_ks(x, global_scale=1.0, **kw):
     from .. import quant
-    return quant.quantize_nvfp4(x, block_size)
+    import torch
+    rows, cols = x.shape
+    out_fp4 = torch.empty((rows, cols // 2), dtype=torch.uint8, device=x.device)
+    out_scales = torch.empty((rows, cols // 16), dtype=torch.uint8, device=x.device)
+    gs = float(global_scale.item()) if hasattr(global_scale, "item") else float(global_scale)
+    return quant.quantize_nvfp4(out_fp4, out_scales, x, gs, rows, cols)
 
 def _repack_int4_ks(qweight, perm=None, size_k=0, size_n=0, num_bits=4, **kw):
     from .. import quant
-    return quant.repack_int4(qweight, size_k, size_n)
+    import torch
+    k = int(size_k) if size_k else qweight.shape[0] * 8
+    n = int(size_n) if size_n else qweight.shape[1]
+    out_packed = torch.empty((k // 2, n), dtype=torch.uint8, device=qweight.device)
+    return quant.repack_int4(out_packed, qweight, perm, k, n, num_bits)
 
 def _prepack_machete_ks(*args, **kwargs):
     raise NotImplementedError("Machete prepack ks not implemented")

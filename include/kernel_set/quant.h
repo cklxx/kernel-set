@@ -65,11 +65,14 @@ KS_API ks_status_t ks_repack_int4(void* out_packed, const void* qweight,
                                   const void* perm, int64_t size_k, int64_t size_n,
                                   int num_bits, ks_stream_t stream);
 
-/* NVFP4 quantization.
+/* NVFP4 quantization (portable correctness fallback).
  *   out_fp4: packed 2/byte e2m1 [rows, cols/2]
  *   out_scales: fp8 e4m3 1x16 block scales [rows, cols/16]
  *   global_scale: per-tensor fp32 input global scale
- * Portable correctness fallback. */
+ * Computes a per-1x16-block absmax scale, stores it as e4m3, and encodes each
+ * element to e2m1 (round-trip consistent with the ks_gemm_nvfp4 decode path).
+ * `cols` must be a multiple of 16. Requires FP8 (e4m3) support at compile time;
+ * otherwise returns KS_ERROR_ARCH_UNSUPPORTED. */
 KS_API ks_status_t ks_quantize_nvfp4(void* out_fp4, void* out_scales,
                                      const void* input, float global_scale,
                                      int64_t rows, int64_t cols,
