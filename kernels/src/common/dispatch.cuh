@@ -72,6 +72,66 @@ inline ks_status_t check(gpuError_t e, const char* where) {
                       std::string(NAME) + ": unsupported dtype");         \
   }
 
+#if defined(KS_HAS_FP8_TYPES)
+#define KS_DISPATCH_FLOATING_AND_FP8_TYPES(DTYPE, NAME, ...)               \
+  switch (DTYPE) {                                                         \
+    case KS_DTYPE_F32: {                                                   \
+      using scalar_t = float;                                              \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_F16: {                                                   \
+      using scalar_t = __half;                                             \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_BF16: {                                                  \
+      using scalar_t = __nv_bfloat16;                                      \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_F8E4M3: {                                                \
+      using scalar_t = __nv_fp8_e4m3;                                      \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_F8E5M2: {                                                \
+      using scalar_t = __nv_fp8_e5m2;                                      \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    default:                                                               \
+      KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_DTYPE,                          \
+                      std::string(NAME) + ": unsupported dtype");          \
+  }
+#else
+#define KS_DISPATCH_FLOATING_AND_FP8_TYPES(DTYPE, NAME, ...)               \
+  switch (DTYPE) {                                                         \
+    case KS_DTYPE_F32: {                                                   \
+      using scalar_t = float;                                              \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_F16: {                                                   \
+      using scalar_t = __half;                                             \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_BF16: {                                                  \
+      using scalar_t = __nv_bfloat16;                                      \
+      __VA_ARGS__;                                                         \
+      break;                                                               \
+    }                                                                      \
+    case KS_DTYPE_F8E4M3:                                                  \
+    case KS_DTYPE_F8E5M2:                                                  \
+      KS_RETURN_ERROR(KS_ERROR_ARCH_UNSUPPORTED,                           \
+                      std::string(NAME) + ": compiled without FP8");       \
+    default:                                                               \
+      KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_DTYPE,                          \
+                      std::string(NAME) + ": unsupported dtype");          \
+  }
+#endif
+
 // Half-precision only (f16/bf16), e.g. tensor-core paths.
 #define KS_DISPATCH_HALF_TYPES(DTYPE, NAME, ...)                  \
   switch (DTYPE) {                                                \

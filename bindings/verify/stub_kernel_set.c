@@ -600,6 +600,24 @@ ks_status_t ks_gemm_w4a16(void* c, const void* a, const void* b_packed,
   return KS_SUCCESS;
 }
 
+ks_status_t ks_gemm_nvfp4(void* c, const void* a_fp4, const void* b_fp4,
+                          const void* a_scale, const void* b_scale,
+                          float alpha, int64_t m, int64_t n, int64_t k,
+                          ks_dtype_t out_dtype, ks_stream_t stream) {
+  (void)c;
+  (void)a_fp4;
+  (void)b_fp4;
+  (void)a_scale;
+  (void)b_scale;
+  (void)alpha;
+  (void)m;
+  (void)n;
+  (void)k;
+  (void)out_dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
 /* ===================================================================== */
 /* loss.h                                                                 */
 /* ===================================================================== */
@@ -1018,6 +1036,34 @@ ks_status_t ks_dequantize_int4(void* out, const void* qweight_packed,
   (void)n;
   (void)group_size;
   (void)out_dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_repack_int4(void* out_packed, const void* qweight,
+                           const void* perm, int64_t size_k, int64_t size_n,
+                           int num_bits, ks_stream_t stream) {
+  (void)out_packed;
+  (void)qweight;
+  (void)perm;
+  (void)size_k;
+  (void)size_n;
+  (void)num_bits;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_quantize_nvfp4(void* out_fp4, void* out_scales,
+                              const void* input, float global_scale,
+                              int64_t rows, int64_t cols, ks_dtype_t in_dtype,
+                              ks_stream_t stream) {
+  (void)out_fp4;
+  (void)out_scales;
+  (void)input;
+  (void)global_scale;
+  (void)rows;
+  (void)cols;
+  (void)in_dtype;
   (void)stream;
   return KS_SUCCESS;
 }

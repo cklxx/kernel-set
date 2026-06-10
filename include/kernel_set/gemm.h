@@ -97,6 +97,16 @@ KS_API ks_status_t ks_gemm_fp8_blockwise(void* out, const void* a_fp8,
                                          ks_dtype_t out_dtype,
                                          ks_stream_t stream);
 
+/* NVFP4 GEMM (Blackwell e2m1).
+ *   a_fp4/b_fp4: packed 2/byte e2m1.
+ *   a_scale/b_scale: fp8 e4m3 1x16 block scales.
+ *   alpha: fp32 global scale.
+ * This is a portable software-dequant correctness fallback. */
+KS_API ks_status_t ks_gemm_nvfp4(void* c, const void* a_fp4, const void* b_fp4,
+                                 const void* a_scale, const void* b_scale,
+                                 float alpha, int64_t m, int64_t n, int64_t k,
+                                 ks_dtype_t out_dtype, ks_stream_t stream);
+
 KS_END_EXTERN_C
 
 #endif /* KERNEL_SET_GEMM_H_ */

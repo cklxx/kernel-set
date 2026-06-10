@@ -24,6 +24,7 @@ __all__ = [
     "gemm_w4a16",
     "gemm_fp8",
     "gemm_fp8_blockwise",
+    "gemm_nvfp4",
 ]
 
 _F32P = POINTER(c_float)
@@ -277,6 +278,37 @@ def gemm_fp8(
     )
     return out
 
+
+def gemm_nvfp4(
+    c: TensorLike,
+    a_fp4: TensorLike,
+    b_fp4: TensorLike,
+    a_scale: TensorLike,
+    b_scale: TensorLike,
+    alpha: float,
+    m: int,
+    n: int,
+    k: int,
+    out_dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """``C = alpha * a_fp4 @ b_fp4``.
+    
+    a_fp4 / b_fp4 are packed 2 e2m1 values per byte.
+    a_scale / b_scale are fp8 1x16 block scales.
+    Portable correctness fallback for NVFP4.
+    """
+    dt = infer_dtype(c, out_dtype)
+    check(
+        lib.ks_gemm_nvfp4(
+            ptr(c, name="c"), ptr(a_fp4, name="a_fp4"), ptr(b_fp4, name="b_fp4"),
+            ptr(a_scale, name="a_scale"), ptr(b_scale, name="b_scale"),
+            float(alpha), int(m), int(n), int(k),
+            dt, default_stream(stream, c),
+        ),
+        "ks_gemm_nvfp4",
+    )
+    return c
 
 def gemm_fp8_blockwise(
     out: TensorLike,

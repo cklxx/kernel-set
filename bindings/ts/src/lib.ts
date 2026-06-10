@@ -295,6 +295,9 @@ export const ks_gemm_w8a8 = L.func(
 export const ks_gemm_w4a16 = L.func(
   'ks_status_t ks_gemm_w4a16(ks_devptr c, ks_devptr a, ks_devptr b_packed, ks_devptr scales, ks_devptr zeros, ks_devptr bias, int64 m, int64 n, int64 k, int group_size, ks_dtype_t dtype, ks_stream_t stream)',
 );
+export const ks_gemm_nvfp4 = L.func(
+  'ks_status_t ks_gemm_nvfp4(ks_devptr c, ks_devptr a_fp4, ks_devptr b_fp4, ks_devptr a_scale, ks_devptr b_scale, float alpha, int64 m, int64 n, int64 k, ks_dtype_t out_dtype, ks_stream_t stream)',
+);
 export const ks_gemm_fp8 = L.func(
   'ks_status_t ks_gemm_fp8(ks_devptr out, ks_devptr a_fp8, ks_devptr b_fp8, ks_devptr a_scale, ks_devptr b_scale, int64 m, int64 n, int64 k, ks_quant_mode_t a_mode, ks_quant_mode_t b_mode, ks_dtype_t fp8_dtype, ks_dtype_t out_dtype, ks_stream_t stream)',
 );
@@ -380,6 +383,12 @@ export const ks_dequantize_int8 = L.func(
 );
 export const ks_dequantize_int4 = L.func(
   'ks_status_t ks_dequantize_int4(ks_devptr out, ks_devptr qweight_packed, ks_devptr scales, ks_devptr zeros, int64 k, int64 n, int group_size, ks_dtype_t out_dtype, ks_stream_t stream)',
+);
+export const ks_repack_int4 = L.func(
+  'ks_status_t ks_repack_int4(ks_devptr out_packed, ks_devptr qweight, ks_devptr perm, int64 size_k, int64 size_n, int num_bits, ks_stream_t stream)',
+);
+export const ks_quantize_nvfp4 = L.func(
+  'ks_status_t ks_quantize_nvfp4(ks_devptr out_fp4, ks_devptr out_scales, ks_devptr input, float global_scale, int64 rows, int64 cols, ks_dtype_t in_dtype, ks_stream_t stream)',
 );
 
 /* ============================== sampling.h =========================== */

@@ -4,9 +4,9 @@
   "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
-    "total": 521,
+    "total": 533,
     "measured": 13,
-    "heuristic": 508
+    "heuristic": 520
   },
   "cells": [
     {
@@ -747,6 +747,61 @@
       "source": "heuristic",
       "fallback_chain": [
         "flashinfer",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "awq_repack",
+      "sm": 80,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "awq_repack",
+      "sm": 86,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "awq_repack",
+      "sm": 89,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "awq_repack",
+      "sm": 90,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "awq_repack",
+      "sm": 100,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
         "kernel-set"
       ]
     },
@@ -3016,6 +3071,28 @@
       "fallback_chain": [
         "vllm-marlin-int8",
         "sgl-kernel",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "machete_prepack",
+      "sm": 90,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "machete_prepack",
+      "sm": 100,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
         "kernel-set"
       ]
     },
@@ -5805,6 +5882,61 @@
       "fallback_chain": [
         "vllm-machete",
         "vllm-marlin",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a16_repack",
+      "sm": 80,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a16_repack",
+      "sm": 86,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a16_repack",
+      "sm": 89,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a16_repack",
+      "sm": 90,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
+        "kernel-set"
+      ]
+    },
+    {
+      "logical_op": "w4a16_repack",
+      "sm": 100,
+      "dtype": "int4",
+      "provider": "vllm",
+      "source": "heuristic",
+      "fallback_chain": [
+        "vllm",
         "kernel-set"
       ]
     },

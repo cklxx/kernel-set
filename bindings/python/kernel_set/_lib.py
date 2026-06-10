@@ -529,6 +529,15 @@ _decl(
     ],
 )
 _decl(
+    "ks_gemm_nvfp4",
+    [
+        _VP, _VP, _VP,                     # c, a_fp4, b_fp4
+        _VP, _VP,                          # a_scale, b_scale (fp8 block scales)
+        c_float, c_int64, c_int64, c_int64,  # alpha, m, n, k
+        _DTYPE, _STREAM,                   # out_dtype, stream
+    ],
+)
+_decl(
     "ks_gemm_fp8",
     [
         _VP, _VP, _VP,                     # out, a_fp8, b_fp8
@@ -744,6 +753,20 @@ _decl(
         _VP, _VP, _VP, _VP,                # out, qweight_packed, scales, zeros
         c_int64, c_int64, c_int,           # k, n, group_size
         _DTYPE, _STREAM,                   # out_dtype, stream
+    ],
+)
+_decl(
+    "ks_repack_int4",
+    [
+        _VP, _VP, _VP,                     # out_packed, qweight, perm
+        c_int64, c_int64, c_int, _STREAM,  # size_k, size_n, num_bits, stream
+    ],
+)
+_decl(
+    "ks_quantize_nvfp4",
+    [
+        _VP, _VP, _VP, c_float,            # out_fp4, out_scales, input, global_scale
+        c_int64, c_int64, _DTYPE, _STREAM, # rows, cols, in_dtype, stream
     ],
 )
 

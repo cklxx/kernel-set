@@ -262,6 +262,29 @@ HEURISTIC = {
         {"logical_op": "w4a8", "sm": 100, "dtype": "int4",
          "provider": "vllm-machete",
          "fallback_chain": ["vllm-machete", "vllm-marlin", "kernel-set"]},
+        # INT4 weight repack (GPTQ/AWQ -> Marlin layout). vLLM repack wins on
+        # Ampere+; kernel-set's portable nibble-repack is the terminal fallback
+        # (and the sole provider when vLLM is absent).
+        *[
+            {"logical_op": "w4a16_repack", "sm": sm, "dtype": "int4",
+             "provider": "vllm",
+             "fallback_chain": ["vllm", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+        ],
+        *[
+            {"logical_op": "awq_repack", "sm": sm, "dtype": "int4",
+             "provider": "vllm",
+             "fallback_chain": ["vllm", "kernel-set"]}
+            for sm in (80, 86, 89, 90, 100)
+        ],
+        # Machete weight prepack (Hopper+). vLLM-only; kernel-set has no portable
+        # prepack, so the chain terminates at vLLM on the feasible (sm90+) cells.
+        *[
+            {"logical_op": "machete_prepack", "sm": sm, "dtype": "int4",
+             "provider": "vllm",
+             "fallback_chain": ["vllm"]}
+            for sm in (90, 100)
+        ],
         # W8A16-FP8 weight-only Marlin: fp8-e4m3 weights with fp16/bf16
         # activations. The dtype key is the activation dtype; the op name carries
         # the FP8 weight format. Native fp8_gemm remains the preferred true-FP8
