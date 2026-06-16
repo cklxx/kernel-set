@@ -19,6 +19,7 @@
 #   KS_ITERS     timed iterations (default: 50).
 #   KS_BUILD_DIR build directory (default: <repo>/build).
 #   KS_JOBS      parallel build jobs (default: nproc).
+#   KS_RUN_LABEL run label recorded in reports (default: UTC timestamp).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -27,6 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BENCH_DIR="${SCRIPT_DIR}"
 RESULTS_DIR="${BENCH_DIR}/results"
+RAW_RESULTS_DIR="${RESULTS_DIR}/raw"
+RUNS_DIR="${RESULTS_DIR}/runs"
 BUILD_DIR="${KS_BUILD_DIR:-${REPO_ROOT}/build}"
 PYBIND_DIR="${REPO_ROOT}/bindings/python"
 
@@ -34,8 +37,9 @@ DTYPE="${KS_DTYPE:-fp16}"
 OPS="${KS_OPS:-all}"
 ITERS="${KS_ITERS:-50}"
 JOBS="${KS_JOBS:-$( (nproc 2>/dev/null) || (sysctl -n hw.ncpu 2>/dev/null) || echo 4)}"
+RUN_LABEL="${KS_RUN_LABEL:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-mkdir -p "${RESULTS_DIR}"
+mkdir -p "${RESULTS_DIR}" "${RAW_RESULTS_DIR}" "${RUNS_DIR}"
 
 # --- pick a python --------------------------------------------------------
 PYTHON="${PYTHON:-python3}"
@@ -119,6 +123,8 @@ print(m or (re.sub(r"[^a-z0-9]+","-",n).strip("-") or ("sm"+str(d["compute_major
   2>/dev/null || echo "sm${ARCH}")"
 [[ -z "${GPU_SLUG}" ]] && GPU_SLUG="sm${ARCH}"
 OUT="${RESULTS_DIR}/${GPU_SLUG}.md"
+RAW_JSON="${RAW_RESULTS_DIR}/${RUN_LABEL}-${GPU_SLUG}-${DTYPE}-bench.raw.json"
+RUN_JSON="${RUNS_DIR}/${RUN_LABEL}-${GPU_SLUG}-${DTYPE}-bench.json"
 
 # --- run the benchmark -----------------------------------------------------
 echo "==> Running benchmarks (dtype=${DTYPE}, ops=${OPS}, iters=${ITERS})"
@@ -127,8 +133,23 @@ echo "    report -> ${OUT}"
   --ops "${OPS}" \
   --dtype "${DTYPE}" \
   --iters "${ITERS}" \
+  --timestamp "${RUN_LABEL}" \
   --format md \
   --output "${OUT}" \
+  --json-output "${RAW_JSON}" \
   "$@"
 
+echo "==> Persisting canonical benchmark JSON"
+"${PYTHON}" "${BENCH_DIR}/persist.py" from-report "${RAW_JSON}" \
+  --source-report "${OUT}" \
+  --output "${RUN_JSON}"
+
+echo "==> Updating benchmark result index"
+"${PYTHON}" "${BENCH_DIR}/render_results_readme.py" \
+  --runs "${RUNS_DIR}" \
+  --index "${RESULTS_DIR}/index.json" \
+  --output "${RESULTS_DIR}/README.md"
+
 echo "==> Done. Results written to ${OUT}"
+echo "==> Raw JSON written to ${RAW_JSON}"
+echo "==> Canonical run written to ${RUN_JSON}"

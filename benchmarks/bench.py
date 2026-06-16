@@ -2902,6 +2902,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="element dtype: fp16, bf16, or fp32")
     p.add_argument("--shape", default=None,
                    help="only run shapes whose label contains this substring")
+    p.add_argument("--model-id", default="synthetic",
+                   help="model/context label recorded in JSON results")
+    p.add_argument("--layer-idx", type=int, default=None,
+                   help="optional model layer index recorded in JSON results")
+    p.add_argument("--position-kind", default=None,
+                   help="optional position label, e.g. prefill/decode")
+    p.add_argument("--position", type=int, default=None,
+                   help="optional token/sequence position recorded in JSON results")
     p.add_argument("--warmup", type=int, default=10, help="warmup launches (floor)")
     p.add_argument("--iters", type=int, default=None,
                    help="fixed timed launches (overrides --target-ms "
@@ -2936,6 +2944,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="write the report to this file (default: stdout)")
     p.add_argument("--format", default="md", choices=["md", "json"],
                    help="report format")
+    p.add_argument("--json-output", default=None,
+                   help="also write a structured JSON report to this file "
+                        "from the same benchmark run")
     p.add_argument("--timestamp", default=None,
                    help="optional run timestamp/label to record in the header")
     p.add_argument("--list-ops", action="store_true",
@@ -3045,6 +3056,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "l2_bytes": _TIMING.l2_bytes,
         "cudagraph": _TIMING.cudagraph,
         "ops": ops,
+        "context": {
+            "model_id": args.model_id,
+            "layer_idx": args.layer_idx,
+            "position_kind": args.position_kind,
+            "position": args.position,
+        },
         "tf32": tf32_info,
         "clocks": clocks,
         "clock_lock": clock_lock,
@@ -3067,8 +3084,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             reset_clocks()
             print("Reset GPU clocks.", file=sys.stderr)
 
+    json_report: Optional[str] = None
     if args.format == "json":
-        report = render_json(results, gpu, cfg)
+        json_report = render_json(results, gpu, cfg)
+        report = json_report
     else:
         report = render_markdown(results, gpu, cfg)
 
@@ -3079,6 +3098,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\nWrote report to {args.output}", file=sys.stderr)
     else:
         print(report)
+
+    if args.json_output:
+        if json_report is None:
+            json_report = render_json(results, gpu, cfg)
+        os.makedirs(os.path.dirname(os.path.abspath(args.json_output)),
+                    exist_ok=True)
+        with open(args.json_output, "w") as f:
+            f.write(json_report + "\n")
+        print(f"Wrote JSON report to {args.json_output}", file=sys.stderr)
 
     # surface a nonzero exit if every benchmark errored (helps CI)
     ran = [r for r in results if r.status == "ok"]

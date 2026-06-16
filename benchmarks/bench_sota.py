@@ -1997,6 +1997,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         f"Choices: {','.join(ALL_OPS)}")
     p.add_argument("--dtype", default="fp16",
                    help="element dtype: fp16, bf16, or fp32")
+    p.add_argument("--model-id", default="synthetic",
+                   help="model/context label recorded in JSON results")
+    p.add_argument("--layer-idx", type=int, default=None,
+                   help="optional model layer index recorded in JSON results")
+    p.add_argument("--position-kind", default=None,
+                   help="optional position label, e.g. prefill/decode")
+    p.add_argument("--position", type=int, default=None,
+                   help="optional token/sequence position recorded in JSON results")
     p.add_argument("--warmup", type=int, default=10, help="warmup launches")
     p.add_argument("--iters", type=int, default=None,
                    help="fixed timed launches (overrides --target-ms)")
@@ -2012,6 +2020,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="write the report to this file (default: stdout)")
     p.add_argument("--format", default="md", choices=["md", "json"],
                    help="report format")
+    p.add_argument("--json-output", default=None,
+                   help="also write a structured JSON report to this file "
+                        "from the same benchmark run")
     p.add_argument("--timestamp", default=None,
                    help="optional run timestamp/label for the header")
     p.add_argument("--list", action="store_true",
@@ -2109,6 +2120,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "l2_flush": _TIMING.l2_flush,
         "l2_bytes": _TIMING.l2_bytes,
         "ops": ops,
+        "context": {
+            "model_id": args.model_id,
+            "layer_idx": args.layer_idx,
+            "position_kind": args.position_kind,
+            "position": args.position,
+        },
         "tf32": tf32_info,
         "clocks": query_clocks(),
         "env": collect_env(),
@@ -2126,8 +2143,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     rows = run_groups(ops, ctx)
 
+    json_report: Optional[str] = None
     if args.format == "json":
-        report = render_json(rows, gpu, cfg)
+        json_report = render_json(rows, gpu, cfg)
+        report = json_report
     else:
         report = render_markdown(rows, gpu, cfg)
 
@@ -2139,6 +2158,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\nWrote report to {args.output}", file=sys.stderr)
     else:
         print(report)
+
+    if args.json_output:
+        if json_report is None:
+            json_report = render_json(rows, gpu, cfg)
+        os.makedirs(os.path.dirname(os.path.abspath(args.json_output)),
+                    exist_ok=True)
+        with open(args.json_output, "w") as f:
+            f.write(json_report + "\n")
+        print(f"Wrote JSON report to {args.json_output}", file=sys.stderr)
 
     counts = summarize(rows)
     print(f"\nDone. ok={counts.get('ok', 0)} skip={counts.get('skip', 0)} "

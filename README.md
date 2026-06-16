@@ -61,11 +61,27 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
   MoE can't beat cuBLAS / FlashAttention / DeepGEMM, so the dispatcher routes to
   them; kernel-set stays as the correct portable fallback.
 
-> **Verified on real GPUs:** every kernel-set op is correctness-checked on **L4
-> (sm89)**, **A100 (sm80)**, **H20 (sm90, Hopper)**, and **RTX PRO 6000 Blackwell
-> (sm120)** — `correct=100, incorrect=0` each (`benchmarks/results/`). Builds +
-> loads across **sm70–sm120** (T4/V100 → Hopper → Blackwell). HIP/ROCm behind a
-> build flag.
+> **Measured on real GPUs:** checked-in benchmark runs cover **L4 (sm89)**,
+> **A100 (sm80)**, **H20 (sm90, Hopper)**, and **RTX PRO 6000 Blackwell
+> (sm120)**. The durable data lives in `benchmarks/results/runs/`; the summary
+> below is generated from those JSON runs. CUDA release builds cover sm75–sm120;
+> HIP/ROCm remains behind a build flag.
+
+<!-- BENCHMARK_SUMMARY:START -->
+## Benchmarks
+
+Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **20 runs**, **1078/1226 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+
+| GPU | op | fastest measured impl | runner-up | ratio |
+|---|---|---|---|---:|
+| NVIDIA H20 sm90 | `fused_add_rmsnorm` | `flashinfer-norm` 15.6 us | `sgl-norm` 17.2 us | 1.10x |
+| NVIDIA L4 sm89 | `fused_add_rmsnorm` | `kernel-set` 2333.7 us | `flashinfer-norm` 4622.8 us | 1.98x |
+| NVIDIA H20 sm90 | `swiglu` | `kernel-set` 12.1 us | `flashinfer-act` 12.5 us | 1.03x |
+| NVIDIA L4 sm89 | `swiglu` | `kernel-set` 12.3 us | `flashinfer-act` 13.3 us | 1.08x |
+| NVIDIA A100-SXM4-40GB sm80 | `swiglu` | `kernel-set` 8.2 us | `eager` 33.8 us | 4.12x |
+| NVIDIA RTX PRO 6000 Blackwell Server Edition sm120 | `swiglu` | `kernel-set` 6.1 us | `eager` 12.3 us | 2.02x |
+
+<!-- BENCHMARK_SUMMARY:END -->
 
 ## Try it on a real model
 
@@ -111,8 +127,9 @@ python3 models/ksctl plan --model deepseek-v3 --gpu h100 --dtype fp8   # best ke
 | | |
 |---|---|
 | [`OPTIMAL_SELECTION.md`](docs/OPTIMAL_SELECTION.md) · [`ROUTING.md`](docs/ROUTING.md) | how a kernel gets picked (table + 3-tier routing) |
+| [`EVOLUTION_PLAN.md`](docs/EVOLUTION_PLAN.md) | measured-data roadmap: benchmark persistence, sm90/sm100 promotion, release gates |
 | [`QUANT_OPERATORS.md`](docs/QUANT_OPERATORS.md) | quant ops: what ships, what dispatches, the gaps |
-| [`OPERATOR_CATALOG.md`](docs/OPERATOR_CATALOG.md) · [`ATOMIC_OPERATORS.md`](docs/ATOMIC_OPERATORS.md) | 127 logical ops · 476 atomic ops (`sgl.*`/`flashinfer.*`/`vllm.*`) |
+| [`OPERATOR_CATALOG.md`](docs/OPERATOR_CATALOG.md) · [`ATOMIC_OPERATORS.md`](docs/ATOMIC_OPERATORS.md) | provider-ranked logical ops and atomic `sgl.*`/`flashinfer.*`/`vllm.*` catalogs |
 | [`MODEL_KERNEL_MAP.md`](docs/MODEL_KERNEL_MAP.md) | 178 models → kernels (DeepSeek-V4, GLM-5, Kimi-2.6, Gemma-4, Llama 4, MiMo-V2.5, LongCat, Ling-2.5, … + Mamba/RWKV/DeltaNet) |
 | [`USAGE.md`](docs/USAGE.md) · [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`BENCHMARK_METHODOLOGY.md`](docs/BENCHMARK_METHODOLOGY.md) | usage · architecture · bench methodology |
 

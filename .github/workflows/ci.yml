@@ -58,10 +58,17 @@ jobs:
 
       - name: Benchmark harnesses parse + list
         run: |
-          for f in bench bench_sota bench_atomic; do
+          for f in bench bench_sota bench_atomic persist render_results_readme colab_matrix colab_remote_runner; do
             python -c "import ast; ast.parse(open('benchmarks/$f.py').read()); print('parse ok: $f')"
           done
           python benchmarks/bench.py --list-ops > /dev/null
+          python benchmarks/bench_sota.py --list > /dev/null
+          python benchmarks/colab_matrix.py --help > /dev/null
+
+      - name: Benchmark result data in sync
+        run: |
+          python benchmarks/persist.py validate benchmarks/results/runs
+          python benchmarks/render_results_readme.py --root-readme README.md --check
 
       - name: Shell scripts lint
         run: |
@@ -151,5 +158,5 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           KERNEL_SET_LIB="$STUB" node bindings/verify/verify_ts.mjs
 
-      - name: Signature cross-check vs headers (76/76 all bindings)
+      - name: Signature cross-check vs headers
         run: python bindings/verify/xcheck_signatures.py

@@ -103,10 +103,14 @@ time for launch-bound shapes, and never present the two side by side as equal.
 | `bench.py` | the harness: GPU detection, timing, the benchmark registry, reporting (markdown/JSON) |
 | `bench_sota.py` | kernel-set vs external SOTA providers, op-by-op |
 | `_bench_common.py` | shared shape tables + RoPE reference imported by both `bench.py` and `bench_sota.py` |
+| `persist.py` | normalize raw benchmark JSON into canonical per-run comparison rows |
+| `render_results_readme.py` | generate `results/index.json`, `results/README.md`, and the root README benchmark block |
+| `colab_matrix.py` | Colab/remote runner: build once, shard all ops/suites, persist raw + canonical JSON, refresh summaries |
+| `colab_remote_runner.py` | tiny Colab CLI entrypoint that unpacks an uploaded source tarball, runs `colab_matrix.py`, and packages results |
 | `baselines.yaml` | the rank-1 upstream baseline per operator — **auto-generated** from `providers/registry.json` (see below) |
-| `build_and_bench.sh` | build the lib for the detected arch, set `KERNEL_SET_LIB`, run `bench.py`, write `results/<gpu>.md` |
+| `build_and_bench.sh` | build the lib for the detected arch, set `KERNEL_SET_LIB`, run `bench.py`, write Markdown + JSON results |
 | `colab_bench.ipynb` | a copy-paste-runnable Colab notebook (L4/A100) |
-| `results/` | generated reports, one per GPU (`results/l4.md`, `results/a100.md`, …) |
+| `results/` | checked-in historical reports, canonical run JSON (`runs/*.json`), and generated summary/index files |
 
 ### Regenerating `baselines.yaml`
 
@@ -139,15 +143,26 @@ One command — detects the GPU, builds, benchmarks, writes the report:
 benchmarks/build_and_bench.sh
 ```
 
-This writes `benchmarks/results/<gpu>.md` (e.g. `results/l4.md`). It maps the
-detected GPU to a single CUDA arch (L4→`89`, A100→`80`, H100→`90`, T4→`75`,
-otherwise the device's native `sm_XY`).
+This writes:
+
+- `benchmarks/results/<gpu>.md` for the human report,
+- `benchmarks/results/raw/<run>-<gpu>-<dtype>-bench.raw.json` for the raw harness report,
+- `benchmarks/results/runs/<run>-<gpu>-<dtype>-bench.json` for durable comparison rows,
+- refreshed `benchmarks/results/index.json` and `benchmarks/results/README.md`.
+
+Commit `benchmarks/results/runs/*.json`, `benchmarks/results/index.json`, and
+`benchmarks/results/README.md`. Treat `raw/` and ad-hoc shard Markdown as local
+scratch unless a specific report needs to be preserved for audit.
+
+It maps the detected GPU to a single CUDA arch (L4→`89`, A100→`80`, H100→`90`,
+T4→`75`, otherwise the device's native `sm_XY`).
 
 Useful environment overrides:
 
 ```bash
 KS_DTYPE=bf16 KS_OPS=gemm,attention KS_ITERS=100 benchmarks/build_and_bench.sh
 KS_ARCH=89 benchmarks/build_and_bench.sh      # force the CUDA arch
+KS_RUN_LABEL=2026-06-16-l4-fp16 benchmarks/build_and_bench.sh
 ```
 
 Any extra args are forwarded to `bench.py`, e.g.:
@@ -202,6 +217,11 @@ path or bare filename) or `KERNEL_SET_LIB_DIR` (a directory) — see
 --timestamp STR   optional run label recorded in the header
 --output FILE     write the report here (default: stdout)
 --format {md,json}                                         (default: md)
+--json-output FILE  also write structured JSON from the same run
+--model-id STR    model/context label stored in JSON rows     (default: synthetic)
+--layer-idx N     optional model layer index stored in JSON rows
+--position-kind STR  optional position label, e.g. prefill/decode
+--position N      optional token/sequence position stored in JSON rows
 --list-ops        print the op/shape catalog and exit
 --gpu-only        print detected GPU info as JSON and exit
 ```
@@ -224,10 +244,71 @@ python benchmarks/bench.py --lock-clocks --dtype bf16
 # disable the L2 flush to see warm-cache (L2-bandwidth) numbers
 python benchmarks/bench.py --ops rmsnorm --no-l2-flush
 
-python benchmarks/bench.py --format json --output results/l4.json
+python benchmarks/bench.py --format md --output results/l4.md \
+    --json-output results/raw/l4.raw.json
+python benchmarks/persist.py from-report results/raw/l4.raw.json \
+    --source-report results/l4.md
+python benchmarks/render_results_readme.py --root-readme README.md
 ```
 
 ## Run on Colab (L4 / A100)
+
+For Colab CLI runs, upload or unpack this checkout into the VM and run the
+matrix runner from the repo root. It builds `libkernel_set.so` once, runs all
+selected op shards, writes Markdown + raw JSON + canonical JSON, then refreshes
+`benchmarks/results/README.md` and `benchmarks/results/index.json`:
+
+```bash
+python benchmarks/colab_matrix.py \
+  --suite both \
+  --ops all \
+  --dtype fp16 \
+  --target-ms 200 \
+  --run-label 2026-06-16-colab-l4-full \
+  --model-id synthetic \
+  --position-kind all \
+  --shard-size 4
+```
+
+`--suite kernel_set` covers the in-tree harness; `--suite sota` covers the
+external-provider comparison harness. Use `--cuda-arch 89` or `--cuda-arch 80`
+only when GPU detection is unavailable.
+
+With `colab-cli`, prefer uploading a tarball and executing the small remote
+entrypoint rather than embedding the whole repo in a notebook cell:
+
+```bash
+tar -czf /tmp/kernel-set.tgz \
+  --exclude .git --exclude build --exclude __pycache__ --exclude .pytest_cache .
+colab new -s ks-l4-full --gpu L4
+colab upload -s ks-l4-full /tmp/kernel-set.tgz /content/kernel-set.tgz
+colab upload -s ks-l4-full benchmarks/colab_remote_runner.py /content/colab_remote_runner.py
+colab exec -s ks-l4-full -f /content/colab_remote_runner.py --timeout 7200
+colab download -s ks-l4-full /content/kernel-set-results.tgz /tmp/kernel-set-results.tgz
+```
+
+Use the same command on remote GPU hosts for the larger matrix. Keep the
+`--run-label` specific to the GPU so parallel agents do not overwrite each
+other:
+
+```bash
+# A100 / sm80
+python benchmarks/colab_matrix.py --suite both --ops all --dtype bf16 \
+  --run-label 2026-06-16-a100-full --model-id synthetic \
+  --position-kind all --shard-size 4 --cuda-arch 80
+
+# H100 / H20 / sm90
+python benchmarks/colab_matrix.py --suite both --ops all --dtype bf16 \
+  --run-label 2026-06-16-sm90-full --model-id synthetic \
+  --position-kind all --shard-size 4 --cuda-arch 90
+
+# RTX PRO 6000 Blackwell / sm120
+python benchmarks/colab_matrix.py --suite both --ops all --dtype bf16 \
+  --run-label 2026-06-16-pro6000-sm120-full --model-id synthetic \
+  --position-kind all --shard-size 4 --cuda-arch 120
+```
+
+Notebook path:
 
 1. Open `benchmarks/colab_bench.ipynb` in Colab.
 2. `Runtime ▸ Change runtime type ▸ GPU` → pick **L4** or **A100**.
