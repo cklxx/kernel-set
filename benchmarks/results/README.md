@@ -67,6 +67,44 @@ source; Markdown files are display artifacts.
 | `sampling` | `decode` | kernel_set | 3 | 4 | 2 | 4 | 72 / 72 |
 | `ssm` | `prefill` | sota | 3 | 1 | 3 | 2 | 0 / 6 |
 
+## Representative Large Kernels
+
+These rows keep the README focused on the model-dominant kernels: attention,
+MLA, GEMM/FP8 GEMM, and MoE routing/dispatch. They may be single-provider
+measurements when no comparable third-party provider was present in that run.
+
+| part | op | GPU / suite | shape | impl | latency | source |
+|---|---|---|---|---|---:|---|
+| `attention` | `attn_prefill` | NVIDIA H20 (sm90, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 335.7 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention` | `attn_prefill` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 15245.7 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+| `attention` | `attn_prefill` | NVIDIA L4 (sm89, fp16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 599.0 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `attention` | `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` | 344.1 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `attention` | `attn_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 340.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention` | `attn_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 2283.5 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `attention` | `attention_decode` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 1780.7 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `attention` | `attention_decode` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 4455.4 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `attention` | `mla_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention` | `mla_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `kernel-set` | 79271.9 us | [2026-06-05t06-23-21-nvidia-l4-fp16-sota.json](runs/2026-06-05t06-23-21-nvidia-l4-fp16-sota.json) |
+| `linear` | `gemm` | NVIDIA H20 (sm90, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `linear` | `gemm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 369.6 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+
+## Representative Memory-Bound Kernels
+
+| part | op | GPU / suite | shape | impl | latency | source |
+|---|---|---|---|---|---:|---|
+| `norm` | `fused_add_rmsnorm` | NVIDIA H20 (sm90, bf16, sota) | `rows=1,hidden=4096` | `flashinfer-norm` | 15.6 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `norm` | `fused_add_rmsnorm` | NVIDIA L4 (sm89, fp16, sota) | `rows=1,hidden=4096` | `flashinfer-norm` | 15.4 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `norm` | `rmsnorm` | NVIDIA H20 (sm90, bf16, sota) | `rows=1,hidden=4096` | `flashinfer-norm` | 10.9 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `norm` | `rmsnorm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `rows=1,hidden=4096` | `kernel-set` | 16.4 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+| `norm` | `rmsnorm` | NVIDIA L4 (sm89, fp16, sota) | `rows=1,hidden=4096` | `liger-norm` | 11.3 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `norm` | `rmsnorm` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `rows=1,hidden=4096` | `kernel-set` | 21.5 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `mlp` | `swiglu` | NVIDIA H20 (sm90, bf16, sota) | `rows=1,inter=14336` | `kernel-set` | 12.1 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `mlp` | `swiglu` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `rows=1,inter=14336` | `kernel-set` | 13.7 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+| `mlp` | `swiglu` | NVIDIA L4 (sm89, fp16, sota) | `rows=1,inter=14336` | `kernel-set` | 12.3 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `mlp` | `swiglu` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `rows=1,inter=14336` | `kernel-set` | 8.2 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `mlp` | `geglu` | NVIDIA H20 (sm90, bf16, kernel_set) | `rows=1,inter=14336` | `kernel-set` | 6.5 us | [2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json](runs/2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json) |
+| `mlp` | `geglu` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `rows=1,inter=14336` | `kernel-set` | 8.2 us | [20260616-pro6000-full-kernel-set-cross-entropy-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-cross-entropy-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
+
 ## Grouped Provider Winners
 
 | model part | position | op | GPU / suite | shape | winner | runner-up | ratio | source |
@@ -95,6 +133,18 @@ source; Markdown files are display artifacts.
 | `elementwise` | `bulk` | `ew_mul` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `n=16777216` | `kernel-set` 85.0 us | `eager` 91.1 us | 1.07x | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
 | `elementwise` | `bulk` | `ew_mul` | NVIDIA H20 (sm90, bf16, kernel_set) | `n=16777216` | `kernel-set` 34.9 us | `eager` 42.2 us | 1.21x | [2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json](runs/2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json) |
 | `elementwise` | `bulk` | `ew_mul` | NVIDIA L4 (sm89, fp16, kernel_set) | `n=67108864` | `kernel-set` 1708.5 us | `eager` 1764.9 us | 1.03x | [20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json) |
+
+## Inference Engine Smoke
+
+Single-prompt decode smoke runs are integration checks, not serving throughput
+benchmarks. They verify tokenizer/output parity for the composed engine paths.
+
+| model / GPU | engine | scope | new tok/s | token match | notes | source |
+|---|---|---|---:|---|---|---|
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.65 | yes | reference | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.44 | yes |  | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_ops` | Python decode; ks RMSNorm/SwiGLU/RoPE/argmax | 2.09 | yes | integration smoke, not a serving engine | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_smoke` | 1-token smoke; also routes Linear through ks.gemm | 0.13 | yes | M=1 Python loop; validates call path only | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
 
 ## Regenerate
 

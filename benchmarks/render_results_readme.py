@@ -22,6 +22,8 @@ from persist import derive_row_metadata, validate_run  # noqa: E402
 START = "<!-- BENCHMARK_SUMMARY:START -->"
 END = "<!-- BENCHMARK_SUMMARY:END -->"
 
+DEFAULT_INFERENCE = "benchmarks/results/inference/*.json"
+
 
 def _read(path: str) -> str:
     with open(path, encoding="utf-8") as f:
@@ -52,6 +54,23 @@ def _load_runs(paths: Sequence[str]) -> List[Dict[str, Any]]:
         runs.append(run)
     runs.sort(key=lambda r: (str(r.get("timestamp") or ""), str(r.get("run_id") or "")))
     return runs
+
+
+def _load_inference(paths: Sequence[str]) -> List[Dict[str, Any]]:
+    files: List[str] = []
+    for path in paths:
+        if os.path.isdir(path):
+            files.extend(sorted(glob.glob(os.path.join(path, "*.json"))))
+        else:
+            files.extend(sorted(glob.glob(path)))
+    out: List[Dict[str, Any]] = []
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            item = json.load(f)
+        item["_path"] = path
+        out.append(item)
+    out.sort(key=lambda r: (str(r.get("timestamp") or ""), str(r.get("run_id") or "")))
+    return out
 
 
 def _fmt_num(x: Any, digits: int = 1) -> str:
@@ -97,6 +116,76 @@ def _source_link(path: Optional[str], base_dir: Optional[str] = None) -> str:
             except ValueError:
                 rel = path
     return f"[{os.path.basename(rel)}]({rel})"
+
+
+_LARGE_KERNEL_PRIORITY = {
+    "attention_prefill": 0,
+    "attn_prefill": 0,
+    "attention_decode": 1,
+    "attn_decode": 1,
+    "mla_decode": 2,
+    "gemm": 3,
+    "gemm_bf16": 3,
+    "gemm_fp16": 3,
+    "fp8_gemm": 4,
+    "moe_grouped_gemm": 5,
+    "fused_moe": 5,
+    "moe_gate": 6,
+    "moe_permute": 7,
+    "moe_unpermute": 8,
+}
+
+_MEMORY_KERNEL_PRIORITY = {
+    "fused_add_rmsnorm": 0,
+    "rmsnorm": 1,
+    "swiglu": 2,
+    "geglu": 3,
+    "rope": 4,
+    "argmax": 5,
+    "log_softmax": 6,
+}
+
+_LARGE_KERNEL_CANONICAL = {
+    "attn_prefill": "attention_prefill",
+    "attention_prefill": "attention_prefill",
+    "attention_decode": "attn_decode",
+    "attn_decode": "attn_decode",
+    "mla_decode": "mla_decode",
+    "gemm": "gemm",
+    "gemm_bf16": "gemm",
+    "gemm_fp16": "gemm",
+    "fp8_gemm": "fp8_gemm",
+    "moe_grouped_gemm": "moe_grouped_gemm",
+    "fused_moe": "moe_grouped_gemm",
+    "moe_gate": "moe_gate",
+    "moe_permute": "moe_permute",
+    "moe_unpermute": "moe_unpermute",
+}
+
+
+def _is_large_kernel(op: Any) -> bool:
+    return str(op) in _LARGE_KERNEL_PRIORITY
+
+
+def _is_memory_kernel(op: Any) -> bool:
+    return str(op) in _MEMORY_KERNEL_PRIORITY
+
+
+def _gpu_rank(name: Any) -> int:
+    text = str(name or "").lower()
+    if "h100" in text or "h20" in text or "h200" in text:
+        return 0
+    if "pro 6000" in text or "blackwell" in text:
+        return 1
+    if "a100" in text:
+        return 2
+    if "l4" in text:
+        return 3
+    return 9
+
+
+def _canonical_large_op(op: Any) -> str:
+    return _LARGE_KERNEL_CANONICAL.get(str(op), str(op))
 
 
 def _run_summary(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -180,6 +269,89 @@ def _best_comparisons(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         -float(r.get("winner_vs_next") or 0.0),
     ))
     return out
+
+
+def _representative_rows(
+    runs: List[Dict[str, Any]],
+    predicate,
+    limit: int = 12,
+    unique_by: str = "op_gpu",
+) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for run in runs:
+        for row in run.get("rows") or []:
+            if row.get("status") != "ok" or row.get("latency_us") is None:
+                continue
+            if not predicate(row.get("op")):
+                continue
+            model_part, position_kind = _row_group_fields(row)
+            item = dict(row)
+            item["model_part"] = model_part
+            item["position_kind_row"] = position_kind
+            item["_run_id"] = run.get("run_id")
+            item["_timestamp"] = run.get("timestamp")
+            item["_gpu"] = run.get("gpu_name")
+            item["_sm"] = run.get("gpu_sm")
+            item["_suite"] = run.get("suite")
+            item["_dtype"] = run.get("dtype")
+            item["_run_json"] = run.get("_path")
+            candidates.append(item)
+
+    def priority(row: Dict[str, Any]) -> Tuple[Any, ...]:
+        op = str(row.get("op"))
+        pri = _LARGE_KERNEL_PRIORITY if _is_large_kernel(op) else _MEMORY_KERNEL_PRIORITY
+        canon = _canonical_large_op(op) if _is_large_kernel(op) else op
+        # Prefer SOTA rows for provider comparisons, otherwise latest clean
+        # kernel_set rows. This keeps the root table useful without hiding
+        # standalone MoE rows that have no second provider yet.
+        suite_rank = 0 if row.get("_suite") == "sota" else 1
+        return (
+            pri.get(canon, pri.get(op, 100)),
+            suite_rank,
+            _gpu_rank(row.get("_gpu")),
+            float(row.get("latency_us") or math.inf),
+            str(row.get("shape") or ""),
+        )
+
+    candidates.sort(key=priority)
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in candidates:
+        op = str(row.get("op"))
+        canon = _canonical_large_op(op) if _is_large_kernel(op) else op
+        if unique_by == "op":
+            key = canon
+        elif unique_by == "op_gpu":
+            key = (canon, row.get("_gpu"))
+        else:
+            key = (canon, row.get("_gpu"), row.get("shape"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _render_representative_row_table(
+    rows: List[Dict[str, Any]],
+    limit: int = 12,
+    base_dir: Optional[str] = None,
+) -> List[str]:
+    lines = [
+        "| part | op | GPU / suite | shape | impl | latency | source |",
+        "|---|---|---|---|---|---:|---|",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            f"| `{row.get('model_part')}` | `{row.get('op')}` | "
+            f"{row.get('_gpu')} (sm{row.get('_sm')}, {row.get('_dtype')}, {row.get('_suite')}) "
+            f"| `{row.get('shape')}` | `{row.get('impl')}` | "
+            f"{_fmt_latency(row.get('latency_us'))} | "
+            f"{_source_link(row.get('_run_json'), base_dir)} |"
+        )
+    return lines
 
 
 def build_index(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -326,6 +498,64 @@ def _render_grouped_winner_table(
     return lines
 
 
+def _latest_inference_run(runs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not runs:
+        return None
+    return runs[-1]
+
+
+def _engine_exact(engine: Dict[str, Any]) -> str:
+    exact = engine.get("exact_same_as_reference")
+    if exact is True:
+        return "yes"
+    if exact is False:
+        prefix = engine.get("token_match_prefix")
+        overlap = engine.get("token_overlap")
+        if prefix is not None and overlap is not None:
+            return f"no ({prefix}/{overlap})"
+        return "no"
+    return "-"
+
+
+def _render_inference_table(
+    inference_runs: List[Dict[str, Any]],
+    base_dir: Optional[str] = None,
+) -> List[str]:
+    run = _latest_inference_run(inference_runs)
+    if not run:
+        return ["No inference-engine smoke runs checked in yet."]
+    lines = [
+        "| model / GPU | engine | scope | new tok/s | token match | notes | source |",
+        "|---|---|---|---:|---|---|---|",
+    ]
+    engines = run.get("engines") or {}
+    order = ["transformers", "vllm", "sglang", "kernel_set_ops", "kernel_set_full_smoke"]
+    for name in order + sorted(k for k in engines if k not in order):
+        if name not in engines:
+            continue
+        engine = engines[name] or {}
+        if engine.get("status") == "not_run":
+            tps = "-"
+            match = "-"
+            note = str(engine.get("reason") or "not run")
+        elif "error" in engine:
+            tps = "-"
+            match = "error"
+            note = str(engine.get("error"))
+        else:
+            tps = _fmt_num(engine.get("tokens_per_s_new"), 2)
+            match = _engine_exact(engine)
+            note = str(engine.get("note") or "")
+        scope = str(engine.get("scope") or "single prompt greedy")
+        lines.append(
+            f"| {run.get('model')} / {run.get('gpu_name')} "
+            f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{name}` | "
+            f"{scope} | {tps} | {match} | {note} | "
+            f"{_source_link(run.get('_path'), base_dir)} |"
+        )
+    return lines
+
+
 def _render_comparison_table(
     comparisons: List[Dict[str, Any]],
     limit: int = 24,
@@ -356,11 +586,18 @@ def _render_comparison_table(
     return lines
 
 
-def render_results_readme(runs: List[Dict[str, Any]], index_path: str, output_path: str) -> str:
+def render_results_readme(
+    runs: List[Dict[str, Any]],
+    index_path: str,
+    output_path: str,
+    inference_runs: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     comparisons = _best_comparisons(runs)
     base_dir = os.path.dirname(os.path.abspath(output_path))
     gpus = sorted({f"{r.get('gpu_name')} (sm{r.get('gpu_sm')})" for r in runs})
     suites = Counter(str(r.get("suite")) for r in runs)
+    large_rows = _representative_rows(runs, _is_large_kernel, limit=24)
+    memory_rows = _representative_rows(runs, _is_memory_kernel, limit=12)
     lines: List[str] = []
     lines.append("# kernel-set benchmark results")
     lines.append("")
@@ -381,12 +618,37 @@ def render_results_readme(runs: List[Dict[str, Any]], index_path: str, output_pa
     lines.append("")
     lines.extend(_render_coverage_table(runs))
     lines.append("")
+    lines.append("## Representative Large Kernels")
+    lines.append("")
+    lines.append("These rows keep the README focused on the model-dominant kernels: attention,")
+    lines.append("MLA, GEMM/FP8 GEMM, and MoE routing/dispatch. They may be single-provider")
+    lines.append("measurements when no comparable third-party provider was present in that run.")
+    lines.append("")
+    if large_rows:
+        lines.extend(_render_representative_row_table(large_rows, base_dir=base_dir))
+    else:
+        lines.append("No large-kernel rows found yet.")
+    lines.append("")
+    lines.append("## Representative Memory-Bound Kernels")
+    lines.append("")
+    if memory_rows:
+        lines.extend(_render_representative_row_table(memory_rows, base_dir=base_dir))
+    else:
+        lines.append("No memory-bound rows found yet.")
+    lines.append("")
     lines.append("## Grouped Provider Winners")
     lines.append("")
     if comparisons:
         lines.extend(_render_grouped_winner_table(comparisons, base_dir=base_dir))
     else:
         lines.append("No grouped provider comparisons found yet.")
+    lines.append("")
+    lines.append("## Inference Engine Smoke")
+    lines.append("")
+    lines.append("Single-prompt decode smoke runs are integration checks, not serving throughput")
+    lines.append("benchmarks. They verify tokenizer/output parity for the composed engine paths.")
+    lines.append("")
+    lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     lines.append("")
     lines.append("## Regenerate")
     lines.append("")
@@ -398,8 +660,14 @@ def render_results_readme(runs: List[Dict[str, Any]], index_path: str, output_pa
     return "\n".join(lines)
 
 
-def render_root_summary(runs: List[Dict[str, Any]], readme_path: str = "benchmarks/results/README.md") -> str:
+def render_root_summary(
+    runs: List[Dict[str, Any]],
+    readme_path: str = "benchmarks/results/README.md",
+    inference_runs: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     comparisons = _best_comparisons(runs)
+    large_rows = _representative_rows(runs, _is_large_kernel, limit=8, unique_by="op")
+    memory_comparisons = [r for r in comparisons if _is_memory_kernel(r.get("op"))]
     gpus = sorted({f"{r.get('gpu_name')} sm{r.get('gpu_sm')}" for r in runs})
     ok = sum(_status_counts(r.get("rows") or []).get("ok", 0) for r in runs)
     total = sum(len(r.get("rows") or []) for r in runs)
@@ -414,17 +682,36 @@ def render_root_summary(runs: List[Dict[str, Any]], readme_path: str = "benchmar
         f"**{len(runs)} runs**, **{ok}/{total} ok rows**, GPUs: "
         f"{', '.join(gpus) if gpus else '-'}."
     )
-    if comparisons:
+    if large_rows:
+        lines.append("")
+        lines.append("Representative large-kernel rows:")
+        lines.append("")
+        lines.append("| GPU | op | shape | measured impl | latency |")
+        lines.append("|---|---|---|---|---:|")
+        for row in large_rows:
+            lines.append(
+                f"| {row.get('_gpu')} sm{row.get('_sm')} | `{row.get('op')}` | "
+                f"`{row.get('shape')}` | `{row.get('impl')}` | "
+                f"{_fmt_latency(row.get('latency_us'))} |"
+            )
+    if memory_comparisons:
+        lines.append("")
+        lines.append("Memory-bound provider highlights:")
         lines.append("")
         lines.append("| GPU | op | fastest measured impl | runner-up | ratio |")
         lines.append("|---|---|---|---|---:|")
-        for row in _render_root_top(comparisons):
+        for row in _render_root_top(memory_comparisons):
             lines.append(
                 f"| {row.get('gpu')} sm{row.get('sm')} | `{row.get('op')}` | "
                 f"`{row.get('winner')}` {_fmt_latency(row.get('winner_latency_us'))} | "
                 f"`{row.get('runner_up')}` {_fmt_latency(row.get('runner_up_latency_us'))} | "
                 f"{float(row.get('winner_vs_next') or 0.0):.2f}x |"
             )
+    if inference_runs:
+        lines.append("")
+        lines.append("Qwen3-8B engine smoke:")
+        lines.append("")
+        lines.extend(_render_inference_table(inference_runs))
     lines.append("")
     lines.append(END)
     return "\n".join(lines)
@@ -481,12 +768,17 @@ def cmd_render(args: argparse.Namespace) -> int:
     runs = _load_runs(args.runs)
     if not runs:
         raise ValueError("no canonical benchmark runs found")
+    inference_runs = _load_inference(args.inference)
     index = build_index(runs)
     index_text = json.dumps(index, indent=2, sort_keys=False) + "\n"
-    results_text = render_results_readme(runs, args.index, args.output)
+    results_text = render_results_readme(
+        runs, args.index, args.output, inference_runs=inference_runs)
     root_text: Optional[str] = None
     if args.root_readme:
-        root_text = update_root_readme(args.root_readme, render_root_summary(runs))
+        root_text = update_root_readme(
+            args.root_readme,
+            render_root_summary(runs, inference_runs=inference_runs),
+        )
 
     checks: List[Tuple[str, str]] = [
         (args.index, index_text),
@@ -522,6 +814,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="benchmarks/results/README.md")
     p.add_argument("--root-readme", default=None,
                    help="optional root README to update between benchmark markers")
+    p.add_argument("--inference", nargs="+", default=[DEFAULT_INFERENCE],
+                   help="inference engine JSON file, glob, or directory")
     p.add_argument("--check", action="store_true",
                    help="exit nonzero if generated files are out of date")
     return p

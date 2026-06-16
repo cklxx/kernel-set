@@ -72,6 +72,21 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 
 Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **20 runs**, **1078/1226 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
+Representative large-kernel rows:
+
+| GPU | op | shape | measured impl | latency |
+|---|---|---|---|---:|
+| NVIDIA H20 sm90 | `attn_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 335.7 us |
+| NVIDIA H20 sm90 | `attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 340.8 us |
+| NVIDIA H20 sm90 | `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us |
+| NVIDIA H20 sm90 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us |
+| NVIDIA H20 sm90 | `fp8_gemm` | `M=4096,N=4096,K=4096` | `torch-scaled-mm` | 536.7 us |
+| NVIDIA H20 sm90 | `moe_grouped_gemm` | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `kernel-set` | 247502.2 us |
+| NVIDIA H20 sm90 | `moe_gate` | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `sgl-moe-gate` | 8.2 us |
+| NVIDIA H20 sm90 | `moe_permute` | `tokens=2048,h=2048,E=64,k=6` | `kernel-set` | 63.8 us |
+
+Memory-bound provider highlights:
+
 | GPU | op | fastest measured impl | runner-up | ratio |
 |---|---|---|---|---:|
 | NVIDIA H20 sm90 | `fused_add_rmsnorm` | `flashinfer-norm` 15.6 us | `sgl-norm` 17.2 us | 1.10x |
@@ -80,6 +95,15 @@ Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchm
 | NVIDIA L4 sm89 | `swiglu` | `kernel-set` 12.3 us | `flashinfer-act` 13.3 us | 1.08x |
 | NVIDIA A100-SXM4-40GB sm80 | `swiglu` | `kernel-set` 8.2 us | `eager` 33.8 us | 4.12x |
 | NVIDIA RTX PRO 6000 Blackwell Server Edition sm120 | `swiglu` | `kernel-set` 6.1 us | `eager` 12.3 us | 2.02x |
+
+Qwen3-8B engine smoke:
+
+| model / GPU | engine | scope | new tok/s | token match | notes | source |
+|---|---|---|---:|---|---|---|
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.65 | yes | reference | [20260616-qwen3-8b-daily-l4-engine-smoke.json](benchmarks/results/inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.44 | yes |  | [20260616-qwen3-8b-daily-l4-engine-smoke.json](benchmarks/results/inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_ops` | Python decode; ks RMSNorm/SwiGLU/RoPE/argmax | 2.09 | yes | integration smoke, not a serving engine | [20260616-qwen3-8b-daily-l4-engine-smoke.json](benchmarks/results/inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_smoke` | 1-token smoke; also routes Linear through ks.gemm | 0.13 | yes | M=1 Python loop; validates call path only | [20260616-qwen3-8b-daily-l4-engine-smoke.json](benchmarks/results/inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
 
 <!-- BENCHMARK_SUMMARY:END -->
 
