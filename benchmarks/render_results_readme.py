@@ -533,6 +533,7 @@ def _render_inference_table(
         "transformers",
         "vllm",
         "sglang",
+        "kernel_set_best_practice",
         "kernel_set_full_kernels",
         "kernel_set_ops",
         "kernel_set_full_smoke",
@@ -575,6 +576,7 @@ def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
         stat_items = [
             (str(k).removeprefix("ks_").removesuffix("_calls"), v)
             for k, v in sorted(stats.items())
+            if v not in (None, 0)
         ]
         rows.append(
             "| "
@@ -583,7 +585,7 @@ def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
             + " | "
             + ("<br>".join(fallbacks) if fallbacks else "-")
             + " | "
-            + "<br>".join(f"`{k}`={v}" for k, v in stat_items)
+            + ("<br>".join(f"`{k}`={v}" for k, v in stat_items) if stat_items else "-")
             + " |"
         )
     if not rows:
@@ -689,10 +691,11 @@ def render_results_readme(
     lines.append("Single-prompt decode smoke runs are integration checks, not apples-to-apples")
     lines.append("engine throughput benchmarks. They verify tokenizer/output parity for the")
     lines.append("composed engine paths.")
-    lines.append("Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF:")
-    lines.append("vLLM/HF use production inference kernels and launch/graph organization, while")
-    lines.append("the kernel-set smoke row deliberately routes linears through kernel-set's")
-    lines.append("auditable reference GEMM path plus Python orchestration/allocation.")
+    lines.append("Rows with kernel coverage are integration rows, not serving-system benchmarks:")
+    lines.append("`kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses")
+    lines.append("kernel-set for the memory/attention/sample kernels; `kernel_set_full_kernels`")
+    lines.append("is the slower all-kernel coverage smoke that also routes linears through")
+    lines.append("kernel-set's auditable reference GEMM path.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     lines.append("")

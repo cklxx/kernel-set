@@ -139,21 +139,24 @@ measurements when no comparable third-party provider was present in that run.
 Single-prompt decode smoke runs are integration checks, not apples-to-apples
 engine throughput benchmarks. They verify tokenizer/output parity for the
 composed engine paths.
-Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF:
-vLLM/HF use production inference kernels and launch/graph organization, while
-the kernel-set smoke row deliberately routes linears through kernel-set's
-auditable reference GEMM path plus Python orchestration/allocation.
+Rows with kernel coverage are integration rows, not serving-system benchmarks:
+`kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses
+kernel-set for the memory/attention/sample kernels; `kernel_set_full_kernels`
+is the slower all-kernel coverage smoke that also routes linears through
+kernel-set's auditable reference GEMM path.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes |  | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes | historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax | 14.86 | yes | best-practice kernel-set composition; Python loop/allocation and unfused Q/K/V + gate/up remain | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
 
 Kernel coverage for the composed kernel-set engine:
 
 | engine | covered kernel-set kernels | remaining torch/Python path | counted calls |
 |---|---|---|---|
+| `kernel_set_best_practice` | `ks_embedding_lookup`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | linear=torch/cuBLAS<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144<br>`torch_linear`=1012 |
 | `kernel_set_full_kernels` | `ks_embedding_lookup`<br>`ks_gemm`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`gemm`=1012<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144 |
 
 ## Regenerate

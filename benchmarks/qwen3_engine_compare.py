@@ -10,6 +10,7 @@ kernel-set CUDA kernels are actually exercised by the composed Qwen3 path.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import json
 import math
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -140,6 +142,7 @@ class KernelStats:
     ks_paged_attn_decode_calls: int = 0
     ks_swiglu_calls: int = 0
     ks_argmax_calls: int = 0
+    torch_linear_calls: int = 0
 
 
 class KernelSetQwen3FullPath:
@@ -190,6 +193,9 @@ class KernelSetQwen3FullPath:
         self.cos, self.sin = _make_rope_cache(
             max_rope, self.head_dim, self.rope_theta, self.device, self.dtype
         )
+
+    def reset_stats(self) -> None:
+        self.stats = KernelStats()
 
     def _embedding(self, input_ids):
         ids = input_ids.reshape(-1).contiguous()
@@ -393,6 +399,14 @@ class KernelSetQwen3FullPath:
         return tokens + generated, logits
 
 
+class KernelSetQwen3BestPracticePath(KernelSetQwen3FullPath):
+    """Kernel-set integration path that leaves dense linears on torch/cuBLAS."""
+
+    def _linear(self, mod, x):
+        self.stats.torch_linear_calls += 1
+        return mod(x)
+
+
 def _token_match(a: List[int], b: List[int]) -> Dict[str, Any]:
     prefix = 0
     for x, y in zip(a, b):
@@ -438,6 +452,33 @@ def _run_hf(model, tokenizer, input_ids, attention_mask, new_tokens: int, repeat
     }
 
 
+def _kernel_set_reference_row(
+    engine: Dict[str, Any], source_run_id: Optional[str]
+) -> Dict[str, Any]:
+    row = copy.deepcopy(engine)
+    row["historical_baseline"] = True
+    if source_run_id:
+        row["source_run_id"] = source_run_id
+    note = str(row.get("note") or "").strip()
+    suffix = (
+        f"historical baseline from {source_run_id}"
+        if source_run_id
+        else "historical baseline"
+    )
+    row["note"] = f"{note}; {suffix}" if note else suffix
+    return row
+
+
+def _load_reference_json(path_or_url: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not path_or_url:
+        return None
+    if path_or_url.startswith(("http://", "https://")):
+        with urllib.request.urlopen(path_or_url, timeout=120) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    path = pathlib.Path(path_or_url)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int):
     import kernel_set as ks
 
@@ -447,7 +488,8 @@ def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: i
         engine = KernelSetQwen3FullPath(
             model, ks, max_total_tokens=max_total_tokens, block_size=block_size
         )
-        tokens, _ = engine.generate(input_ids, max_new_tokens=new_tokens)
+        with engine.torch.inference_mode():
+            tokens, _ = engine.generate(input_ids, max_new_tokens=new_tokens)
         return tokens, engine.stats
 
     # Warmup once to pay lazy allocations outside the measured run.
@@ -479,6 +521,73 @@ def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: i
                 "ks_argmax",
             ],
             "torch_fallback": [
+                "residual add",
+                "tensor reshape/view/allocation",
+                "Python request/decode loop",
+                "paged block scheduler",
+            ],
+        },
+    }
+
+
+def _run_kernel_set_best_practice(
+    model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
+):
+    import kernel_set as ks
+    import torch
+
+    max_total_tokens = int(input_ids.shape[-1]) + new_tokens
+
+    def make_engine():
+        return KernelSetQwen3BestPracticePath(
+            model, ks, max_total_tokens=max_total_tokens, block_size=block_size
+        )
+
+    # Warm up module loading, cuBLAS algorithm selection, and kernel-set bindings
+    # outside the timed region. The measured loop still includes Python decode
+    # orchestration and per-layer tensor allocations.
+    warm = make_engine()
+    with torch.inference_mode():
+        warm.generate(input_ids, max_new_tokens=new_tokens)
+
+    engine = make_engine()
+
+    def generate():
+        engine.reset_stats()
+        with torch.inference_mode():
+            tokens, _ = engine.generate(input_ids, max_new_tokens=new_tokens)
+        return tokens, engine.stats
+
+    seconds, (tokens, stats) = _timer(generate, repeat=repeat)
+    return {
+        "seconds": seconds,
+        "tokens_per_s_new": new_tokens / seconds,
+        "prompt_tokens": int(input_ids.shape[-1]),
+        "new_tokens": new_tokens,
+        "tokens": tokens,
+        "text": tokenizer.decode(tokens, skip_special_tokens=False),
+        "scope": (
+            "single-request Python engine; torch/cuBLAS linears + ks "
+            "RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax"
+        ),
+        "note": (
+            "best-practice kernel-set composition; Python loop/allocation and "
+            "unfused Q/K/V + gate/up remain"
+        ),
+        "stats": asdict(stats),
+        "kernel_coverage": {
+            "covered": [
+                "ks_embedding_lookup",
+                "ks_rms_norm",
+                "ks_rope_gather",
+                "ks_flash_attn",
+                "ks_reshape_and_cache",
+                "ks_paged_attn_decode",
+                "ks_swiglu",
+                "ks_argmax",
+            ],
+            "torch_fallback": [
+                "linear=torch/cuBLAS",
                 "residual add",
                 "tensor reshape/view/allocation",
                 "Python request/decode loop",
@@ -550,6 +659,7 @@ json.dump({{
 
 def run(args) -> Dict[str, Any]:
     _install_deps(include_vllm=args.run_vllm)
+    reference = _load_reference_json(args.reference_json_url or args.reference_json)
     repo = _prepare_repo(pathlib.Path(args.repo), args.clone_url, args.repo_ref)
     arch = args.arch or _detect_sm()
     lib = _build_kernel_set(repo, arch)
@@ -571,32 +681,66 @@ def run(args) -> Dict[str, Any]:
         low_cpu_mem_usage=True,
         device_map={"": "cuda"},
     ).eval()
+    model.requires_grad_(False)
 
     enc = tokenizer(args.prompt, return_tensors="pt").to("cuda")
     input_ids = enc.input_ids[:, : args.prompt_tokens].contiguous()
     attention_mask = enc.attention_mask[:, : args.prompt_tokens].contiguous()
     prompt_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
 
+    reference_tokens: Optional[List[int]] = None
+    reference_run_id = (
+        str(reference.get("run_id"))
+        if reference and reference.get("run_id") is not None
+        else None
+    )
+    reference_engines = reference.get("engines") if reference else {}
+    if isinstance(reference_engines, dict):
+        ref_transformers = reference_engines.get("transformers")
+        if isinstance(ref_transformers, dict) and "tokens" in ref_transformers:
+            reference_tokens = [int(t) for t in ref_transformers["tokens"]]
+    else:
+        reference_engines = {}
+
     engines: Dict[str, Any] = {}
-    engines["transformers"] = _run_hf(
-        model, tokenizer, input_ids, attention_mask, args.new_tokens, args.hf_repeat
-    )
-    engines["kernel_set_full_kernels"] = _run_kernel_set_full(
-        model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
-    )
-    engines["kernel_set_full_kernels"].update(
-        _token_match(
-            engines["transformers"]["tokens"],
-            engines["kernel_set_full_kernels"]["tokens"],
+    if args.skip_hf:
+        if args.merge_reference_engines:
+            reference_names = ["transformers", "vllm", "sglang"]
+            if args.skip_full_kernels:
+                reference_names.append("kernel_set_full_kernels")
+            for name in reference_names:
+                engine = reference_engines.get(name)
+                if isinstance(engine, dict):
+                    engines[name] = _kernel_set_reference_row(engine, reference_run_id)
+    else:
+        engines["transformers"] = _run_hf(
+            model, tokenizer, input_ids, attention_mask, args.new_tokens, args.hf_repeat
         )
-    )
+        reference_tokens = [int(t) for t in engines["transformers"]["tokens"]]
+
+    def apply_match(name: str) -> None:
+        if reference_tokens is not None and name in engines:
+            engines[name].update(_token_match(reference_tokens, engines[name]["tokens"]))
+
+    if args.run_best_practice:
+        engines["kernel_set_best_practice"] = _run_kernel_set_best_practice(
+            model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
+        )
+        apply_match("kernel_set_best_practice")
+
+    if not args.skip_full_kernels:
+        engines["kernel_set_full_kernels"] = _run_kernel_set_full(
+            model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
+        )
+        apply_match("kernel_set_full_kernels")
 
     if args.run_vllm:
         del model
         torch.cuda.empty_cache()
         vllm = _run_vllm_subprocess(args, int(input_ids.shape[-1]))
         if vllm is not None:
-            vllm.update(_token_match(engines["transformers"]["tokens"], vllm["tokens"]))
+            if reference_tokens is not None:
+                vllm.update(_token_match(reference_tokens, vllm["tokens"]))
             engines["vllm"] = vllm
 
     props = torch.cuda.get_device_properties(0)
@@ -613,6 +757,7 @@ def run(args) -> Dict[str, Any]:
         "dtype": args.dtype,
         "new_tokens": args.new_tokens,
         "engines": engines,
+        "reference_run_id": reference_run_id,
     }
 
 
@@ -631,8 +776,14 @@ def main() -> int:
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--hf-repeat", type=int, default=1)
     parser.add_argument("--ks-repeat", type=int, default=1)
+    parser.add_argument("--skip-hf", action="store_true")
+    parser.add_argument("--skip-full-kernels", action="store_true")
+    parser.add_argument("--run-best-practice", action="store_true")
     parser.add_argument("--run-vllm", action="store_true")
     parser.add_argument("--vllm-timeout-s", type=float, default=1200.0)
+    parser.add_argument("--reference-json", default=None)
+    parser.add_argument("--reference-json-url", default=None)
+    parser.add_argument("--merge-reference-engines", action="store_true")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output", default="/content/qwen3_engine_compare.json")
     args = parser.parse_args()
