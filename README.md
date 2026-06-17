@@ -98,6 +98,8 @@ Memory-bound provider highlights:
 
 Qwen3-8B engine smoke:
 
+Kernel-coverage rows prove call-path coverage and token parity; they are not serving-throughput comparisons.
+
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |

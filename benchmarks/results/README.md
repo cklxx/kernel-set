@@ -138,6 +138,9 @@ measurements when no comparable third-party provider was present in that run.
 
 Single-prompt decode smoke runs are integration checks, not serving throughput
 benchmarks. They verify tokenizer/output parity for the composed engine paths.
+Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF
+serving paths: they include Python scheduling/allocation and use kernel-set's
+auditable reference GEMM path rather than a production cuBLASLt/CUTLASS graph.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|

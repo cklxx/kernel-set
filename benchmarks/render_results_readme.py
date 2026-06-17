@@ -688,6 +688,9 @@ def render_results_readme(
     lines.append("")
     lines.append("Single-prompt decode smoke runs are integration checks, not serving throughput")
     lines.append("benchmarks. They verify tokenizer/output parity for the composed engine paths.")
+    lines.append("Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF")
+    lines.append("serving paths: they include Python scheduling/allocation and use kernel-set's")
+    lines.append("auditable reference GEMM path rather than a production cuBLASLt/CUTLASS graph.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     lines.append("")
@@ -751,6 +754,11 @@ def render_root_summary(
     if inference_runs:
         lines.append("")
         lines.append("Qwen3-8B engine smoke:")
+        lines.append("")
+        lines.append(
+            "Kernel-coverage rows prove call-path coverage and token parity; "
+            "they are not serving-throughput comparisons."
+        )
         lines.append("")
         lines.extend(_render_inference_table(inference_runs))
     lines.append("")
