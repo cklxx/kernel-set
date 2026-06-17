@@ -136,11 +136,13 @@ measurements when no comparable third-party provider was present in that run.
 
 ## Inference Engine Smoke
 
-Single-prompt decode smoke runs are integration checks, not serving throughput
-benchmarks. They verify tokenizer/output parity for the composed engine paths.
-Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF
-serving paths: they include Python scheduling/allocation and use kernel-set's
-auditable reference GEMM path rather than a production cuBLASLt/CUTLASS graph.
+Single-prompt decode smoke runs are integration checks, not apples-to-apples
+engine throughput benchmarks. They verify tokenizer/output parity for the
+composed engine paths.
+Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF:
+vLLM/HF use production inference kernels and launch/graph organization, while
+the kernel-set smoke row deliberately routes linears through kernel-set's
+auditable reference GEMM path plus Python orchestration/allocation.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|

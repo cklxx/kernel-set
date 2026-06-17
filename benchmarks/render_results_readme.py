@@ -686,11 +686,13 @@ def render_results_readme(
     lines.append("")
     lines.append("## Inference Engine Smoke")
     lines.append("")
-    lines.append("Single-prompt decode smoke runs are integration checks, not serving throughput")
-    lines.append("benchmarks. They verify tokenizer/output parity for the composed engine paths.")
-    lines.append("Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF")
-    lines.append("serving paths: they include Python scheduling/allocation and use kernel-set's")
-    lines.append("auditable reference GEMM path rather than a production cuBLASLt/CUTLASS graph.")
+    lines.append("Single-prompt decode smoke runs are integration checks, not apples-to-apples")
+    lines.append("engine throughput benchmarks. They verify tokenizer/output parity for the")
+    lines.append("composed engine paths.")
+    lines.append("Rows with kernel coverage are not throughput-comparable with vLLM/SGLang/HF:")
+    lines.append("vLLM/HF use production inference kernels and launch/graph organization, while")
+    lines.append("the kernel-set smoke row deliberately routes linears through kernel-set's")
+    lines.append("auditable reference GEMM path plus Python orchestration/allocation.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     lines.append("")
@@ -757,7 +759,7 @@ def render_root_summary(
         lines.append("")
         lines.append(
             "Kernel-coverage rows prove call-path coverage and token parity; "
-            "they are not serving-throughput comparisons."
+            "they are not apples-to-apples engine-throughput comparisons."
         )
         lines.append("")
         lines.extend(_render_inference_table(inference_runs))

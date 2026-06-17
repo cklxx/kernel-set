@@ -98,7 +98,7 @@ Memory-bound provider highlights:
 
 Qwen3-8B engine smoke:
 
-Kernel-coverage rows prove call-path coverage and token parity; they are not serving-throughput comparisons.
+Kernel-coverage rows prove call-path coverage and token parity; they are not apples-to-apples engine-throughput comparisons.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
