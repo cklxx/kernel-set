@@ -20,7 +20,7 @@ Examples:
   ksctl table --gpu h100 --md docs/MODEL_KERNEL_MAP.md
   ksctl backends --gpu h100 --dtype fp8
   ksctl backends                              # probe this host
-  ksctl optimal --sm 89                       # measured L4 winners + heuristic
+  ksctl optimal --sm 89                       # promoted measured + heuristic
   ksctl optimal --op rmsnorm                  # one op across all SMs/dtypes
 """
 
@@ -408,8 +408,9 @@ def cmd_optimal(args):
     print(_hr("="))
     print("OPTIMAL KERNEL SELECTION — SM x dtype x op Cartesian table")
     print(f"  {stats.get('total', len(cells))} cells total · "
-          f"{stats.get('measured', 0)} measured [M] · "
-          f"{stats.get('heuristic', 0)} heuristic [h]")
+          f"{stats.get('measured', 0)} promoted measured [M] · "
+          f"{stats.get('heuristic', 0)} heuristic [h] · "
+          f"{stats.get('observed_not_promoted', 0)} observed-not-promoted")
     flt = []
     if want_op:
         flt.append(f"op={want_op}")
@@ -420,9 +421,10 @@ def cmd_optimal(args):
     if flt:
         print(f"  filter: {', '.join(flt)}")
     print(_hr("="))
-    print("[M] = measured benchmark winner (overrides) · [h] = heuristic "
-          "baseline (fill).")
-    print("sm90/sm100 are heuristic pending H100/Blackwell bench. Every cell's")
+    print("[M] = promoted measured benchmark winner (overrides) · [h] = "
+          "heuristic baseline (fill).")
+    print("Non-promoted diagnostics stay in benchmark results and do not "
+          "change this table. Every cell's")
     print("fallback chain terminates in kernel-set.")
     print(_hr("-"))
 

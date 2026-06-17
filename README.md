@@ -54,12 +54,14 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 
 ## The strategy (honest)
 
-- **Memory-bound ops → kernel-set's own kernels.** RMSNorm, SwiGLU/GeGLU, RoPE,
-  elementwise, AdamW hit **84–87 % of A100 peak bandwidth** — on par with or
-  beating FlashInfer/Liger.
-- **Compute-bound ops → the industry best.** Our clean-room GEMM / attention /
-  MoE can't beat cuBLAS / FlashAttention / DeepGEMM, so the dispatcher routes to
-  them; kernel-set stays as the correct portable fallback.
+- **Production defaults → best installed provider.** FlashAttention, FlashInfer,
+  Liger, vLLM, SGLang, DeepGEMM, cuBLAS, etc. lead the route when they are the
+  right production kernel; kernel-set is the portable fallback.
+- **kernel-set wins are promoted only with enough evidence.** Memory-bound
+  kernels such as RMSNorm, fused-add-RMSNorm, RoPE, SwiGLU/GeGLU, elementwise and
+  AdamW are competitive, but shape-sensitive or provider-incomplete rows stay as
+  benchmark evidence until a shape gate or full SOTA comparison justifies a
+  default change.
 
 > **Measured on real GPUs:** checked-in benchmark runs cover **L4 (sm89)**,
 > **A100 (sm80)**, **H20 (sm90, Hopper)**, and **RTX PRO 6000 Blackwell
@@ -71,6 +73,8 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 ## Benchmarks
 
 Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **20 runs**, **1078/1226 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+
+Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
 
 Representative large-kernel rows:
 

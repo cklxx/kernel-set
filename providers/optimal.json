@@ -1,12 +1,13 @@
 {
   "schema_version": 1,
-  "description": "SM x dtype x logical_op optimal kernel-selection table. The Cartesian product of (logical_op, sm, dtype); each feasible cell names the optimal provider, its source (measured benchmark winner or heuristic baseline), and a fallback_chain terminating in kernel-set. Regenerate with: python3 scripts/gen_optimal.py.",
-  "fill_rule": "measured-winner OVERRIDES heuristic; heuristic fills the rest; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
+  "description": "SM x dtype x logical_op optimal kernel-selection table. The Cartesian product of (logical_op, sm, dtype); each feasible cell names the optimal provider, its source (promoted measured benchmark winner or heuristic baseline), and a fallback_chain terminating in kernel-set. Regenerate with: python3 scripts/gen_optimal.py.",
+  "fill_rule": "promoted measured-winner OVERRIDES heuristic; heuristic fills the rest; non-promoted diagnostic measurements do not affect runtime routing; arch/dtype-infeasible cells omitted; kernel-set is the terminal fallback.",
   "terminal_fallback": "kernel-set",
   "stats": {
     "total": 533,
-    "measured": 13,
-    "heuristic": 520
+    "measured": 4,
+    "heuristic": 529,
+    "observed_not_promoted": 9
   },
   "cells": [
     {
@@ -211,14 +212,12 @@
       "logical_op": "attention_decode",
       "sm": 80,
       "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
+        "flashinfer",
         "kernel-set"
-      ],
-      "metric": "4455.4 us",
-      "gpu": "a100",
-      "source_file": "benchmarks/results/a100.md"
+      ]
     },
     {
       "logical_op": "attention_decode",
@@ -471,17 +470,14 @@
       "logical_op": "attention_prefill",
       "sm": 89,
       "dtype": "fp16",
-      "provider": "flashinfer",
-      "source": "measured",
+      "provider": "flash-attn",
+      "source": "heuristic",
       "fallback_chain": [
-        "flashinfer",
         "flash-attn",
         "torch-sdpa",
+        "flashinfer",
         "kernel-set"
-      ],
-      "metric": "599.0 us",
-      "gpu": "l4",
-      "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"
+      ]
     },
     {
       "logical_op": "attention_prefill",
@@ -1238,14 +1234,13 @@
       "logical_op": "cross_entropy",
       "sm": 80,
       "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "liger",
+      "source": "heuristic",
       "fallback_chain": [
+        "liger",
+        "torch",
         "kernel-set"
-      ],
-      "metric": "1271.8 us",
-      "gpu": "a100",
-      "source_file": "benchmarks/results/a100.md"
+      ]
     },
     {
       "logical_op": "cross_entropy",
@@ -1327,6 +1322,7 @@
       "source": "measured",
       "fallback_chain": [
         "liger",
+        "torch",
         "kernel-set"
       ],
       "metric": "1386.5 us",
@@ -2034,14 +2030,14 @@
       "logical_op": "fused_add_rmsnorm",
       "sm": 89,
       "dtype": "fp16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "vllm",
         "kernel-set"
-      ],
-      "metric": "614.4 us",
-      "gpu": "l4",
-      "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"
+      ]
     },
     {
       "logical_op": "fused_add_rmsnorm",
@@ -4641,14 +4637,15 @@
       "logical_op": "rmsnorm",
       "sm": 80,
       "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "vllm",
+        "liger",
         "kernel-set"
-      ],
-      "metric": "115.7 us",
-      "gpu": "a100",
-      "source_file": "benchmarks/results/a100.md"
+      ]
     },
     {
       "logical_op": "rmsnorm",
@@ -4734,18 +4731,15 @@
       "logical_op": "rmsnorm",
       "sm": 89,
       "dtype": "fp16",
-      "provider": "liger",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
-        "liger",
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
-      ],
-      "metric": "299.0 us",
-      "gpu": "l4",
-      "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"
+      ]
     },
     {
       "logical_op": "rmsnorm",
@@ -4866,14 +4860,15 @@
       "logical_op": "rope",
       "sm": 80,
       "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "vllm",
+        "liger",
         "kernel-set"
-      ],
-      "metric": "119.8 us",
-      "gpu": "a100",
-      "source_file": "benchmarks/results/a100.md"
+      ]
     },
     {
       "logical_op": "rope",
@@ -4957,18 +4952,15 @@
       "logical_op": "rope",
       "sm": 89,
       "dtype": "fp16",
-      "provider": "liger",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
-        "liger",
         "flashinfer",
         "sgl-kernel",
         "vllm",
+        "liger",
         "kernel-set"
-      ],
-      "metric": "376.8 us",
-      "gpu": "l4",
-      "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"
+      ]
     },
     {
       "logical_op": "rope",
@@ -5465,14 +5457,15 @@
       "logical_op": "swiglu",
       "sm": 80,
       "dtype": "bf16",
-      "provider": "kernel-set",
-      "source": "measured",
+      "provider": "flashinfer",
+      "source": "heuristic",
       "fallback_chain": [
+        "flashinfer",
+        "sgl-kernel",
+        "vllm",
+        "liger",
         "kernel-set"
-      ],
-      "metric": "269.3 us",
-      "gpu": "a100",
-      "source_file": "benchmarks/results/a100.md"
+      ]
     },
     {
       "logical_op": "swiglu",

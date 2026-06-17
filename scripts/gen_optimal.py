@@ -4,8 +4,8 @@
 Pure stdlib (argparse + json). Produces ``providers/optimal.json``: the full
 **Cartesian product** of ``logical_op x sm x dtype`` with, for every feasible
 cell, the optimal provider, its fallback chain (always terminating in
-``kernel-set``), and a ``source`` tag of ``"measured"`` (a real benchmark winner)
-or ``"heuristic"`` (the curated arch/dtype baseline).
+``kernel-set``), and a ``source`` tag of ``"measured"`` (a promoted benchmark
+winner) or ``"heuristic"`` (the curated arch/dtype baseline).
 
 The elegant layering
 --------------------
@@ -19,20 +19,23 @@ The table is built by overlaying two reproducible inputs, both embedded below:
    ``models/gpu_caps.json`` (the single source of truth): bf16/tf32 < sm80, fp8
    < sm89, fp4 < sm100 are dropped (so e.g. no sm75/bf16 rows exist).
 
-2. **MEASURED winners** — actual benchmark results parsed from
-   ``benchmarks/results/*.md``. A measured winner **OVERRIDES** the heuristic
-   provider for its exact (op, sm, dtype) cell: the winning provider is hoisted
-   to the front of the fallback chain, the cell is tagged ``source=measured``,
-   and the measured ``metric`` + ``gpu`` are recorded.
+2. **PROMOTED measured winners** — actual benchmark results parsed from
+   ``benchmarks/results/*.md`` whose benchmark suite covered the representative
+   production providers for that (op, sm, dtype). A promoted measured winner
+   **OVERRIDES** the heuristic provider for its exact cell: the winning provider
+   is hoisted to the front of the fallback chain, the cell is tagged
+   ``source=measured``, and the measured ``metric`` + ``gpu`` are recorded.
+   Narrow/diagnostic rows stay recorded in ``MEASURED`` with
+   ``promote_to_default=False`` and do not affect runtime routing.
 
 Fill rule (read this once):
 
-    measured-winner OVERRIDES heuristic  ·  heuristic FILLS the rest
+    promoted measured-winner OVERRIDES heuristic  ·  heuristic FILLS the rest
     arch/dtype-infeasible cells are OMITTED  ·  kernel-set is the TERMINAL fallback
 
 Every emitted ``fallback_chain`` ends in ``kernel-set`` so runtime dispatch never
 dead-ends, and every emitted cell satisfies ``provider == fallback_chain[0]``
-(a measured ``kernel-set`` winner emits chain ``["kernel-set"]``).
+(a promoted measured ``kernel-set`` winner emits chain ``["kernel-set"]``).
 
 Design invariants (enforced by ``validate()`` on every build, so
 ``--check`` fails CI on any violation):
@@ -78,28 +81,41 @@ OUTPUT = os.path.join(REPO_ROOT, "providers", "optimal.json")
 KERNEL_SET = "kernel-set"
 
 # --------------------------------------------------------------------------- #
-# INPUT 1 — MEASURED winners (override). Transcribed from the cited benchmark
-# markdown under benchmarks/results/. ``winner`` is the impl that was fastest &
-# correct for that (logical_op, sm, dtype); ``metric`` is its median latency.
+# INPUT 1 — MEASURED winners. Transcribed from the cited benchmark markdown
+# under benchmarks/results/. ``winner`` is the impl that was fastest & correct
+# for that (logical_op, sm, dtype); ``metric`` is its median latency.
 # ``logical_op`` uses the dotted benchmark taxonomy (domain.op); it is mapped to
 # the canonical dispatch op id below via _OP_ALIASES.
+#
+# Only rows with ``promote_to_default`` true (the default) override the
+# production routing table. Rows from narrow suites that did not install/include
+# the representative external providers stay here as observed evidence but must
+# not demote FlashInfer/Liger/vLLM/SGL/etc. in default dispatch.
 # --------------------------------------------------------------------------- #
 MEASURED = {
     "measured": [
         {"logical_op": "attention.prefill", "sm": 89, "dtype": "fp16",
          "winner": "flashinfer", "metric": "599.0 us",
+         "promote_to_default": False,
+         "note": "L4 run did not have FlashAttention installed; keep FA2 heuristic",
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "attention.decode", "sm": 89, "dtype": "fp16",
          "winner": "flashinfer", "metric": "2283.5 us",
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "norm.rmsnorm", "sm": 89, "dtype": "fp16",
          "winner": "liger", "metric": "299.0 us",
+         "promote_to_default": False,
+         "note": "sub-1% over FlashInfer and shape/run sensitive; keep heuristic",
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "norm.fused_add_rmsnorm", "sm": 89, "dtype": "fp16",
          "winner": "kernel-set", "metric": "614.4 us",
+         "promote_to_default": False,
+         "note": "large-row winner but rows=1 favors FlashInfer; needs shape gate",
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "rope.apply", "sm": 89, "dtype": "fp16",
          "winner": "liger", "metric": "376.8 us",
+         "promote_to_default": False,
+         "note": "run did not cover FlashInfer RoPE; keep heuristic chain",
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "act.swiglu", "sm": 89, "dtype": "fp16",
          "winner": "flashinfer", "metric": "1532.9 us",
@@ -112,18 +128,28 @@ MEASURED = {
          "source_file": "benchmarks/results/l4_vs_sota_flashinfer.md"},
         {"logical_op": "norm.rmsnorm", "sm": 80, "dtype": "bf16",
          "winner": "kernel-set", "metric": "115.7 us",
+         "promote_to_default": False,
+         "note": "A100 kernel_set suite: external norm providers not installed",
          "source_file": "benchmarks/results/a100.md"},
         {"logical_op": "rope.apply", "sm": 80, "dtype": "bf16",
          "winner": "kernel-set", "metric": "119.8 us",
+         "promote_to_default": False,
+         "note": "A100 kernel_set suite: external RoPE providers not installed",
          "source_file": "benchmarks/results/a100.md"},
         {"logical_op": "attention.decode", "sm": 80, "dtype": "bf16",
          "winner": "kernel-set", "metric": "4455.4 us",
+         "promote_to_default": False,
+         "note": "A100 kernel_set suite: FlashInfer decode was not in the run",
          "source_file": "benchmarks/results/a100.md"},
         {"logical_op": "act.swiglu", "sm": 80, "dtype": "bf16",
          "winner": "kernel-set", "metric": "269.3 us",
+         "promote_to_default": False,
+         "note": "A100 kernel_set suite: external activation providers not installed",
          "source_file": "benchmarks/results/a100.md"},
         {"logical_op": "loss.cross_entropy", "sm": 80, "dtype": "bf16",
          "winner": "kernel-set", "metric": "1271.8 us",
+         "promote_to_default": False,
+         "note": "A100 kernel_set suite: Liger CE was not in the run",
          "source_file": "benchmarks/results/a100.md"},
     ]
 }
@@ -987,7 +1013,7 @@ HEURISTIC = {
          "fallback_chain": ["kernel-set"]},
         # --- cross_entropy: liger fused CE leads on sm80+ (fp16/bf16/fp32);
         #     torch is the sm75 leader (liger min_sm 80) and the universal
-        #     rank-2. (sm89 fp16 + sm80 bf16 are MEASURED overrides below.) ----
+        #     rank-2. Promoted measured rows can still record exact evidence. ---
         {"logical_op": "cross_entropy", "sm": 75, "dtype": "fp16",
          "provider": "torch",
          "fallback_chain": ["torch", "kernel-set"]},
@@ -1010,6 +1036,9 @@ HEURISTIC = {
          "provider": "liger",
          "fallback_chain": ["liger", "torch", "kernel-set"]},
         {"logical_op": "cross_entropy", "sm": 86, "dtype": "bf16",
+         "provider": "liger",
+         "fallback_chain": ["liger", "torch", "kernel-set"]},
+        {"logical_op": "cross_entropy", "sm": 89, "dtype": "fp16",
          "provider": "liger",
          "fallback_chain": ["liger", "torch", "kernel-set"]},
         {"logical_op": "cross_entropy", "sm": 89, "dtype": "fp32",
@@ -1202,8 +1231,8 @@ def _dtype_feasible(sm, dtype):
 
 
 # --------------------------------------------------------------------------- #
-# Build the Cartesian table by overlaying measured winners on the heuristic
-# baseline.
+# Build the Cartesian table by overlaying promoted measured winners on the
+# heuristic baseline.
 # --------------------------------------------------------------------------- #
 def _normalize_chain(chain):
     """Ensure a fallback chain is non-empty and terminates in kernel-set,
@@ -1217,12 +1246,10 @@ def _hoist(provider, chain):
     """Return ``chain`` with ``provider`` as the winner at index 0, still
     terminating in kernel-set. The INVARIANT is ``provider == chain[0]``.
 
-    A measured ``kernel-set`` winner is special-cased: kernel-set is the
+    A promoted measured ``kernel-set`` winner is special-cased: kernel-set is the
     terminal fallback, so it can never sit non-terminally in the chain. When the
-    measured winner IS kernel-set we collapse the chain to ``["kernel-set"]`` so
-    the invariant ``provider == chain[0]`` holds (instead of stripping ks from
-    the middle and re-appending it at the end, which left a different provider at
-    index 0 — the HIGH bug from the review)."""
+    promoted winner IS kernel-set we collapse the chain to ``["kernel-set"]`` so
+    the invariant ``provider == chain[0]`` holds."""
     if provider == KERNEL_SET:
         return [KERNEL_SET]
     rest = [p for p in chain if p != provider and p != KERNEL_SET]
@@ -1254,10 +1281,16 @@ def build():
                                      _normalize_chain(c["fallback_chain"])),
         }
 
-    # 2) Overlay measured winners (override). A measured winner hoists its
-    #    provider to index 0 of the (existing or newly-created) chain.
+    # 2) Overlay promoted measured winners (override). A promoted measured
+    #    winner hoists its provider to index 0 of the existing chain. Narrow
+    #    diagnostic rows are recorded in MEASURED but intentionally skipped so
+    #    incomplete benchmark coverage cannot demote production providers.
     measured_keys = set()
+    observed_not_promoted = 0
     for m in MEASURED["measured"]:
+        if not m.get("promote_to_default", True):
+            observed_not_promoted += 1
+            continue
         op = _OP_ALIASES.get(m["logical_op"], m["logical_op"])
         sm = int(m["sm"])
         dtype = m["dtype"]
@@ -1294,6 +1327,7 @@ def build():
         "total": len(cells),
         "measured": sum(1 for c in cells if c["source"] == "measured"),
         "heuristic": sum(1 for c in cells if c["source"] == "heuristic"),
+        "observed_not_promoted": observed_not_promoted,
     }
     return cells, stats
 
@@ -1453,13 +1487,15 @@ def render(cells, stats):
         "description": (
             "SM x dtype x logical_op optimal kernel-selection table. The "
             "Cartesian product of (logical_op, sm, dtype); each feasible cell "
-            "names the optimal provider, its source (measured benchmark winner "
-            "or heuristic baseline), and a fallback_chain terminating in "
-            "kernel-set. Regenerate with: python3 scripts/gen_optimal.py."),
+            "names the optimal provider, its source (promoted measured "
+            "benchmark winner or heuristic baseline), and a fallback_chain "
+            "terminating in kernel-set. Regenerate with: python3 "
+            "scripts/gen_optimal.py."),
         "fill_rule": (
-            "measured-winner OVERRIDES heuristic; heuristic fills the rest; "
-            "arch/dtype-infeasible cells omitted; kernel-set is the terminal "
-            "fallback."),
+            "promoted measured-winner OVERRIDES heuristic; heuristic fills "
+            "the rest; non-promoted diagnostic measurements do not affect "
+            "runtime routing; arch/dtype-infeasible cells omitted; kernel-set "
+            "is the terminal fallback."),
         "terminal_fallback": KERNEL_SET,
         "stats": stats,
         "cells": cells,
@@ -1495,7 +1531,8 @@ def main(argv=None):
         if current == text:
             print(f"optimal.json is up to date ({stats['total']} cells: "
                   f"{stats['measured']} measured, {stats['heuristic']} "
-                  f"heuristic).")
+                  f"heuristic, {stats['observed_not_promoted']} "
+                  f"observed-not-promoted).")
             return 0
         sys.stderr.write(
             "optimal.json is OUT OF DATE — run: python3 scripts/gen_optimal.py\n")
@@ -1504,7 +1541,8 @@ def main(argv=None):
     with open(args.output, "w") as f:
         f.write(text)
     print(f"wrote {args.output} ({stats['total']} cells: {stats['measured']} "
-          f"measured, {stats['heuristic']} heuristic).")
+          f"measured, {stats['heuristic']} heuristic, "
+          f"{stats['observed_not_promoted']} observed-not-promoted).")
     return 0
 
 

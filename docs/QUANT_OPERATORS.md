@@ -157,8 +157,8 @@ These are being wired into dispatch (`_OPS_RAW` / `optimal.json`) now.
 
 | Gap | Priority | Needed by | SOTA reference | Why it's a hole |
 | --- | --- | --- | --- | --- |
-| **NVFP4 GEMM** | P0 / P1 | DeepSeek / Llama / Qwen ModelOpt NVFP4 on B200 / RTX 5090 | flashinfer `mm_fp4`, vllm CUTLASS FP4 | Blackwell e2m1 + e4m3 1×16 block scale + fp32 global; flashinfer/vllm providers exist but `optimal.json` emits **zero fp4 cells** |
-| **MXFP4 GEMM** | P1 | OpenAI gpt-oss MXFP4 MoE | vllm Marlin-MXFP4, torchao | OCP e2m1 + E8M0 block-32 scale; vllm Marlin-MXFP4 even covers Ampere/Hopper via emulation — broad reach left unwired |
+| **NVFP4 GEMM** | P0 / P1 | DeepSeek / Llama / Qwen ModelOpt NVFP4 on B200 / RTX 5090 | flashinfer `mm_fp4`, vllm CUTLASS FP4 | Wired in `optimal.json` for sm100 fp4 via FlashInfer → vLLM → kernel-set; needs promoted Blackwell measurement. |
+| **MXFP4 GEMM** | P1 | OpenAI gpt-oss MXFP4 MoE | vllm Marlin-MXFP4, torchao | Wired in `optimal.json` for sm100 fp4 via FlashInfer → vLLM → torchao → kernel-set; Ampere/Hopper emulation remains a future policy decision. |
 | **FP8 KV-cache quant** | P1 | Default in every serving engine (2× KV reduction) | vllm `reshape_and_cache` (fp8) | `ks_reshape_and_cache` is dtype-preserving; registry `kv_cache_reshape_and_cache` is documentation-only |
 | **Weight repack GPTQ/AWQ → Marlin/Machete** | P1 | Prerequisite to LOAD any int4 checkpoint into fast kernels | vllm `gptq_marlin_repack` / `awq_marlin_repack` / `machete_prepack_B` | Repack atomics exist but there is no logical op — and ks's two int4 packings don't match on-disk format |
 | **Per-token-group (1×128) dynamic quant** | P1 | Prerequisite for all blockwise fp8 | vllm / DeepGEMM act quant | ks had per-token only (addressed by the new `ks_quantize_fp8_group`) |
@@ -205,8 +205,8 @@ The landed and newly-wired pieces, in one place:
   longer dead-end at runtime. NVFP4/MXFP4 resolve to FlashInfer/vLLM on Blackwell
   (sm100+); the rest carry kernel-set terminals (the new blockwise/group kernels,
   or a clear "needs FlashInfer/vLLM" error for fp4/fp8-attn/fp8-KV). The strong
-  `gen_optimal.py --check` gate is green (232 cells); promote any measured
-  Blackwell FP4 winners into the `MEASURED` block per
+  `gen_optimal.py --check` gate is green (533 cells); promote any measured
+  Blackwell FP4 winners into the promoted `MEASURED` block per
   [`OPTIMAL_SELECTION.md`](OPTIMAL_SELECTION.md).
 
 ---

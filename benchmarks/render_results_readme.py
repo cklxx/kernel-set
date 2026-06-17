@@ -848,6 +848,13 @@ def render_root_summary(
         f"**{len(runs)} runs**, **{ok}/{total} ok rows**, GPUs: "
         f"{', '.join(gpus) if gpus else '-'}."
     )
+    lines.append("")
+    lines.append(
+        "Rows are scoped by their suite: `sota` rows compare installed "
+        "production providers; `kernel_set` rows are diagnostic "
+        "kernel-set/reference runs and are not promoted to default routing by "
+        "themselves."
+    )
     if large_rows:
         lines.append("")
         lines.append("Representative large-kernel rows:")

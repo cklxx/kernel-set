@@ -15,10 +15,10 @@ into measured cells.
   `models/_gen_registry.py --check`, `check_abi.py`,
   `xcheck_signatures.py`, and `pytest bindings/python/tests/ -q` is the right
   baseline for dispatch/planner work.
-- `providers/optimal.json` currently has 533 cells: 13 measured and 520
-  heuristic. That ratio is the central product risk: the selector is broad, but
-  most high-end GPU cells still rely on curated expectations rather than
-  measured winners.
+- `providers/optimal.json` currently has 533 cells: 4 promoted measured,
+  529 heuristic, and 9 observed-not-promoted diagnostic rows. That ratio is the
+  central product risk: the selector is broad, but most high-end GPU cells still
+  rely on curated expectations rather than promoted measured winners.
 - Benchmark reports now have a durable data layer:
   `benchmarks/results/runs/*.json` stores canonical rows keyed by
   `(gpu_sm, dtype, timing_profile, model_id, layer_idx, position_kind, position,
@@ -29,7 +29,8 @@ into measured cells.
   Blackwell sm120. The 2026-06-16 Colab refresh adds full `kernel_set` op
   coverage for L4 and RTX PRO 6000 across 12 total shards; the most important
   sm90/sm100/sm120 provider paths still need cleaner measured promotion into
-  `optimal.json`.
+  `optimal.json`; rows with missing providers or shape-sensitive winners should
+  stay diagnostic until a shape gate or full provider suite exists.
 
 ## External Drift Checked
 
@@ -82,9 +83,10 @@ products and small checkers more than another large hand-written survey.
 4. **Promote high-impact sm90/sm100/sm120 cells from heuristic to measured.**
    - First wave: attention prefill/decode, MLA decode, fp8/blockwise GEMM, MoE
      grouped GEMM/fused MoE, fused norm, RoPE, SwiGLU, cross entropy.
-   - Promotion rule: same GPU, same dtype, same timing profile, same shape,
-     correctness-gated winner, with the source run preserved in
-     `benchmarks/results/runs/`.
+   - Promotion rule: same GPU, same dtype, same timing profile, representative
+     shape range, correctness-gated winner, full production provider coverage,
+     with the source run preserved in `benchmarks/results/runs/`. If winner
+     flips by shape, add a shape policy instead of a whole-cell override.
 
 ## P1: Make Routing Quality Explicit
 
@@ -137,6 +139,8 @@ products and small checkers more than another large hand-written survey.
 
 - Do not promote a measured winner from a Markdown table by hand; use canonical
   JSON rows.
+- Do not promote rows from a suite with missing production providers or a known
+  shape reversal; keep them as observed-not-promoted diagnostics.
 - Do not publish a new best-provider claim unless the source run is checked in
   and `render_results_readme.py --check` passes.
 - Do not broaden the operator surface until the existing high-impact heuristic

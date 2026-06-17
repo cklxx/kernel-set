@@ -5,13 +5,14 @@ Covers:
 * the generated ``providers/optimal.json`` is well-formed (every cell has a
   provider/source/fallback_chain terminating in kernel-set; measured cells carry
   a metric + gpu);
-* ``select_optimal`` returns the **measured winner** where one exists
-  (attention.prefill sm89 fp16 -> flashinfer; norm.rmsnorm sm80 bf16 ->
-  kernel-set; rmsnorm sm89 fp16 -> liger), via O(1) exact-cell lookup;
+* ``select_optimal`` returns the **promoted measured winner** where one exists
+  (attention.decode sm89 fp16 -> flashinfer; cross_entropy sm89 fp16 -> liger),
+  via O(1) exact-cell lookup;
+* narrow diagnostic measurements do not override production provider defaults;
 * graceful fallback: nearest feasible dtype, then the kernel-set terminal;
 * arch/dtype gating: fp8 omitted on sm75 -> kernel-set fallback;
-* the runtime dispatcher consults the table (measured override flows through to
-  ``which`` when the winning provider is installed).
+* the runtime dispatcher consults the table while keeping non-promoted
+  diagnostics out of production routing.
 
 These run on a no-GPU / no-torch host (selection logic only).
 
@@ -48,6 +49,7 @@ def test_optimal_json_exists_and_loads():
     assert stats["total"] == len(doc["cells"])
     assert stats["measured"] + stats["heuristic"] == stats["total"]
     assert stats["measured"] > 0 and stats["heuristic"] > 0
+    assert stats["observed_not_promoted"] == 9
 
 
 def test_every_cell_is_well_formed():
@@ -197,37 +199,64 @@ def test_table_logical_ops_match_dispatch_op_order():
 
 
 # --------------------------------------------------------------------------- #
-# select_optimal: measured winners (exact-cell override).
+# select_optimal: promoted measured winners and non-promoted diagnostics.
 # --------------------------------------------------------------------------- #
-def test_measured_winner_attention_prefill_sm89_flashinfer():
-    # Dotted taxonomy alias resolves to the canonical op.
+def test_non_promoted_attention_prefill_sm89_keeps_flash_attn_heuristic():
+    # The L4 prefill measurement did not have FlashAttention installed, so it is
+    # not promoted over the production FA2 heuristic.
     r = O.select_optimal("attention.prefill", 89, "fp16")
-    assert r["provider"] == "flashinfer"
-    assert r["source"] == "measured"
+    assert r["provider"] == "flash-attn"
+    assert r["source"] == "heuristic"
     assert r["fallback_chain"][-1] == KERNEL_SET
-    assert r["fallback_chain"][0] == "flashinfer"
-    assert "us" in r["metric"]
+    assert r["fallback_chain"][0] == "flash-attn"
     # underscore alias gives the same result.
     assert O.select_optimal("attention_prefill", 89, "fp16")["provider"] == \
-        "flashinfer"
+        "flash-attn"
 
 
-def test_measured_winner_rmsnorm_sm80_is_kernel_set():
-    # On A100 bf16 the measured rmsnorm winner is kernel-set itself.
+def test_non_promoted_a100_diagnostic_does_not_override_rmsnorm_sm80():
+    # The A100 bf16 rmsnorm run was a kernel_set diagnostic suite without the
+    # production external providers installed. It stays recorded in benchmark
+    # results, but default routing must keep the curated production chain.
     r = O.select_optimal("norm.rmsnorm", 80, "bf16")
-    assert r["provider"] == KERNEL_SET
-    assert r["source"] == "measured"
-    # A measured kernel-set winner emits chain ["kernel-set"] so the invariant
-    # provider == chain[0] holds (it cannot sit non-terminally in the chain).
-    assert r["fallback_chain"] == [KERNEL_SET]
+    assert r["provider"] == "flashinfer"
+    assert r["source"] == "heuristic"
+    assert r["fallback_chain"] == [
+        "flashinfer", "sgl-kernel", "vllm", "liger", KERNEL_SET]
 
 
-def test_measured_winner_rmsnorm_sm89_is_liger():
+def test_non_promoted_a100_diagnostics_do_not_override_core_ops():
+    assert O.select_optimal("attention.decode", 80, "bf16")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal("rope.apply", 80, "bf16")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal("act.swiglu", 80, "bf16")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal("loss.cross_entropy", 80, "bf16")["provider"] == \
+        "liger"
+    for op in ("attention_decode", "rope", "swiglu", "cross_entropy"):
+        assert O.select_optimal(op, 80, "bf16")["source"] == "heuristic"
+
+
+def test_non_promoted_l4_shape_sensitive_rows_keep_heuristics():
+    # These L4 rows are useful bench evidence, but they are not global defaults:
+    # rmsnorm was sub-1% / run-sensitive, fused_add_rmsnorm reverses at rows=1,
+    # and RoPE did not include the FlashInfer RoPE provider.
     r = O.select_optimal("rmsnorm", 89, "fp16")
-    assert r["provider"] == "liger"
+    assert r["provider"] == "flashinfer"
+    assert r["source"] == "heuristic"
+    assert r["fallback_chain"][0] == "flashinfer"
+    assert O.select_optimal("fused_add_rmsnorm", 89, "fp16")["provider"] == \
+        "flashinfer"
+    assert O.select_optimal("rope", 89, "fp16")["provider"] == "flashinfer"
+
+
+def test_promoted_measured_attention_decode_sm89_is_flashinfer():
+    r = O.select_optimal("attention.decode", 89, "fp16")
+    assert r["provider"] == "flashinfer"
     assert r["source"] == "measured"
-    assert r["fallback_chain"][0] == "liger"
-    assert r["fallback_chain"][-1] == KERNEL_SET
+    assert r["fallback_chain"][0] == "flashinfer"
+    assert "us" in r["metric"]
 
 
 def test_measured_winner_gemm_sm89_is_torch():
@@ -237,12 +266,12 @@ def test_measured_winner_gemm_sm89_is_torch():
 
 
 def test_measured_cross_entropy_cells():
-    # cross_entropy only exists in the table via measured cells (no heuristic
-    # fill row): sm89 fp16 -> liger, sm80 bf16 -> kernel-set.
+    # sm89 fp16 is promoted from the L4 SOTA run; sm80 bf16 keeps the
+    # production heuristic because the A100 diagnostic row was not promoted.
     assert O.select_optimal("loss.cross_entropy", 89, "fp16")["provider"] == \
         "liger"
     r = O.select_optimal("cross_entropy", 80, "bf16")
-    assert r["provider"] == KERNEL_SET and r["source"] == "measured"
+    assert r["provider"] == "liger" and r["source"] == "heuristic"
 
 
 # --------------------------------------------------------------------------- #
@@ -475,8 +504,8 @@ def test_heuristic_fill_wave1_provider_only_ops():
 # Graceful fallback ladder.
 # --------------------------------------------------------------------------- #
 def test_nearest_dtype_fallback():
-    # rmsnorm sm80 has measured bf16 but the fp16 request has its own heuristic
-    # cell; conversely an fp64-ish unknown request degrades to a feasible dtype.
+    # rmsnorm sm80 has exact heuristic cells; conversely an fp64-ish unknown
+    # request degrades to a feasible dtype.
     r = O.select_optimal("rmsnorm", 80, "fp16")
     assert r["provider"] == "flashinfer" and r["source"] == "heuristic"
     # A dtype with no exact cell for this (op, sm) but a near neighbour: gemm
@@ -568,12 +597,13 @@ def test_select_optimal_is_pure_returns_fresh_dict():
     a = O.select_optimal("rmsnorm", 89, "fp16")
     a["provider"] = "MUTATED"
     b = O.select_optimal("rmsnorm", 89, "fp16")
-    assert b["provider"] == "liger", "lookup must not be mutated by the caller"
+    assert b["provider"] == "flashinfer", \
+        "lookup must not be mutated by the caller"
 
 
 def test_optimal_chain_helper():
     chain = O.optimal_chain("attention.prefill", 89, "fp16")
-    assert chain[0] == "flashinfer"
+    assert chain[0] == "flash-attn"
     assert chain[-1] == KERNEL_SET
 
 
@@ -601,13 +631,14 @@ def _clear_cache():
     dispatch.reset_cache()
 
 
-def test_dispatch_applies_measured_override_rmsnorm_sm89(monkeypatch):
-    # The measured L4 (sm89 fp16) winner is liger. With BOTH flashinfer (static
-    # rank-1) and liger installed, the table's measured override makes dispatch
-    # pick liger — proving it consults the optimal table, not the static rank.
+def test_dispatch_keeps_heuristic_rmsnorm_sm89_when_measurement_not_promoted(
+        monkeypatch):
+    # The L4 rmsnorm row is not promoted because the margin is sub-1% and
+    # run-sensitive. With BOTH flashinfer and liger installed, production
+    # dispatch keeps the curated heuristic.
     _mock_available(
         monkeypatch, available_libs={"flashinfer", "liger_kernel"}, sm=89)
-    assert dispatch.which("rmsnorm", dtype="fp16") == "liger"
+    assert dispatch.which("rmsnorm", dtype="fp16") == "flashinfer"
     # On sm90 (heuristic, unbenched) the static rank-1 flashinfer wins again.
     dispatch.reset_cache()
     _mock_available(
@@ -615,13 +646,12 @@ def test_dispatch_applies_measured_override_rmsnorm_sm89(monkeypatch):
     assert dispatch.which("rmsnorm", dtype="fp16") == "flashinfer"
 
 
-def test_dispatch_measured_override_attention_prefill_sm89(monkeypatch):
-    # Measured sm89 fp16 winner is flashinfer (FA2 not installed in the bench);
-    # with flash-attn (static rank-1) AND flashinfer present, the table promotes
-    # flashinfer on sm89 fp16.
+def test_dispatch_keeps_flash_attn_for_non_promoted_prefill_sm89(monkeypatch):
+    # The sm89 fp16 prefill row is not promoted because FA2 was not installed in
+    # that bench. With flash-attn and flashinfer present, FA2 remains first.
     _mock_available(
         monkeypatch, available_libs={"flash_attn", "flashinfer"}, sm=89)
-    assert dispatch.which("attention_prefill", dtype="fp16") == "flashinfer"
+    assert dispatch.which("attention_prefill", dtype="fp16") == "flash-attn"
     # bf16 on sm89 is heuristic -> flash-attn (static rank-1) leads.
     dispatch.reset_cache()
     _mock_available(
@@ -697,11 +727,12 @@ def test_planner_and_dispatch_agree_on_sampled_cells(monkeypatch):
         "flash-mla": "flash_mla",
     }
     samples = [
-        # L4 (sm89) fp16 measured winners.
-        ("attn_norm", 89, "fp16"),    # measured -> liger
-        ("rope", 89, "fp16"),         # measured -> liger
-        ("attn_prefill", 89, "fp16"),  # measured -> flashinfer
-        # A100 (sm80) bf16: measured kernel-set winner (chain == [kernel-set]).
+        # L4 (sm89) fp16 non-promoted diagnostics keep production heuristics.
+        ("attn_norm", 89, "fp16"),    # heuristic -> flashinfer
+        ("rope", 89, "fp16"),         # heuristic -> flashinfer
+        ("attn_prefill", 89, "fp16"),  # heuristic -> flash-attn
+        # A100 (sm80) bf16: production heuristic chain; kernel_set-only
+        # diagnostics are not promoted to default routing.
         ("attn_norm", 80, "bf16"),
         # Heuristic fills (no measurement).
         ("rope", 90, "bf16"),         # heuristic -> flashinfer

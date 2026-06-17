@@ -23,15 +23,22 @@ Two reproducible inputs are overlaid to fill the Cartesian table:
    `providers/registry.json` + `providers/atomic_ops.json`. This defines the
    **feasible universe**: which cells exist at all.
 
-2. **MEASURED winners (override).** Actual benchmark winners parsed from
-   [`benchmarks/results/*.md`](../benchmarks/results/). A measured winner
-   **OVERRIDES** the heuristic provider for its exact `(op, sm, dtype)` cell.
+2. **PROMOTED measured winners (override).** Actual benchmark winners parsed
+   from [`benchmarks/results/*.md`](../benchmarks/results/) whose suite covered
+   enough production providers to safely set a default for the whole
+   `(op, sm, dtype)` cell. A promoted measured winner **OVERRIDES** the
+   heuristic provider for its exact cell.
+
+3. **Observed diagnostics (not promoted).** Narrow runs still live in
+   `MEASURED` with `promote_to_default=False`. They remain benchmark evidence,
+   but do not change runtime routing when the run missed a key provider or the
+   winner flips by shape.
 
 The fill rule, in one line:
 
-> **measured-winner OVERRIDES heuristic · heuristic FILLS the rest ·
-> arch/dtype-infeasible cells are OMITTED · `kernel-set` is the TERMINAL
-> fallback.**
+> **promoted measured-winner OVERRIDES heuristic · heuristic FILLS the rest ·
+> observed diagnostics do not affect runtime routing · arch/dtype-infeasible
+> cells are OMITTED · `kernel-set` is the TERMINAL fallback.**
 
 Every cell's `fallback_chain` ends in `kernel-set`, so dispatch never dead-ends:
 on a fully-provisioned host the optimal external kernel runs; on a bare host
@@ -44,21 +51,21 @@ works via the portable kernel-set C ABI. And every cell satisfies
 `scripts/gen_optimal.py` runs `validate()` on every build, so the CI
 `gen_optimal.py --check` gate fails on any violation:
 
-1. **`provider == fallback_chain[0]`** for every cell. A measured `kernel-set`
-   winner therefore emits chain `["kernel-set"]` (it cannot sit non-terminally
-   in a chain that must end in `kernel-set`).
+1. **`provider == fallback_chain[0]`** for every cell. A promoted measured
+   `kernel-set` winner would therefore emit chain `["kernel-set"]`; a
+   shape-sensitive or incomplete `kernel-set` observation is not promoted.
 2. **Every `provider` + every `fallback_chain` entry exists** as a runtime
-   provider for that `logical_op` in `backends/_registry.py` (so the measured
-   RoPE winner `liger` is backed by a real Liger RoPE adapter).
+   provider for that `logical_op` in `backends/_registry.py`.
 3. **No arch/dtype-infeasible cell** — `bf16`/`tf32` < sm80, `fp8` < sm89,
    `fp4` < sm100 are omitted, derived from `models/gpu_caps.json` (no sm75/bf16
    rows).
-5. **Every dtype token `optimal.py` accepts** appears in ≥1 feasible cell **or**
-   is a documented degradation (`fp4` → kernel-set, see below).
+5. **Every dtype token `optimal.py` accepts** appears in >=1 feasible cell
+   **or** is a documented degradation.
 6. **The table's `logical_op` set == the dispatch `OP_ORDER`** — the table is
    truly Cartesian over every dispatch op (incl. `gemma_rmsnorm` + `sampling`).
 
-Current table: **218 cells — 13 measured, 205 heuristic.** Regenerate + verify:
+Current table: **533 cells — 4 promoted measured, 529 heuristic,
+9 observed-not-promoted.** Regenerate + verify:
 
 ```bash
 python3 scripts/gen_optimal.py           # write providers/optimal.json
@@ -80,7 +87,8 @@ table with a graceful degradation ladder:
    provider against the original, infeasible dtype). The runtime probe enforces
    the mirror rule (`_probe.dtype_arch_ok`): an installed FlashInfer (min_sm 75,
    dtypes "…, fp8") is **not** selectable for `fp8` on sm75.
-1. **exact cell** `(op, sm, dtype)` — measured winner if present, else heuristic;
+1. **exact cell** `(op, sm, dtype)` — promoted measured winner if present, else
+   heuristic;
 2. **nearest feasible dtype** for that `(op, sm)` — e.g. an fp16 request resolves
    to the bf16 cell when only bf16 exists;
 3. **`kernel-set`** terminal fallback — when nothing is feasible (unknown op, an
@@ -98,60 +106,53 @@ python3 -c "import kernel_set; print(kernel_set.dispatch.which('rmsnorm', gpu='l
 
 ---
 
-## Measured winners (override cells)
+## Promoted measured winners
 
-These 13 cells are **real benchmark winners** (fastest *and* correctness-gated)
-transcribed from the cited results. They override the heuristic baseline.
+These 4 cells are **real benchmark winners** (fastest *and*
+correctness-gated) transcribed from the cited results and safe to use as
+production defaults for the whole `(op, sm, dtype)` cell.
 
 | op | sm | dtype | winner | latency | GPU | source |
 |---|---|---|---|--:|---|---|
-| `attention_prefill` | 89 | fp16 | **flashinfer** | 599.0 µs | L4 | `l4_vs_sota_flashinfer.md` |
 | `attention_decode` | 89 | fp16 | **flashinfer** | 2283.5 µs | L4 | `l4_vs_sota_flashinfer.md` |
-| `rmsnorm` | 89 | fp16 | **liger** | 299.0 µs | L4 | `l4_vs_sota_flashinfer.md` |
-| `fused_add_rmsnorm` | 89 | fp16 | **kernel-set** | 614.4 µs | L4 | `l4_vs_sota_flashinfer.md` |
-| `rope` | 89 | fp16 | **liger** | 376.8 µs | L4 | `l4_vs_sota_flashinfer.md` |
 | `swiglu` | 89 | fp16 | **flashinfer** | 1532.9 µs | L4 | `l4_vs_sota_flashinfer.md` |
 | `gemm` | 89 | fp16 | **torch** (cuBLAS) | 2689.0 µs | L4 | `l4_vs_sota_flashinfer.md` |
 | `cross_entropy` | 89 | fp16 | **liger** | 1386.5 µs | L4 | `l4_vs_sota_flashinfer.md` |
-| `rmsnorm` | 80 | bf16 | **kernel-set** | 115.7 µs | A100 | `a100.md` |
-| `rope` | 80 | bf16 | **kernel-set** | 119.8 µs | A100 | `a100.md` |
-| `attention_decode` | 80 | bf16 | **kernel-set** | 4455.4 µs | A100 | `a100.md` |
-| `swiglu` | 80 | bf16 | **kernel-set** | 269.3 µs | A100 | `a100.md` |
-| `cross_entropy` | 80 | bf16 | **kernel-set** | 1271.8 µs | A100 | `a100.md` |
 
-Two things the measurements teach us:
+The important rule is conservative: a measured row can confirm an existing
+production default, but it only *changes* that default when the suite covers the
+relevant providers and the result is not shape-sensitive.
 
-* **On L4 (sm89, fp16)** the bandwidth-bound winners split: `liger` takes
-  `rmsnorm`/`rope`/`cross_entropy`, `flashinfer` takes `swiglu`/attention,
-  `cuBLAS` (torch) owns dense `gemm` — and **kernel-set wins `fused_add_rmsnorm`**
-  (1.85–1.97× FlashInfer, its fusion advantage).
-* **On A100 (sm80, bf16)** kernel-set's own C-ABI kernels are the measured
-  winners for `rmsnorm`/`rope`/`swiglu`/`cross_entropy`/`attention_decode` in
-  this harness (84–87 % peak HBM BW; the A100 run benched ks vs an eager torch
-  baseline, with no flashinfer/vllm installed — so ks legitimately leads here and
-  the table records it). Where a stronger external provider would win once
-  installed, the heuristic chain still lists it ahead of ks in the
-  `fallback_chain`, so dispatch prefers it when available.
+## Observed, Not Promoted
 
-For measured **kernel-set** winners the cell's `provider` is `kernel-set` **and**
-its `fallback_chain` is exactly `["kernel-set"]` (e.g. `rmsnorm` sm80 bf16): the
-invariant `provider == fallback_chain[0]` means the measured winner literally
-leads its own chain, and `kernel-set` — the terminal fallback — can only appear
-once, at the end. This is the fix for the review's HIGH bug, where the old
-generator recorded `provider: kernel-set` but left a *different* provider at
-`fallback_chain[0]`, so runtime dispatch (which consumes the chain) ignored the
-measured winner. The `rope` sm89 fp16 measured winner is **liger**, now backed by
-a real `liger` RoPE provider in `backends/_registry.py` (it previously named a
-provider that did not exist for `rope`, so dispatch silently dropped it).
+These rows are still useful benchmark evidence, but they do **not** override
+`providers/optimal.json` because they missed a key provider, were run in a
+kernel-set-only suite, or flipped by shape.
+
+| op | sm | dtype | observed winner | latency | why not default |
+|---|---|---|---|--:|---|
+| `attention_prefill` | 89 | fp16 | flashinfer | 599.0 µs | FlashAttention was not installed in the L4 run, so FA2 stays the default. |
+| `rmsnorm` | 89 | fp16 | liger | 299.0 µs | Sub-1% over FlashInfer and run/shape sensitive; keep FlashInfer heuristic. |
+| `fused_add_rmsnorm` | 89 | fp16 | kernel-set | 614.4 µs | Large-row winner, but rows=1 favors FlashInfer; needs shape-aware routing. |
+| `rope` | 89 | fp16 | liger | 376.8 µs | The run did not cover FlashInfer RoPE; keep FlashInfer heuristic. |
+| `rmsnorm` | 80 | bf16 | kernel-set | 115.7 µs | A100 kernel_set suite lacked external norm providers. |
+| `rope` | 80 | bf16 | kernel-set | 119.8 µs | A100 kernel_set suite lacked external RoPE providers. |
+| `attention_decode` | 80 | bf16 | kernel-set | 4455.4 µs | A100 kernel_set suite did not include FlashInfer decode. |
+| `swiglu` | 80 | bf16 | kernel-set | 269.3 µs | A100 kernel_set suite lacked external activation providers. |
+| `cross_entropy` | 80 | bf16 | kernel-set | 1271.8 µs | A100 kernel_set suite did not include Liger CE. |
+
+These observations remain in the benchmark result docs. They are intentionally
+not presented as production comparisons.
 
 ---
 
 ## The heuristic matrix (fill cells)
 
-The remaining 205 cells are the curated baseline — what dispatch selects when no
-measurement exists for that `(op, sm, dtype)`. **sm90 (H100) and sm100
-(Blackwell) are entirely heuristic, pending H100/B200 benchmarks.** Likewise
-sm75 (T4), sm86 (A10), and the unbenched dtypes on sm80/sm89.
+The remaining 529 cells are the curated baseline — what dispatch selects when
+no promoted measurement exists for that `(op, sm, dtype)`. sm90/Hopper and
+sm100/Blackwell currently remain heuristic in the table: H20/PRO6000 benchmark
+runs exist, but rows with missing providers or shape-sensitive winners are not
+promoted into a global default.
 
 The table is **Cartesian over the full dispatch `OP_ORDER`** (invariant 6): in
 addition to the ops shown below it also fills `gemma_rmsnorm` (flashinfer/sgl on
@@ -177,12 +178,10 @@ Rank-1 per op × arch (the `[h]` cells; `→ ks` = falls back to kernel-set):
 | `moe` | vllm fused_experts | vllm fused_experts | deep_gemm (fp8) | deep_gemm (fp8) | kernel-set |
 | `moe_gate` / `moe_group_gate` | sgl-kernel | sgl-kernel | sgl-kernel | sgl-kernel | kernel-set |
 
-† **sm90/sm100 are heuristic** — they have *not* been benchmarked on H100/B200.
-The providers are the best-known industry kernels for those archs (FlashMLA,
-DeepGEMM, Machete, FA4, Marlin-int8) gated by their minimum SM; once an
-H100/Blackwell run lands in `benchmarks/results/`, transcribe the winners into
-`scripts/gen_optimal.py`'s `MEASURED` block and regenerate to promote those cells
-to `[M]`.
+† **sm90/sm100 are heuristic in the default table.** H20 and PRO6000 runs are
+checked in under `benchmarks/results/runs/`; promote only rows whose suite covers
+the production provider set and whose winner is stable for the cell's shape
+range.
 
 ### Arch/dtype-infeasible cells are omitted
 
@@ -204,23 +203,20 @@ then the `kernel-set` terminal. A request for an **arch-infeasible** dtype
 (`source: "fallback"`) — never nearest-dtype-borrowing a different-dtype cell, and
 never an error.
 
-### FP4 / NVFP4 is a documented degradation path
+### FP4 / NVFP4 is wired only for dedicated FP4 ops
 
 `gpu_caps.json` declares `fp4` a Blackwell (sm100) capability, and `optimal.py`
-accepts the `fp4`/`nvfp4`/`mxfp4` aliases, but **no runtime NVFP4 adapter is
-wired yet**. So `fp4` is a *documented degradation* (`_DOCUMENTED_DEGRADATIONS`
-in the generator): there are **zero `fp4` cells**, and `select_optimal(op, 100,
-"fp4")` returns the `kernel-set` fallback (`source: "fallback"`) rather than
-silently selecting the `int4` cell. Invariant 5 keeps this honest — `fp4` is the
-only accepted token without a cell, and it is explicitly listed as a degradation.
-When real NVFP4 adapters land, add sm100 `fp4` cells (provider names matching the
-adapters) and drop `fp4` from the degradation set.
+accepts the `fp4`/`nvfp4`/`mxfp4` aliases. The table has fp4 cells only for the
+dedicated FP4 ops: `nvfp4_gemm`, `mxfp4_gemm`, and `fp4_quantize`.
+For every other op, an fp4 request resolves to the `kernel-set` fallback rather
+than silently borrowing an `int4` cell.
 
 ---
 
 ## Provenance & reproducibility
 
-* **Source of record:** `benchmarks/results/*.md` (measured) and
+* **Source of record:** `benchmarks/results/*.md` and
+  `benchmarks/results/runs/*.json` (measurements) plus
   `providers/registry.json` + `providers/atomic_ops.json` (heuristic ranks).
 * **Canonical inputs:** the `MEASURED` and `HEURISTIC` blocks embedded in
   `scripts/gen_optimal.py` (transcribed from the above), so regeneration is
@@ -228,16 +224,16 @@ adapters) and drop `fp4` from the degradation set.
 * **CI gate:** `python3 scripts/gen_optimal.py --check` fails the build if the
   checked-in `providers/optimal.json` drifts from a regen.
 * **Tests:** [`tests/test_optimal.py`](../bindings/python/tests/test_optimal.py)
-  asserts the measured overrides, the design invariants (`provider == chain[0]`
+  asserts promoted measured cells, non-promoted diagnostic cells, and the
+  design invariants (`provider == chain[0]`
   for all cells; no arch/dtype-infeasible cells; every provider exists in the
   registry for its op; table ops == `OP_ORDER`), the capability-aware dtype gate
   (`select_optimal` returns kernel-set for fp8@sm75 and bf16@sm75; `fp4` degrades
   to kernel-set, not int4; the runtime `dtype_arch_ok` blocks an installed
   FlashInfer for fp8 on sm75), the nearest-dtype + kernel-set fallback ladder,
-  that the runtime dispatcher consults the table (the sm89-fp16
-  `liger`/`flashinfer` overrides flow through `dispatch.which`), and that the
-  planner (`models/select.py`) and dispatch agree on sampled cells. The full
-  dispatch contract is in
+  that the runtime dispatcher consults the table without promoting incomplete
+  diagnostics, and that the planner (`models/select.py`) and dispatch agree on
+  sampled cells. The full dispatch contract is in
   [`tests/test_dispatch.py`](../bindings/python/tests/test_dispatch.py).
 
 ---
@@ -256,10 +252,11 @@ don't reinvent**:
 
 2. **KEEP + improve kernel-set's memory-bound kernels** (`rmsnorm` /
    `fused_add_rmsnorm` / `rope` / `swiglu` / `cross_entropy` / sampling /
-   optimizer / elementwise). These are bandwidth-bound and kernel-set measures
-   **84–87 % of peak HBM BW on A100** — genuinely competitive, and on sm80 bf16
-   the **measured winner** above. Here kernel-set is a legitimate ranked provider
-   *and* the portable path for the Rust / Go / TS bindings.
+   optimizer / elementwise). These are bandwidth-bound and kernel-set is often
+   competitive, but global defaults stay on the production provider chain until
+   a promoted measurement covers the relevant providers and shape range.
+   Shape-sensitive wins, such as L4 `fused_add_rmsnorm`, should become explicit
+   shape gates rather than whole-cell overrides.
 
 3. **SELF-DEVELOP only** where there is no good OSS equivalent or a portable,
    dependency-free fallback must exist for the non-Python bindings. Highest ROI:
@@ -272,11 +269,12 @@ don't reinvent**:
 
 | | |
 |---|---|
-| Table | `providers/optimal.json` (218 cells: 13 measured, 205 heuristic) |
+| Table | `providers/optimal.json` (533 cells: 4 promoted measured, 529 heuristic, 9 observed-not-promoted) |
 | Generator | `scripts/gen_optimal.py` (stdlib; `--check` CI gate) |
 | Selector | `backends/optimal.py` `select_optimal(op, sm, dtype)` — O(1) lookup |
 | Dispatch | `backends/_registry.py optimal_order(...)` orders providers from the table |
 | Planner | `models/select.py` annotates plans with `optimal_provider`/`optimal_source` |
 | CLI | `ksctl optimal [--sm N] [--dtype D] [--op O] [--json]` |
-| Measured archs | L4 (sm89 fp16), A100 (sm80 bf16) |
-| Heuristic archs | T4 (sm75), A10 (sm86), **H100 (sm90)**, **Blackwell (sm100)** — pending bench |
+| Promoted measured archs | L4 (sm89 fp16) |
+| Observed but not promoted | L4 shape-sensitive/incomplete rows; A100 kernel_set-only rows |
+| Heuristic/default archs | T4 (sm75), A10 (sm86), A100 (sm80), Hopper (sm90), Blackwell (sm100) where no promoted row exists |
