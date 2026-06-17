@@ -102,17 +102,33 @@ Kernel-coverage rows prove call-path coverage and token parity; they are not app
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes | historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax | 14.86 | yes | best-practice kernel-set composition; Python loop/allocation and unfused Q/K/V + gate/up remain | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-best-practice-kernelset.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-best-practice-kernelset.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes | historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax | 14.84 | yes | best-practice kernel-set composition; Python loop/allocation and unfused Q/K/V + gate/up remain | [20260617-qwen3-8b-daily-l4-composition-ablation.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](benchmarks/results/inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
 
 Kernel coverage for the composed kernel-set engine:
 
 | engine | covered kernel-set kernels | remaining torch/Python path | counted calls |
 |---|---|---|---|
-| `kernel_set_best_practice` | `ks_embedding_lookup`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | linear=torch/cuBLAS<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144<br>`torch_linear`=1012 |
+| `kernel_set_best_practice` | `ks_embedding_lookup`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_paged_attn_decode`<br>`ks_reshape_and_cache`<br>`ks_swiglu`<br>`ks_argmax` | linear=torch/cuBLAS<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144<br>`torch_linear`=1012 |
 | `kernel_set_full_kernels` | `ks_embedding_lookup`<br>`ks_gemm`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`gemm`=1012<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144 |
+
+Composition ablation from the best-practice path:
+
+| variant | new tok/s | vs best-practice | token match | changed component | notes |
+|---|---:|---:|---|---|---|
+| `kernel_set_best_practice` | 14.84 | +0.0% | yes | baseline | baseline: torch/cuBLAS linears plus ks non-linear/attention/sample kernels |
+| `torch_embedding` | 14.80 | -0.2% | yes | embedding=torch | replace ks embedding lookup with torch embedding |
+| `torch_norm` | 13.92 | -6.2% | yes | norm=torch | replace ks hidden/QK RMSNorm with HF torch modules |
+| `torch_rope` | 14.46 | -2.6% | yes | rope=torch | replace ks RoPE gather with torch rotate-half RoPE |
+| `torch_cache_write` | 14.67 | -1.2% | yes | cache=torch | replace ks reshape_and_cache with torch cache scatter |
+| `torch_attention` | 15.48 | +4.3% | yes | attention=torch | replace ks prefill/decode attention with torch SDPA/manual decode |
+| `torch_swiglu` | 14.75 | -0.6% | yes | swiglu=torch | replace ks SwiGLU with torch silu(gate)*up |
+| `torch_argmax` | 14.84 | +0.0% | yes | argmax=torch | replace ks argmax with torch argmax |
+| `manual_torch_ops` | 14.53 | -2.1% | yes | argmax=torch<br>attention=torch<br>cache=torch<br>embedding=torch<br>norm=torch<br>rope=torch<br>swiglu=torch | manual Python engine with torch ops for every replaceable component |
+
+Each row changes one component from the best-practice path unless the name says manual_torch_ops; same prompt, greedy 4-token decode.
 
 <!-- BENCHMARK_SUMMARY:END -->
 

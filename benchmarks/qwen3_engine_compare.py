@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Qwen3 smoke comparison for a composed kernel-set decode path.
+"""Qwen3 smoke comparison for composed kernel-set decode paths.
 
-This runner is intentionally small and auditable.  It is not a production
+This runner is intentionally small and auditable. It is not a production
 serving engine: scheduling, request batching, CUDA graphs, allocator policy, and
-paginated block management are still Python.  The point is to verify which
-kernel-set CUDA kernels are actually exercised by the composed Qwen3 path.
+paginated block management are still Python. The default path is the
+best-practice composition: dense linears stay on torch/cuBLAS, while kernel-set
+is used for the memory/attention/sample kernels where this repo has useful
+coverage. The all-kernel GEMM path remains available as a coverage smoke via
+``--run-full-kernels``.
 """
 
 from __future__ import annotations
@@ -142,7 +145,15 @@ class KernelStats:
     ks_paged_attn_decode_calls: int = 0
     ks_swiglu_calls: int = 0
     ks_argmax_calls: int = 0
+    torch_embedding_calls: int = 0
     torch_linear_calls: int = 0
+    torch_rmsnorm_calls: int = 0
+    torch_rope_calls: int = 0
+    torch_cache_write_calls: int = 0
+    torch_attention_prefill_calls: int = 0
+    torch_attention_decode_calls: int = 0
+    torch_swiglu_calls: int = 0
+    torch_argmax_calls: int = 0
 
 
 class KernelSetQwen3FullPath:
@@ -399,12 +410,235 @@ class KernelSetQwen3FullPath:
         return tokens + generated, logits
 
 
-class KernelSetQwen3BestPracticePath(KernelSetQwen3FullPath):
-    """Kernel-set integration path that leaves dense linears on torch/cuBLAS."""
+BEST_PRACTICE_MODES = {
+    "embedding": "ks",
+    "linear": "torch",
+    "norm": "ks",
+    "rope": "ks",
+    "cache": "ks",
+    "attention": "ks",
+    "swiglu": "ks",
+    "argmax": "ks",
+}
+
+TORCH_MANUAL_MODES = {
+    "embedding": "torch",
+    "linear": "torch",
+    "norm": "torch",
+    "rope": "torch",
+    "cache": "torch",
+    "attention": "torch",
+    "swiglu": "torch",
+    "argmax": "torch",
+}
+
+ABLATION_VARIANTS = [
+    (
+        "torch_embedding",
+        {"embedding": "torch"},
+        "replace ks embedding lookup with torch embedding",
+    ),
+    (
+        "torch_norm",
+        {"norm": "torch"},
+        "replace ks hidden/QK RMSNorm with HF torch modules",
+    ),
+    (
+        "torch_rope",
+        {"rope": "torch"},
+        "replace ks RoPE gather with torch rotate-half RoPE",
+    ),
+    (
+        "torch_cache_write",
+        {"cache": "torch"},
+        "replace ks reshape_and_cache with torch cache scatter",
+    ),
+    (
+        "torch_attention",
+        {"attention": "torch"},
+        "replace ks prefill/decode attention with torch SDPA/manual decode",
+    ),
+    (
+        "torch_swiglu",
+        {"swiglu": "torch"},
+        "replace ks SwiGLU with torch silu(gate)*up",
+    ),
+    (
+        "torch_argmax",
+        {"argmax": "torch"},
+        "replace ks argmax with torch argmax",
+    ),
+    (
+        "manual_torch_ops",
+        TORCH_MANUAL_MODES,
+        "manual Python engine with torch ops for every replaceable component",
+    ),
+]
+
+
+def _merge_modes(overrides: Dict[str, str]) -> Dict[str, str]:
+    modes = dict(BEST_PRACTICE_MODES)
+    modes.update(overrides)
+    return modes
+
+
+class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
+    """Single-request Qwen3 path with per-component ks/torch switches."""
+
+    def __init__(
+        self,
+        model,
+        ks,
+        max_total_tokens: int,
+        block_size: int = 16,
+        op_modes: Optional[Dict[str, str]] = None,
+    ):
+        super().__init__(model, ks, max_total_tokens=max_total_tokens, block_size=block_size)
+        self.op_modes = _merge_modes(op_modes or {})
+
+    def _mode(self, name: str) -> str:
+        return self.op_modes.get(name, "ks")
+
+    def _embedding(self, input_ids):
+        if self._mode("embedding") != "torch":
+            return super()._embedding(input_ids)
+        self.stats.torch_embedding_calls += 1
+        return self.core.embed_tokens(input_ids).reshape(-1, self.hidden).contiguous()
+
+    def _rms(self, x, norm_mod):
+        if self._mode("norm") != "torch":
+            return super()._rms(x, norm_mod)
+        self.stats.torch_rmsnorm_calls += 1
+        return norm_mod(x)
 
     def _linear(self, mod, x):
+        if self._mode("linear") != "torch":
+            return super()._linear(mod, x)
         self.stats.torch_linear_calls += 1
         return mod(x)
+
+    def _rotate_half(self, x):
+        half = x.shape[-1] // 2
+        return self.torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+    def _rope(self, q, k, start_pos: int):
+        if self._mode("rope") != "torch":
+            return super()._rope(q, k, start_pos)
+        positions = self.torch.arange(
+            start_pos,
+            start_pos + q.shape[0],
+            device=self.device,
+            dtype=self.torch.long,
+        )
+        cos = self.cos.index_select(0, positions)
+        sin = self.sin.index_select(0, positions)
+        cos = self.torch.cat((cos, cos), dim=-1).unsqueeze(1)
+        sin = self.torch.cat((sin, sin), dim=-1).unsqueeze(1)
+        q = (q * cos + self._rotate_half(q) * sin).contiguous()
+        k = (k * cos + self._rotate_half(k) * sin).contiguous()
+        self.stats.torch_rope_calls += 1
+        return q, k
+
+    def _cache_write(self, layer_idx: int, k, v, start_pos: int):
+        if self._mode("cache") != "torch":
+            return super()._cache_write(layer_idx, k, v, start_pos)
+        slots = self.torch.arange(
+            start_pos,
+            start_pos + k.shape[0],
+            device=self.device,
+            dtype=self.torch.long,
+        )
+        blocks = slots // self.block_size
+        offsets = slots % self.block_size
+        self.k_caches[layer_idx][blocks, :, offsets, :] = k.contiguous()
+        self.v_caches[layer_idx][blocks, :, offsets, :] = v.contiguous()
+        self.stats.torch_cache_write_calls += 1
+
+    def _repeat_kv(self, x):
+        if self.n_heads == self.n_kv_heads:
+            return x
+        return x.repeat_interleave(self.n_heads // self.n_kv_heads, dim=1)
+
+    def _attention_prefill(self, q, k, v):
+        if self._mode("attention") != "torch":
+            return super()._attention_prefill(q, k, v)
+        import torch.nn.functional as F
+
+        seq = int(q.shape[0])
+        q_t = q.transpose(0, 1).unsqueeze(0)
+        k_t = self._repeat_kv(k.transpose(0, 1).unsqueeze(0))
+        v_t = self._repeat_kv(v.transpose(0, 1).unsqueeze(0))
+        out = F.scaled_dot_product_attention(
+            q_t,
+            k_t,
+            v_t,
+            dropout_p=0.0,
+            is_causal=True,
+            scale=self.attn_scale,
+        )
+        self.stats.torch_attention_prefill_calls += 1
+        return out.squeeze(0).transpose(0, 1).contiguous().view(seq, self.attn_width)
+
+    def _cache_read(self, layer_idx: int, seq_len: int):
+        slots = self.torch.arange(seq_len, device=self.device, dtype=self.torch.long)
+        blocks = slots // self.block_size
+        offsets = slots % self.block_size
+        k = self.k_caches[layer_idx][blocks, :, offsets, :].contiguous()
+        v = self.v_caches[layer_idx][blocks, :, offsets, :].contiguous()
+        return k, v
+
+    def _attention_decode(self, layer_idx: int, q, seq_len: int):
+        if self._mode("attention") != "torch":
+            return super()._attention_decode(layer_idx, q, seq_len)
+        import torch.nn.functional as F
+
+        k, v = self._cache_read(layer_idx, seq_len)
+        q_t = q.transpose(0, 1).unsqueeze(0)
+        k_t = self._repeat_kv(k.transpose(0, 1).unsqueeze(0))
+        v_t = self._repeat_kv(v.transpose(0, 1).unsqueeze(0))
+        out = F.scaled_dot_product_attention(
+            q_t,
+            k_t,
+            v_t,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=self.attn_scale,
+        )
+        self.stats.torch_attention_decode_calls += 1
+        return out.squeeze(0).transpose(0, 1).contiguous().view(1, self.attn_width)
+
+    def _mlp(self, layer, h):
+        if self._mode("swiglu") != "torch":
+            return super()._mlp(layer, h)
+        gate = self._linear(layer.mlp.gate_proj, h)
+        up = self._linear(layer.mlp.up_proj, h)
+        inter = layer.mlp.act_fn(gate) * up
+        self.stats.torch_swiglu_calls += 1
+        return self._linear(layer.mlp.down_proj, inter)
+
+    def _next_token(self, x_last):
+        x_last = self._rms(x_last, self.core.norm)
+        logits = self._linear(self.model.lm_head, x_last)
+        if self._mode("argmax") != "torch":
+            out = self.torch.empty(1, device=self.device, dtype=self.torch.int32)
+            self.ks.sampling.argmax(out, logits.contiguous(), 1, int(logits.shape[-1]))
+            self.stats.ks_argmax_calls += 1
+            return int(out.item()), logits
+        self.stats.torch_argmax_calls += 1
+        return int(logits.argmax(dim=-1).item()), logits
+
+
+class KernelSetQwen3BestPracticePath(KernelSetQwen3ConfigurablePath):
+    """Kernel-set best-practice path: torch linears, ks memory/attention ops."""
+
+    def __init__(self, model, ks, max_total_tokens: int, block_size: int = 16):
+        super().__init__(
+            model,
+            ks,
+            max_total_tokens=max_total_tokens,
+            block_size=block_size,
+            op_modes=BEST_PRACTICE_MODES,
+        )
 
 
 def _token_match(a: List[int], b: List[int]) -> Dict[str, Any]:
@@ -457,15 +691,16 @@ def _kernel_set_reference_row(
 ) -> Dict[str, Any]:
     row = copy.deepcopy(engine)
     row["historical_baseline"] = True
-    if source_run_id:
-        row["source_run_id"] = source_run_id
+    source = row.get("source_run_id") or source_run_id
+    if source:
+        row["source_run_id"] = source
     note = str(row.get("note") or "").strip()
     suffix = (
-        f"historical baseline from {source_run_id}"
-        if source_run_id
+        f"historical baseline from {source}"
+        if source
         else "historical baseline"
     )
-    row["note"] = f"{note}; {suffix}" if note else suffix
+    row["note"] = note if suffix in note else (f"{note}; {suffix}" if note else suffix)
     return row
 
 
@@ -530,8 +765,63 @@ def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: i
     }
 
 
-def _run_kernel_set_best_practice(
-    model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
+def _kernel_coverage_for_modes(modes: Dict[str, str]) -> Dict[str, List[str]]:
+    covered: List[str] = []
+    fallbacks: List[str] = []
+    if modes.get("embedding") == "ks":
+        covered.append("ks_embedding_lookup")
+    else:
+        fallbacks.append("embedding=torch")
+    if modes.get("linear") == "ks":
+        covered.append("ks_gemm")
+    else:
+        fallbacks.append("linear=torch/cuBLAS")
+    if modes.get("norm") == "ks":
+        covered.append("ks_rms_norm")
+    else:
+        fallbacks.append("norm=torch")
+    if modes.get("rope") == "ks":
+        covered.append("ks_rope_gather")
+    else:
+        fallbacks.append("rope=torch")
+    if modes.get("attention") == "ks":
+        covered.extend(["ks_flash_attn", "ks_paged_attn_decode"])
+    else:
+        fallbacks.append("attention=torch SDPA/manual decode")
+    if modes.get("cache") == "ks":
+        covered.append("ks_reshape_and_cache")
+    else:
+        fallbacks.append("KV write=torch scatter")
+    if modes.get("swiglu") == "ks":
+        covered.append("ks_swiglu")
+    else:
+        fallbacks.append("SwiGLU=torch silu*mul")
+    if modes.get("argmax") == "ks":
+        covered.append("ks_argmax")
+    else:
+        fallbacks.append("argmax=torch")
+    fallbacks.extend(
+        [
+            "residual add",
+            "tensor reshape/view/allocation",
+            "Python request/decode loop",
+            "paged block scheduler",
+        ]
+    )
+    return {"covered": covered, "torch_fallback": fallbacks}
+
+
+def _run_kernel_set_variant(
+    model,
+    tokenizer,
+    input_ids,
+    new_tokens: int,
+    repeat: int,
+    block_size: int,
+    *,
+    modes: Dict[str, str],
+    scope: str,
+    note: str,
 ):
     import kernel_set as ks
     import torch
@@ -539,8 +829,12 @@ def _run_kernel_set_best_practice(
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def make_engine():
-        return KernelSetQwen3BestPracticePath(
-            model, ks, max_total_tokens=max_total_tokens, block_size=block_size
+        return KernelSetQwen3ConfigurablePath(
+            model,
+            ks,
+            max_total_tokens=max_total_tokens,
+            block_size=block_size,
+            op_modes=modes,
         )
 
     # Warm up module loading, cuBLAS algorithm selection, and kernel-set bindings
@@ -566,34 +860,108 @@ def _run_kernel_set_best_practice(
         "new_tokens": new_tokens,
         "tokens": tokens,
         "text": tokenizer.decode(tokens, skip_special_tokens=False),
-        "scope": (
+        "scope": scope,
+        "note": note,
+        "op_modes": modes,
+        "stats": asdict(stats),
+        "kernel_coverage": _kernel_coverage_for_modes(modes),
+    }
+
+
+def _run_kernel_set_best_practice(
+    model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
+):
+    return _run_kernel_set_variant(
+        model,
+        tokenizer,
+        input_ids,
+        new_tokens,
+        repeat,
+        block_size,
+        modes=BEST_PRACTICE_MODES,
+        scope=(
             "single-request Python engine; torch/cuBLAS linears + ks "
             "RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax"
         ),
-        "note": (
+        note=(
             "best-practice kernel-set composition; Python loop/allocation and "
             "unfused Q/K/V + gate/up remain"
         ),
-        "stats": asdict(stats),
-        "kernel_coverage": {
-            "covered": [
-                "ks_embedding_lookup",
-                "ks_rms_norm",
-                "ks_rope_gather",
-                "ks_flash_attn",
-                "ks_reshape_and_cache",
-                "ks_paged_attn_decode",
-                "ks_swiglu",
-                "ks_argmax",
-            ],
-            "torch_fallback": [
-                "linear=torch/cuBLAS",
-                "residual add",
-                "tensor reshape/view/allocation",
-                "Python request/decode loop",
-                "paged block scheduler",
-            ],
-        },
+    )
+
+
+def _ablation_row(name: str, note: str, engine: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "seconds": engine.get("seconds"),
+        "tokens_per_s_new": engine.get("tokens_per_s_new"),
+        "exact_same_as_reference": engine.get("exact_same_as_reference"),
+        "token_match_prefix": engine.get("token_match_prefix"),
+        "token_overlap": engine.get("token_overlap"),
+        "op_modes": engine.get("op_modes"),
+        "stats": engine.get("stats"),
+        "note": note,
+    }
+
+
+def _run_composition_ablation(
+    model,
+    tokenizer,
+    input_ids,
+    new_tokens: int,
+    repeat: int,
+    block_size: int,
+    reference_tokens: Optional[List[int]],
+    baseline_engine: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    variants: List[Dict[str, Any]] = []
+    if baseline_engine is None:
+        baseline_engine = _run_kernel_set_best_practice(
+            model, tokenizer, input_ids, new_tokens, repeat, block_size
+        )
+        if reference_tokens is not None:
+            baseline_engine.update(_token_match(reference_tokens, baseline_engine["tokens"]))
+    variants.append(
+        _ablation_row(
+            "kernel_set_best_practice",
+            "baseline: torch/cuBLAS linears plus ks non-linear/attention/sample kernels",
+            baseline_engine,
+        )
+    )
+    baseline_tps = float(baseline_engine.get("tokens_per_s_new") or 0.0)
+
+    for name, overrides, note in ABLATION_VARIANTS:
+        modes = _merge_modes(overrides)
+        engine = _run_kernel_set_variant(
+            model,
+            tokenizer,
+            input_ids,
+            new_tokens,
+            repeat,
+            block_size,
+            modes=modes,
+            scope=f"composition ablation: {name}",
+            note=note,
+        )
+        if reference_tokens is not None:
+            engine.update(_token_match(reference_tokens, engine["tokens"]))
+        row = _ablation_row(name, note, engine)
+        if baseline_tps:
+            row["vs_best_practice_pct"] = (
+                (float(engine["tokens_per_s_new"]) / baseline_tps - 1.0) * 100.0
+            )
+        variants.append(row)
+
+    for row in variants:
+        if "vs_best_practice_pct" not in row:
+            row["vs_best_practice_pct"] = 0.0
+    return {
+        "baseline": "kernel_set_best_practice",
+        "variants": variants,
+        "note": (
+            "Each row changes one component from the best-practice path unless "
+            "the name says manual_torch_ops; same prompt, greedy 4-token decode."
+        ),
     }
 
 
@@ -703,10 +1071,12 @@ def run(args) -> Dict[str, Any]:
         reference_engines = {}
 
     engines: Dict[str, Any] = {}
+    run_best_practice = bool(args.run_best_practice)
+    run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
     if args.skip_hf:
         if args.merge_reference_engines:
             reference_names = ["transformers", "vllm", "sglang"]
-            if args.skip_full_kernels:
+            if not run_full_kernels:
                 reference_names.append("kernel_set_full_kernels")
             for name in reference_names:
                 engine = reference_engines.get(name)
@@ -722,17 +1092,30 @@ def run(args) -> Dict[str, Any]:
         if reference_tokens is not None and name in engines:
             engines[name].update(_token_match(reference_tokens, engines[name]["tokens"]))
 
-    if args.run_best_practice:
+    if run_best_practice:
         engines["kernel_set_best_practice"] = _run_kernel_set_best_practice(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
         apply_match("kernel_set_best_practice")
 
-    if not args.skip_full_kernels:
+    if run_full_kernels:
         engines["kernel_set_full_kernels"] = _run_kernel_set_full(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
         apply_match("kernel_set_full_kernels")
+
+    optimization_ablation = None
+    if args.run_ablation_suite:
+        optimization_ablation = _run_composition_ablation(
+            model,
+            tokenizer,
+            input_ids,
+            args.new_tokens,
+            args.ks_repeat,
+            args.block_size,
+            reference_tokens,
+            engines.get("kernel_set_best_practice"),
+        )
 
     if args.run_vllm:
         del model
@@ -744,10 +1127,10 @@ def run(args) -> Dict[str, Any]:
             engines["vllm"] = vllm
 
     props = torch.cuda.get_device_properties(0)
-    return {
+    result = {
         "schema_version": 1,
         "run_id": args.run_id
-        or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-qwen3-8b-full-kernels"),
+        or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-qwen3-8b-best-practice"),
         "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
         "model": args.model,
         "prompt": prompt_text,
@@ -759,6 +1142,9 @@ def run(args) -> Dict[str, Any]:
         "engines": engines,
         "reference_run_id": reference_run_id,
     }
+    if optimization_ablation is not None:
+        result["optimization_ablation"] = optimization_ablation
+    return result
 
 
 def main() -> int:
@@ -777,8 +1163,12 @@ def main() -> int:
     parser.add_argument("--hf-repeat", type=int, default=1)
     parser.add_argument("--ks-repeat", type=int, default=1)
     parser.add_argument("--skip-hf", action="store_true")
+    parser.add_argument("--run-best-practice", dest="run_best_practice", action="store_true")
+    parser.add_argument("--skip-best-practice", dest="run_best_practice", action="store_false")
+    parser.set_defaults(run_best_practice=True)
+    parser.add_argument("--run-full-kernels", action="store_true")
     parser.add_argument("--skip-full-kernels", action="store_true")
-    parser.add_argument("--run-best-practice", action="store_true")
+    parser.add_argument("--run-ablation-suite", action="store_true")
     parser.add_argument("--run-vllm", action="store_true")
     parser.add_argument("--vllm-timeout-s", type=float, default=1200.0)
     parser.add_argument("--reference-json", default=None)

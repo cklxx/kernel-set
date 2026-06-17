@@ -558,7 +558,67 @@ def _render_inference_table(
     if coverage:
         lines.append("")
         lines.extend(coverage)
+    ablation = _render_inference_ablation(run)
+    if ablation:
+        lines.append("")
+        lines.extend(ablation)
     return lines
+
+
+def _fmt_pct(x: Any) -> str:
+    if x is None:
+        return "-"
+    if isinstance(x, (int, float)):
+        if math.isnan(float(x)):
+            return "-"
+        return f"{float(x):+.1f}%"
+    return str(x)
+
+
+def _mode_changes(modes: Dict[str, Any]) -> str:
+    changes = []
+    for key in sorted(BEST_PRACTICE_BASELINE):
+        value = str(modes.get(key) or "")
+        if value and value != BEST_PRACTICE_BASELINE[key]:
+            changes.append(f"{key}={value}")
+    return "<br>".join(changes) if changes else "baseline"
+
+
+BEST_PRACTICE_BASELINE = {
+    "argmax": "ks",
+    "attention": "ks",
+    "cache": "ks",
+    "embedding": "ks",
+    "linear": "torch",
+    "norm": "ks",
+    "rope": "ks",
+    "swiglu": "ks",
+}
+
+
+def _render_inference_ablation(run: Dict[str, Any]) -> List[str]:
+    ablation = run.get("optimization_ablation") or {}
+    variants = ablation.get("variants") or []
+    if not variants:
+        return []
+    rows = [
+        "Composition ablation from the best-practice path:",
+        "",
+        "| variant | new tok/s | vs best-practice | token match | changed component | notes |",
+        "|---|---:|---:|---|---|---|",
+    ]
+    for row in variants:
+        if not isinstance(row, dict):
+            continue
+        rows.append(
+            f"| `{row.get('name')}` | {_fmt_num(row.get('tokens_per_s_new'), 2)} "
+            f"| {_fmt_pct(row.get('vs_best_practice_pct'))} | {_engine_exact(row)} "
+            f"| {_mode_changes(row.get('op_modes') or {})} | {row.get('note') or ''} |"
+        )
+    note = ablation.get("note")
+    if note:
+        rows.extend(["", str(note)])
+    return rows
 
 
 def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
