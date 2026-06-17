@@ -529,23 +529,23 @@ def _render_inference_table(
         "|---|---|---|---:|---|---|---|",
     ]
     engines = run.get("engines") or {}
-    order = ["transformers", "vllm", "sglang", "kernel_set_ops", "kernel_set_full_smoke"]
+    order = [
+        "transformers",
+        "vllm",
+        "sglang",
+        "kernel_set_full_kernels",
+        "kernel_set_ops",
+        "kernel_set_full_smoke",
+    ]
     for name in order + sorted(k for k in engines if k not in order):
         if name not in engines:
             continue
         engine = engines[name] or {}
-        if engine.get("status") == "not_run":
-            tps = "-"
-            match = "-"
-            note = str(engine.get("reason") or "not run")
-        elif "error" in engine:
-            tps = "-"
-            match = "error"
-            note = str(engine.get("error"))
-        else:
-            tps = _fmt_num(engine.get("tokens_per_s_new"), 2)
-            match = _engine_exact(engine)
-            note = str(engine.get("note") or "")
+        if engine.get("status") == "not_run" or "error" in engine:
+            continue
+        tps = _fmt_num(engine.get("tokens_per_s_new"), 2)
+        match = _engine_exact(engine)
+        note = str(engine.get("note") or "")
         scope = str(engine.get("scope") or "single prompt greedy")
         lines.append(
             f"| {run.get('model')} / {run.get('gpu_name')} "
@@ -553,7 +553,48 @@ def _render_inference_table(
             f"{scope} | {tps} | {match} | {note} | "
             f"{_source_link(run.get('_path'), base_dir)} |"
         )
+    coverage = _render_inference_kernel_coverage(run)
+    if coverage:
+        lines.append("")
+        lines.extend(coverage)
     return lines
+
+
+def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
+    engines = run.get("engines") or {}
+    rows: List[str] = []
+    for name, engine in engines.items():
+        if not isinstance(engine, dict) or "error" in engine:
+            continue
+        coverage = engine.get("kernel_coverage") or {}
+        stats = engine.get("stats") or {}
+        covered = coverage.get("covered") or []
+        if not covered and not stats:
+            continue
+        fallbacks = coverage.get("torch_fallback") or []
+        stat_items = [
+            (str(k).removeprefix("ks_").removesuffix("_calls"), v)
+            for k, v in sorted(stats.items())
+        ]
+        rows.append(
+            "| "
+            + f"`{name}` | "
+            + "<br>".join(f"`{item}`" for item in covered)
+            + " | "
+            + ("<br>".join(fallbacks) if fallbacks else "-")
+            + " | "
+            + "<br>".join(f"`{k}`={v}" for k, v in stat_items)
+            + " |"
+        )
+    if not rows:
+        return []
+    return [
+        "Kernel coverage for the composed kernel-set engine:",
+        "",
+        "| engine | covered kernel-set kernels | remaining torch/Python path | counted calls |",
+        "|---|---|---|---|",
+        *rows,
+    ]
 
 
 def _render_comparison_table(

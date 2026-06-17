@@ -141,10 +141,15 @@ benchmarks. They verify tokenizer/output parity for the composed engine paths.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.65 | yes | reference | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.44 | yes |  | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_ops` | Python decode; ks RMSNorm/SwiGLU/RoPE/argmax | 2.09 | yes | integration smoke, not a serving engine | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_smoke` | 1-token smoke; also routes Linear through ks.gemm | 0.13 | yes | M=1 Python loop; validates call path only | [20260616-qwen3-8b-daily-l4-engine-smoke.json](inference/20260616-qwen3-8b-daily-l4-engine-smoke.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes |  | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains | [20260617-qwen3-8b-daily-l4-full-kernels-vllm.json](inference/20260617-qwen3-8b-daily-l4-full-kernels-vllm.json) |
+
+Kernel coverage for the composed kernel-set engine:
+
+| engine | covered kernel-set kernels | remaining torch/Python path | counted calls |
+|---|---|---|---|
+| `kernel_set_full_kernels` | `ks_embedding_lookup`<br>`ks_gemm`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`gemm`=1012<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144 |
 
 ## Regenerate
 
