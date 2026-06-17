@@ -141,37 +141,70 @@ engine throughput benchmarks. They verify tokenizer/output parity for the
 composed engine paths.
 Rows with kernel coverage are integration rows, not serving-system benchmarks:
 `kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses
-kernel-set for the memory/attention/sample kernels; `kernel_set_full_kernels`
-is the slower all-kernel coverage smoke that also routes linears through
-kernel-set's auditable reference GEMM path.
+shape-aware provider selection for the measured Qwen3 shapes;
+`kernel_set_full_kernels` is the slower all-kernel coverage smoke that
+also routes linears through kernel-set's auditable reference GEMM path.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes | historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax | 14.84 | yes | best-practice kernel-set composition; Python loop/allocation and unfused Q/K/V + gate/up remain | [20260617-qwen3-8b-daily-l4-composition-ablation.json](inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-composition-ablation.json](inference/20260617-qwen3-8b-daily-l4-composition-ablation.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 14.58 | yes | reference; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json](inference/20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 15.82 | yes | historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json](inference/20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention | 15.65 | yes | shape-aware best-practice composition from Qwen3 kernel microbench; Python loop/allocation and unfused Q/K/V + gate/up remain | [20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json](inference/20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_full_kernels` | single-request Python engine; full ks kernel path | 2.64 | yes | covers embedding/GEMM/RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax; Python loop remains; historical baseline from 20260617-qwen3-8b-daily-l4-full-kernels-vllm | [20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json](inference/20260617-qwen3-8b-daily-l4-shape-aware-kernel-microbench.json) |
+
+Qwen3-shape kernel microbench:
+
+| op | shape | kernel-set | reference | winner | ratio | err |
+|---|---|---:|---:|---|---:|---|
+| `embedding_lookup` | `tokens=1,hidden=4096` | 18.0 us | `torch_embedding` 16.0 us | `torch_embedding` | torch_embedding 1.13x | rel 0.0000 |
+| `embedding_lookup` | `tokens=21,hidden=4096` | 17.4 us | `torch_embedding` 24.2 us | `kernel-set` | kernel-set 1.39x | rel 0.0000 |
+| `rms_norm` | `decode_hidden,rows=1,hidden=4096` | 16.7 us | `torch_rms` 91.0 us | `kernel-set` | kernel-set 5.45x | rel 0.0056 |
+| `rms_norm` | `prefill_hidden,rows=21,hidden=4096` | 16.7 us | `torch_rms` 91.7 us | `kernel-set` | kernel-set 5.49x | rel 0.0069 |
+| `rms_norm` | `decode_q_norm,rows=32,hidden=128` | 16.5 us | `torch_rms` 91.1 us | `kernel-set` | kernel-set 5.51x | rel 0.0047 |
+| `rms_norm` | `decode_k_norm,rows=8,hidden=128` | 16.5 us | `torch_rms` 92.4 us | `kernel-set` | kernel-set 5.59x | rel 0.0041 |
+| `rms_norm` | `prefill_q_norm,rows=672,hidden=128` | 16.8 us | `torch_rms` 92.0 us | `kernel-set` | kernel-set 5.47x | rel 0.0052 |
+| `rms_norm` | `prefill_k_norm,rows=168,hidden=128` | 16.4 us | `torch_rms` 91.1 us | `kernel-set` | kernel-set 5.55x | rel 0.0046 |
+| `rope_gather` | `tokens=1,qh=32,kvh=8,hd=128` | 17.4 us | `torch_rope` 198.1 us | `kernel-set` | kernel-set 11.38x | rel 0.0000 |
+| `rope_gather` | `tokens=21,qh=32,kvh=8,hd=128` | 17.2 us | `torch_rope` 214.9 us | `kernel-set` | kernel-set 12.48x | rel 0.0067 |
+| `reshape_and_cache` | `tokens=1,kvh=8,hd=128,block=16` | 73.0 us | `torch_scatter` 110.5 us | `kernel-set` | kernel-set 1.51x | rel 0.0000 |
+| `reshape_and_cache` | `tokens=21,kvh=8,hd=128,block=16` | 102.7 us | `torch_scatter` 135.2 us | `kernel-set` | kernel-set 1.32x | rel 0.0000 |
+| `flash_attn_prefill` | `b=1,seq=21,qh=32,kvh=8,hd=128` | 57.5 us | `torch_sdpa` 74.7 us | `kernel-set` | kernel-set 1.30x | rel 0.0025 |
+| `flash_attn_prefill` | `b=1,seq=128,qh=32,kvh=8,hd=128` | 279.0 us | `torch_sdpa` 75.7 us | `torch_sdpa` | torch_sdpa 3.68x | rel 0.0050 |
+| `flash_attn_prefill` | `b=1,seq=512,qh=32,kvh=8,hd=128` | 3303.6 us | `torch_sdpa` 76.0 us | `torch_sdpa` | torch_sdpa 43.46x | rel 0.0047 |
+| `paged_attn_decode` | `seqs=1,ctx=22,qh=32,kvh=8,hd=128,block=16` | 19.7 us | `torch_gather_sdpa` 125.8 us<br>`torch_dense_sdpa` 77.9 us | `kernel-set` | kernel-set 6.40x | rel 0.0031 |
+| `paged_attn_decode` | `seqs=1,ctx=24,qh=32,kvh=8,hd=128,block=16` | 19.6 us | `torch_gather_sdpa` 125.3 us<br>`torch_dense_sdpa` 77.0 us | `kernel-set` | kernel-set 6.40x | rel 0.0034 |
+| `paged_attn_decode` | `seqs=1,ctx=128,qh=32,kvh=8,hd=128,block=16` | 62.7 us | `torch_gather_sdpa` 124.0 us<br>`torch_dense_sdpa` 77.2 us | `kernel-set` | kernel-set 1.98x | rel 0.0050 |
+| `paged_attn_decode` | `seqs=1,ctx=512,qh=32,kvh=8,hd=128,block=16` | 244.5 us | `torch_gather_sdpa` 133.1 us<br>`torch_dense_sdpa` 84.8 us | `torch_gather_sdpa` | torch_gather_sdpa 1.84x | rel 0.0040 |
+| `paged_attn_decode` | `seqs=1,ctx=2048,qh=32,kvh=8,hd=128,block=16` | 974.6 us | `torch_gather_sdpa` 187.0 us<br>`torch_dense_sdpa` 141.3 us | `torch_gather_sdpa` | torch_gather_sdpa 5.21x | rel 0.0030 |
+| `paged_attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128,block=16` | 7632.1 us | `torch_gather_sdpa` 23993.8 us<br>`torch_dense_sdpa` 20088.9 us | `kernel-set` | kernel-set 3.14x | rel 0.0038 |
+| `swiglu` | `rows=1,inter=12288` | 15.8 us | `torch_silu_mul` 17.0 us | `kernel-set` | kernel-set 1.08x | rel 0.0040 |
+| `swiglu` | `rows=21,inter=12288` | 16.1 us | `torch_silu_mul` 17.2 us | `kernel-set` | kernel-set 1.07x | rel 0.0066 |
+| `argmax` | `rows=1,vocab=151936` | 113.9 us | `torch_argmax` 29.1 us | `torch_argmax` | torch_argmax 3.92x | exact |
+
+These are per-kernel CUDA-event timings at the Qwen3-8B shapes used by the engine smoke; they are provider-selection evidence, not serving throughput.
 
 Kernel coverage for the composed kernel-set engine:
 
 | engine | covered kernel-set kernels | remaining torch/Python path | counted calls |
 |---|---|---|---|
-| `kernel_set_best_practice` | `ks_embedding_lookup`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_paged_attn_decode`<br>`ks_reshape_and_cache`<br>`ks_swiglu`<br>`ks_argmax` | linear=torch/cuBLAS<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144<br>`torch_linear`=1012 |
 | `kernel_set_full_kernels` | `ks_embedding_lookup`<br>`ks_gemm`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_flash_attn`<br>`ks_reshape_and_cache`<br>`ks_paged_attn_decode`<br>`ks_swiglu`<br>`ks_argmax` | residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `argmax`=4<br>`embedding_lookup`=4<br>`flash_attn`=36<br>`gemm`=1012<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144 |
+| `kernel_set_best_practice` | `ks_embedding_lookup(auto multi-token)`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_paged_attn_decode(auto short-context)`<br>`ks_reshape_and_cache`<br>`ks_swiglu` | embedding single-token=torch<br>linear=torch/cuBLAS<br>attention prefill/long-context=torch SDPA<br>argmax=torch<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `embedding_lookup`=1<br>`paged_attn_decode`=108<br>`reshape_and_cache`=144<br>`rmsnorm`=580<br>`rope`=144<br>`swiglu`=144<br>`torch_argmax`=4<br>`torch_attention_prefill`=36<br>`torch_embedding`=3<br>`torch_linear`=1012 |
 
 Composition ablation from the best-practice path:
 
 | variant | new tok/s | vs best-practice | token match | changed component | notes |
 |---|---:|---:|---|---|---|
-| `kernel_set_best_practice` | 14.84 | +0.0% | yes | baseline | baseline: torch/cuBLAS linears plus ks non-linear/attention/sample kernels |
-| `torch_embedding` | 14.80 | -0.2% | yes | embedding=torch | replace ks embedding lookup with torch embedding |
-| `torch_norm` | 13.92 | -6.2% | yes | norm=torch | replace ks hidden/QK RMSNorm with HF torch modules |
-| `torch_rope` | 14.46 | -2.6% | yes | rope=torch | replace ks RoPE gather with torch rotate-half RoPE |
-| `torch_cache_write` | 14.67 | -1.2% | yes | cache=torch | replace ks reshape_and_cache with torch cache scatter |
-| `torch_attention` | 15.48 | +4.3% | yes | attention=torch | replace ks prefill/decode attention with torch SDPA/manual decode |
-| `torch_swiglu` | 14.75 | -0.6% | yes | swiglu=torch | replace ks SwiGLU with torch silu(gate)*up |
-| `torch_argmax` | 14.84 | +0.0% | yes | argmax=torch | replace ks argmax with torch argmax |
-| `manual_torch_ops` | 14.53 | -2.1% | yes | argmax=torch<br>attention=torch<br>cache=torch<br>embedding=torch<br>norm=torch<br>rope=torch<br>swiglu=torch | manual Python engine with torch ops for every replaceable component |
+| `kernel_set_best_practice` | 15.65 | +0.0% | yes | baseline | baseline: torch/cuBLAS linears plus ks non-linear/cache kernels and shape-aware embedding/attention |
+| `ks_embedding` | 15.61 | -0.3% | yes | embedding=ks | force kernel-set embedding lookup for every token shape |
+| `torch_embedding` | 15.65 | +0.0% | yes | embedding=torch | force torch embedding lookup for every token shape |
+| `torch_norm` | 15.09 | -3.6% | yes | norm=torch | replace ks hidden/QK RMSNorm with HF torch modules |
+| `torch_rope` | 15.30 | -2.3% | yes | rope=torch | replace ks RoPE gather with torch rotate-half RoPE |
+| `torch_cache_write` | 15.53 | -0.8% | yes | cache=torch | replace ks reshape_and_cache with torch cache scatter |
+| `ks_attention` | 15.42 | -1.5% | yes | attention=ks | force kernel-set FlashAttn/paged decode for every attention shape |
+| `torch_attention` | 15.51 | -0.9% | yes | attention=torch | force torch SDPA/manual decode for every attention shape |
+| `torch_swiglu` | 15.62 | -0.2% | yes | swiglu=torch | replace ks SwiGLU with torch silu(gate)*up |
+| `ks_argmax` | 15.60 | -0.3% | yes | argmax=ks | force kernel-set argmax instead of torch argmax |
+| `manual_torch_ops` | 14.58 | -6.9% | yes | attention=torch<br>cache=torch<br>embedding=torch<br>norm=torch<br>rope=torch<br>swiglu=torch | manual Python engine with torch ops for every replaceable component |
 
 Each row changes one component from the best-practice path unless the name says manual_torch_ops; same prompt, greedy 4-token decode.
 

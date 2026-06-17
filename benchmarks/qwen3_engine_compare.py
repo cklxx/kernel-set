@@ -118,8 +118,33 @@ def _timer(fn, repeat: int = 1) -> Tuple[float, Any]:
     return (time.perf_counter() - t0) / repeat, out
 
 
+def _bench_cuda(fn, warmup: int = 20, iters: int = 100) -> Tuple[float, Any]:
+    import torch
+
+    out = None
+    with torch.inference_mode():
+        for _ in range(warmup):
+            out = fn()
+        _torch_sync()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(iters):
+            out = fn()
+        end.record()
+        torch.cuda.synchronize()
+    return float(start.elapsed_time(end) * 1000.0 / iters), out
+
+
 def _rms_eps(mod) -> float:
     return float(getattr(mod, "variance_epsilon", getattr(mod, "eps", 1e-6)))
+
+
+def _rel_err(a, b) -> float:
+    a = a.float()
+    b = b.float()
+    denom = b.abs().max().clamp_min(1e-12)
+    return float(((a - b).abs().max() / denom).item())
 
 
 def _make_rope_cache(max_pos: int, head_dim: int, theta: float, device, dtype):
@@ -204,6 +229,11 @@ class KernelSetQwen3FullPath:
         self.cos, self.sin = _make_rope_cache(
             max_rope, self.head_dim, self.rope_theta, self.device, self.dtype
         )
+        self.positions_i32 = torch.arange(max_rope, device=self.device, dtype=torch.int32)
+        self.positions_long = torch.arange(max_rope, device=self.device, dtype=torch.long)
+        self.seq_lens_i32 = torch.arange(
+            1, self.max_total_tokens + 1, device=self.device, dtype=torch.int32
+        )
 
     def reset_stats(self) -> None:
         self.stats = KernelStats()
@@ -259,12 +289,7 @@ class KernelSetQwen3FullPath:
         return q, k
 
     def _rope(self, q, k, start_pos: int):
-        positions = self.torch.arange(
-            start_pos,
-            start_pos + q.shape[0],
-            device=self.device,
-            dtype=self.torch.int32,
-        )
+        positions = self.positions_i32[start_pos : start_pos + q.shape[0]]
         q = q.contiguous()
         k = k.contiguous()
         self.ks.rope.rope_gather(
@@ -283,12 +308,7 @@ class KernelSetQwen3FullPath:
         return q, k
 
     def _cache_write(self, layer_idx: int, k, v, start_pos: int):
-        slot_mapping = self.torch.arange(
-            start_pos,
-            start_pos + k.shape[0],
-            device=self.device,
-            dtype=self.torch.int32,
-        )
+        slot_mapping = self.positions_i32[start_pos : start_pos + k.shape[0]]
         self.ks.attention.reshape_and_cache(
             self.k_caches[layer_idx],
             self.v_caches[layer_idx],
@@ -324,7 +344,7 @@ class KernelSetQwen3FullPath:
 
     def _attention_decode(self, layer_idx: int, q, seq_len: int):
         out = self.torch.empty((1, self.n_heads, self.head_dim), device=self.device, dtype=self.dtype)
-        seq_lens = self.torch.tensor([seq_len], device=self.device, dtype=self.torch.int32)
+        seq_lens = self.seq_lens_i32[seq_len - 1 : seq_len]
         self.ks.attention.paged_attn_decode(
             out,
             q.view(1, self.n_heads, self.head_dim).contiguous(),
@@ -411,14 +431,14 @@ class KernelSetQwen3FullPath:
 
 
 BEST_PRACTICE_MODES = {
-    "embedding": "ks",
+    "embedding": "auto",
     "linear": "torch",
     "norm": "ks",
     "rope": "ks",
     "cache": "ks",
-    "attention": "ks",
+    "attention": "auto",
     "swiglu": "ks",
-    "argmax": "ks",
+    "argmax": "torch",
 }
 
 TORCH_MANUAL_MODES = {
@@ -434,9 +454,14 @@ TORCH_MANUAL_MODES = {
 
 ABLATION_VARIANTS = [
     (
+        "ks_embedding",
+        {"embedding": "ks"},
+        "force kernel-set embedding lookup for every token shape",
+    ),
+    (
         "torch_embedding",
         {"embedding": "torch"},
-        "replace ks embedding lookup with torch embedding",
+        "force torch embedding lookup for every token shape",
     ),
     (
         "torch_norm",
@@ -454,9 +479,14 @@ ABLATION_VARIANTS = [
         "replace ks reshape_and_cache with torch cache scatter",
     ),
     (
+        "ks_attention",
+        {"attention": "ks"},
+        "force kernel-set FlashAttn/paged decode for every attention shape",
+    ),
+    (
         "torch_attention",
         {"attention": "torch"},
-        "replace ks prefill/decode attention with torch SDPA/manual decode",
+        "force torch SDPA/manual decode for every attention shape",
     ),
     (
         "torch_swiglu",
@@ -464,9 +494,9 @@ ABLATION_VARIANTS = [
         "replace ks SwiGLU with torch silu(gate)*up",
     ),
     (
-        "torch_argmax",
-        {"argmax": "torch"},
-        "replace ks argmax with torch argmax",
+        "ks_argmax",
+        {"argmax": "ks"},
+        "force kernel-set argmax instead of torch argmax",
     ),
     (
         "manual_torch_ops",
@@ -495,12 +525,16 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
     ):
         super().__init__(model, ks, max_total_tokens=max_total_tokens, block_size=block_size)
         self.op_modes = _merge_modes(op_modes or {})
+        self.auto_decode_torch_min_ctx = 512
 
     def _mode(self, name: str) -> str:
         return self.op_modes.get(name, "ks")
 
     def _embedding(self, input_ids):
-        if self._mode("embedding") != "torch":
+        embedding_mode = self._mode("embedding")
+        if embedding_mode == "ks" or (
+            embedding_mode == "auto" and int(input_ids.numel()) > 1
+        ):
             return super()._embedding(input_ids)
         self.stats.torch_embedding_calls += 1
         return self.core.embed_tokens(input_ids).reshape(-1, self.hidden).contiguous()
@@ -524,12 +558,7 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
     def _rope(self, q, k, start_pos: int):
         if self._mode("rope") != "torch":
             return super()._rope(q, k, start_pos)
-        positions = self.torch.arange(
-            start_pos,
-            start_pos + q.shape[0],
-            device=self.device,
-            dtype=self.torch.long,
-        )
+        positions = self.positions_long[start_pos : start_pos + q.shape[0]]
         cos = self.cos.index_select(0, positions)
         sin = self.sin.index_select(0, positions)
         cos = self.torch.cat((cos, cos), dim=-1).unsqueeze(1)
@@ -542,12 +571,7 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
     def _cache_write(self, layer_idx: int, k, v, start_pos: int):
         if self._mode("cache") != "torch":
             return super()._cache_write(layer_idx, k, v, start_pos)
-        slots = self.torch.arange(
-            start_pos,
-            start_pos + k.shape[0],
-            device=self.device,
-            dtype=self.torch.long,
-        )
+        slots = self.positions_long[start_pos : start_pos + k.shape[0]]
         blocks = slots // self.block_size
         offsets = slots % self.block_size
         self.k_caches[layer_idx][blocks, :, offsets, :] = k.contiguous()
@@ -560,7 +584,7 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
         return x.repeat_interleave(self.n_heads // self.n_kv_heads, dim=1)
 
     def _attention_prefill(self, q, k, v):
-        if self._mode("attention") != "torch":
+        if self._mode("attention") == "ks":
             return super()._attention_prefill(q, k, v)
         import torch.nn.functional as F
 
@@ -580,7 +604,7 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
         return out.squeeze(0).transpose(0, 1).contiguous().view(seq, self.attn_width)
 
     def _cache_read(self, layer_idx: int, seq_len: int):
-        slots = self.torch.arange(seq_len, device=self.device, dtype=self.torch.long)
+        slots = self.positions_long[:seq_len]
         blocks = slots // self.block_size
         offsets = slots % self.block_size
         k = self.k_caches[layer_idx][blocks, :, offsets, :].contiguous()
@@ -588,7 +612,10 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
         return k, v
 
     def _attention_decode(self, layer_idx: int, q, seq_len: int):
-        if self._mode("attention") != "torch":
+        attention_mode = self._mode("attention")
+        if attention_mode == "ks" or (
+            attention_mode == "auto" and seq_len < self.auto_decode_torch_min_ctx
+        ):
             return super()._attention_decode(layer_idx, q, seq_len)
         import torch.nn.functional as F
 
@@ -629,7 +656,7 @@ class KernelSetQwen3ConfigurablePath(KernelSetQwen3FullPath):
 
 
 class KernelSetQwen3BestPracticePath(KernelSetQwen3ConfigurablePath):
-    """Kernel-set best-practice path: torch linears, ks memory/attention ops."""
+    """Kernel-set best-practice path with shape-aware provider selection."""
 
     def __init__(self, model, ks, max_total_tokens: int, block_size: int = 16):
         super().__init__(
@@ -770,6 +797,9 @@ def _kernel_coverage_for_modes(modes: Dict[str, str]) -> Dict[str, List[str]]:
     fallbacks: List[str] = []
     if modes.get("embedding") == "ks":
         covered.append("ks_embedding_lookup")
+    elif modes.get("embedding") == "auto":
+        covered.append("ks_embedding_lookup(auto multi-token)")
+        fallbacks.append("embedding single-token=torch")
     else:
         fallbacks.append("embedding=torch")
     if modes.get("linear") == "ks":
@@ -786,6 +816,9 @@ def _kernel_coverage_for_modes(modes: Dict[str, str]) -> Dict[str, List[str]]:
         fallbacks.append("rope=torch")
     if modes.get("attention") == "ks":
         covered.extend(["ks_flash_attn", "ks_paged_attn_decode"])
+    elif modes.get("attention") == "auto":
+        covered.append("ks_paged_attn_decode(auto short-context)")
+        fallbacks.append("attention prefill/long-context=torch SDPA")
     else:
         fallbacks.append("attention=torch SDPA/manual decode")
     if modes.get("cache") == "ks":
@@ -881,11 +914,11 @@ def _run_kernel_set_best_practice(
         modes=BEST_PRACTICE_MODES,
         scope=(
             "single-request Python engine; torch/cuBLAS linears + ks "
-            "RMSNorm/RoPE/FlashAttn/KV write/paged decode/SwiGLU/argmax"
+            "RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention"
         ),
         note=(
-            "best-practice kernel-set composition; Python loop/allocation and "
-            "unfused Q/K/V + gate/up remain"
+            "shape-aware best-practice composition from Qwen3 kernel microbench; "
+            "Python loop/allocation and unfused Q/K/V + gate/up remain"
         ),
     )
 
@@ -924,7 +957,7 @@ def _run_composition_ablation(
     variants.append(
         _ablation_row(
             "kernel_set_best_practice",
-            "baseline: torch/cuBLAS linears plus ks non-linear/attention/sample kernels",
+            "baseline: torch/cuBLAS linears plus ks non-linear/cache kernels and shape-aware embedding/attention",
             baseline_engine,
         )
     )
@@ -962,6 +995,356 @@ def _run_composition_ablation(
             "Each row changes one component from the best-practice path unless "
             "the name says manual_torch_ops; same prompt, greedy 4-token decode."
         ),
+    }
+
+
+def _run_kernel_microbench(model, input_ids, args) -> Dict[str, Any]:
+    import kernel_set as ks
+    import torch
+    import torch.nn.functional as F
+
+    torch.manual_seed(1234)
+    config = model.config
+    device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+    hidden = int(config.hidden_size)
+    inter = int(config.intermediate_size)
+    qh = int(config.num_attention_heads)
+    kvh = int(getattr(config, "num_key_value_heads", qh))
+    hd = int(getattr(config, "head_dim", hidden // qh))
+    block = int(args.block_size)
+    prompt_len = int(input_ids.shape[-1])
+    vocab = int(config.vocab_size)
+    scale = hd ** -0.5
+    first_attn = model.model.layers[0].self_attn
+    q_norm_w = first_attn.q_norm.weight.contiguous()
+    k_norm_w = first_attn.k_norm.weight.contiguous()
+    hidden_norm_w = model.model.layers[0].input_layernorm.weight.contiguous()
+    max_pos = max(4096, max(args.kernel_ctx_sweep or [prompt_len + args.new_tokens]) + 8)
+    cos, sin = _make_rope_cache(
+        max_pos,
+        hd,
+        float(getattr(config, "rope_theta", 1000000.0)),
+        device,
+        dtype,
+    )
+
+    rows: List[Dict[str, Any]] = []
+
+    def bench_pair(
+        *,
+        op: str,
+        shape: str,
+        ks_fn,
+        ref_fn,
+        ref_impl: str,
+        note: str = "",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            with torch.inference_mode():
+                ks_out = ks_fn()
+                ref_out = ref_fn()
+                _torch_sync()
+            exact = False
+            if isinstance(ks_out, tuple):
+                rel = max(_rel_err(a, b) for a, b in zip(ks_out, ref_out))
+            elif ks_out.dtype in (torch.int32, torch.int64, torch.long):
+                exact = bool(torch.equal(ks_out, ref_out))
+                rel = 0.0 if exact else 1.0
+            else:
+                rel = _rel_err(ks_out, ref_out)
+            ks_us, _ = _bench_cuda(ks_fn, args.kernel_bench_warmup, args.kernel_bench_iters)
+            ref_us, _ = _bench_cuda(ref_fn, args.kernel_bench_warmup, args.kernel_bench_iters)
+            speedup = ref_us / ks_us if ks_us else None
+            row = {
+                "op": op,
+                "shape": shape,
+                "ks_us": ks_us,
+                "ref_us": ref_us,
+                "ref_impl": ref_impl,
+                "winner": "kernel-set" if speedup is not None and speedup >= 1.0 else ref_impl,
+                "speedup_ref_over_ks": speedup,
+                "rel_err": rel,
+                "exact": exact,
+                "status": "ok",
+                "note": note,
+            }
+            if extra:
+                row.update(extra)
+            rows.append(row)
+        except Exception as exc:
+            rows.append({
+                "op": op,
+                "shape": shape,
+                "ref_impl": ref_impl,
+                "status": "error",
+                "note": f"{type(exc).__name__}: {exc}",
+            })
+
+    def torch_rms(x, w, eps):
+        y = x.float()
+        y = y * torch.rsqrt(y.pow(2).mean(dim=-1, keepdim=True) + eps)
+        return (y.to(x.dtype) * w).contiguous()
+
+    def rotate_half(x):
+        half = x.shape[-1] // 2
+        return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+    def torch_rope(q, k, positions):
+        c = cos.index_select(0, positions)
+        s = sin.index_select(0, positions)
+        c = torch.cat((c, c), dim=-1).unsqueeze(1)
+        s = torch.cat((s, s), dim=-1).unsqueeze(1)
+        return (
+            (q * c + rotate_half(q) * s).contiguous(),
+            (k * c + rotate_half(k) * s).contiguous(),
+        )
+
+    def repeat_kv(x):
+        if kvh == qh:
+            return x
+        return x.repeat_interleave(qh // kvh, dim=1)
+
+    def torch_prefill(q, k, v, causal=True):
+        qt = q.transpose(1, 2)
+        kt = repeat_kv(k.transpose(1, 2))
+        vt = repeat_kv(v.transpose(1, 2))
+        out = F.scaled_dot_product_attention(
+            qt, kt, vt, dropout_p=0.0, is_causal=causal, scale=scale
+        )
+        return out.transpose(1, 2).contiguous()
+
+    def gather_cache(k_cache, v_cache, num_seqs: int, ctx_len: int, blocks_per_seq: int):
+        k = k_cache.permute(0, 2, 1, 3).reshape(
+            num_seqs, blocks_per_seq * block, kvh, hd
+        )[:, :ctx_len].contiguous()
+        v = v_cache.permute(0, 2, 1, 3).reshape(
+            num_seqs, blocks_per_seq * block, kvh, hd
+        )[:, :ctx_len].contiguous()
+        return k, v
+
+    def torch_decode(q, k_dense, v_dense):
+        qt = q.unsqueeze(1).transpose(1, 2)
+        kt = repeat_kv(k_dense.transpose(1, 2))
+        vt = repeat_kv(v_dense.transpose(1, 2))
+        out = F.scaled_dot_product_attention(
+            qt, kt, vt, dropout_p=0.0, is_causal=False, scale=scale
+        )
+        return out.transpose(1, 2).squeeze(1).contiguous()
+
+    for tokens in [1, prompt_len]:
+        ids = torch.randint(0, vocab, (tokens,), device=device, dtype=torch.long)
+        out = torch.empty(tokens, hidden, device=device, dtype=dtype)
+        bench_pair(
+            op="embedding_lookup",
+            shape=f"tokens={tokens},hidden={hidden}",
+            ks_fn=lambda ids=ids, out=out, tokens=tokens: (
+                ks.embedding.embedding_lookup(
+                    out, model.model.embed_tokens.weight.contiguous(), ids, tokens, hidden
+                ),
+                out,
+            )[1],
+            ref_fn=lambda ids=ids: model.model.embed_tokens(ids).contiguous(),
+            ref_impl="torch_embedding",
+        )
+
+    for label, rows_n, width, weight in [
+        ("decode_hidden", 1, hidden, hidden_norm_w),
+        ("prefill_hidden", prompt_len, hidden, hidden_norm_w),
+        ("decode_q_norm", qh, hd, q_norm_w),
+        ("decode_k_norm", kvh, hd, k_norm_w),
+        ("prefill_q_norm", prompt_len * qh, hd, q_norm_w),
+        ("prefill_k_norm", prompt_len * kvh, hd, k_norm_w),
+    ]:
+        x = torch.randn(rows_n, width, device=device, dtype=dtype)
+        out = torch.empty_like(x)
+        eps = _rms_eps(first_attn.q_norm if width == hd else model.model.layers[0].input_layernorm)
+        bench_pair(
+            op="rms_norm",
+            shape=f"{label},rows={rows_n},hidden={width}",
+            ks_fn=lambda x=x, out=out, weight=weight, eps=eps: (
+                ks.norm.rms_norm(out, x.contiguous(), weight, eps=eps),
+                out,
+            )[1],
+            ref_fn=lambda x=x, weight=weight, eps=eps: torch_rms(x, weight, eps),
+            ref_impl="torch_rms",
+        )
+
+    for tokens in [1, prompt_len]:
+        q = torch.randn(tokens, qh, hd, device=device, dtype=dtype)
+        k = torch.randn(tokens, kvh, hd, device=device, dtype=dtype)
+        q_ks = q.clone()
+        k_ks = k.clone()
+        positions = torch.arange(tokens, device=device, dtype=torch.int32)
+        bench_pair(
+            op="rope_gather",
+            shape=f"tokens={tokens},qh={qh},kvh={kvh},hd={hd}",
+            ks_fn=lambda q=q_ks, k=k_ks, positions=positions, tokens=tokens: (
+                ks.rope.rope_gather(
+                    q, k, cos, sin, positions, tokens, qh, kvh, hd, interleaved=False
+                ),
+                (q, k),
+            )[1],
+            ref_fn=lambda q=q, k=k, positions=positions: torch_rope(q, k, positions.long()),
+            ref_impl="torch_rope",
+        )
+
+    for tokens in [1, prompt_len]:
+        max_blocks = (tokens + block - 1) // block
+        k_cache = torch.empty(max_blocks, kvh, block, hd, device=device, dtype=dtype)
+        v_cache = torch.empty_like(k_cache)
+        k_cache_ref = torch.empty_like(k_cache)
+        v_cache_ref = torch.empty_like(k_cache)
+        key = torch.randn(tokens, kvh, hd, device=device, dtype=dtype)
+        value = torch.randn(tokens, kvh, hd, device=device, dtype=dtype)
+        slots = torch.arange(tokens, device=device, dtype=torch.int32)
+        slots_long = slots.long()
+
+        def written_slots(kc, vc, slots=slots_long):
+            flat_k = kc.permute(0, 2, 1, 3).reshape(-1, kvh, hd)
+            flat_v = vc.permute(0, 2, 1, 3).reshape(-1, kvh, hd)
+            return (
+                flat_k[slots].contiguous(),
+                flat_v[slots].contiguous(),
+            )
+
+        def ref_cache_write(
+            kc=k_cache_ref,
+            vc=v_cache_ref,
+            key=key,
+            value=value,
+            slots=slots_long,
+        ):
+            blocks = slots // block
+            offsets = slots % block
+            kc[blocks, :, offsets, :] = key
+            vc[blocks, :, offsets, :] = value
+            return written_slots(kc, vc, slots)
+
+        bench_pair(
+            op="reshape_and_cache",
+            shape=f"tokens={tokens},kvh={kvh},hd={hd},block={block}",
+            ks_fn=lambda kc=k_cache, vc=v_cache, key=key, value=value, slots=slots, tokens=tokens: (
+                ks.attention.reshape_and_cache(
+                    kc, vc, key.contiguous(), value.contiguous(), slots, tokens, kvh, hd, block
+                ),
+                written_slots(kc, vc),
+            )[1],
+            ref_fn=ref_cache_write,
+            ref_impl="torch_scatter",
+        )
+
+    for seq in [prompt_len, 128, 512]:
+        q = torch.randn(1, seq, qh, hd, device=device, dtype=dtype)
+        k = torch.randn(1, seq, kvh, hd, device=device, dtype=dtype)
+        v = torch.randn(1, seq, kvh, hd, device=device, dtype=dtype)
+        out = torch.empty(1, seq, qh, hd, device=device, dtype=dtype)
+        bench_pair(
+            op="flash_attn_prefill",
+            shape=f"b=1,seq={seq},qh={qh},kvh={kvh},hd={hd}",
+            ks_fn=lambda out=out, q=q, k=k, v=v, seq=seq: (
+                ks.attention.flash_attn(
+                    out, q, k, v, 1, seq, seq, qh, kvh, hd,
+                    softmax_scale=scale, causal=True
+                ),
+                out,
+            )[1],
+            ref_fn=lambda q=q, k=k, v=v: torch_prefill(q, k, v, causal=True),
+            ref_impl="torch_sdpa",
+        )
+
+    ctx_sweep = args.kernel_ctx_sweep or [prompt_len + 1, prompt_len + args.new_tokens, 128, 512, 2048]
+    decode_shapes = [(1, int(ctx)) for ctx in ctx_sweep]
+    if args.kernel_include_batch_decode:
+        decode_shapes.append((64, 2048))
+    for num_seqs, ctx_len in decode_shapes:
+        blocks_per_seq = (ctx_len + block - 1) // block
+        total_blocks = num_seqs * blocks_per_seq
+        q = torch.randn(num_seqs, qh, hd, device=device, dtype=dtype)
+        k_cache = torch.randn(total_blocks, kvh, block, hd, device=device, dtype=dtype)
+        v_cache = torch.randn(total_blocks, kvh, block, hd, device=device, dtype=dtype)
+        block_tables = torch.arange(total_blocks, device=device, dtype=torch.int32).view(
+            num_seqs, blocks_per_seq
+        )
+        seq_lens = torch.full((num_seqs,), ctx_len, device=device, dtype=torch.int32)
+        out = torch.empty(num_seqs, qh, hd, device=device, dtype=dtype)
+        k_dense, v_dense = gather_cache(k_cache, v_cache, num_seqs, ctx_len, blocks_per_seq)
+
+        def ref_gather_sdpa(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            num_seqs=num_seqs,
+            ctx_len=ctx_len,
+            blocks_per_seq=blocks_per_seq,
+        ):
+            kd, vd = gather_cache(k_cache, v_cache, num_seqs, ctx_len, blocks_per_seq)
+            return torch_decode(q, kd, vd)
+
+        dense_us, _ = _bench_cuda(
+            lambda q=q, kd=k_dense, vd=v_dense: torch_decode(q, kd, vd),
+            args.kernel_bench_warmup,
+            args.kernel_bench_iters,
+        )
+        bench_pair(
+            op="paged_attn_decode",
+            shape=f"seqs={num_seqs},ctx={ctx_len},qh={qh},kvh={kvh},hd={hd},block={block}",
+            ks_fn=lambda out=out, q=q, kc=k_cache, vc=v_cache, bt=block_tables, sl=seq_lens, bps=blocks_per_seq, ns=num_seqs: (
+                ks.attention.paged_attn_decode(
+                    out, q, kc, vc, bt, sl, ns, qh, kvh, hd, block, bps, softmax_scale=scale
+                ),
+                out,
+            )[1],
+            ref_fn=ref_gather_sdpa,
+            ref_impl="torch_gather_sdpa",
+            extra={"torch_dense_sdpa_us": dense_us},
+        )
+
+    for rows_n in [1, prompt_len]:
+        gate = torch.randn(rows_n, inter, device=device, dtype=dtype)
+        up = torch.randn(rows_n, inter, device=device, dtype=dtype)
+        out = torch.empty_like(gate)
+        bench_pair(
+            op="swiglu",
+            shape=f"rows={rows_n},inter={inter}",
+            ks_fn=lambda out=out, gate=gate, up=up: (
+                ks.activation.swiglu(out, gate.contiguous(), up.contiguous()),
+                out,
+            )[1],
+            ref_fn=lambda gate=gate, up=up: (F.silu(gate) * up).contiguous(),
+            ref_impl="torch_silu_mul",
+        )
+
+    logits = torch.randn(1, vocab, device=device, dtype=dtype)
+    out_i32 = torch.empty(1, device=device, dtype=torch.int32)
+    bench_pair(
+        op="argmax",
+        shape=f"rows=1,vocab={vocab}",
+        ks_fn=lambda out=out_i32, logits=logits: (
+            ks.sampling.argmax(out, logits.contiguous(), 1, vocab),
+            out,
+        )[1],
+        ref_fn=lambda logits=logits: logits.argmax(dim=-1).to(torch.int32),
+        ref_impl="torch_argmax",
+    )
+
+    return {
+        "schema_version": 1,
+        "timing": "cuda_events",
+        "warmup": args.kernel_bench_warmup,
+        "iters": args.kernel_bench_iters,
+        "model_shape": {
+            "prompt_tokens": prompt_len,
+            "hidden": hidden,
+            "intermediate": inter,
+            "num_heads": qh,
+            "num_kv_heads": kvh,
+            "head_dim": hd,
+            "block_size": block,
+            "vocab_size": vocab,
+        },
+        "rows": rows,
     }
 
 
@@ -1076,6 +1459,8 @@ def run(args) -> Dict[str, Any]:
     if args.skip_hf:
         if args.merge_reference_engines:
             reference_names = ["transformers", "vllm", "sglang"]
+            if not run_best_practice:
+                reference_names.append("kernel_set_best_practice")
             if not run_full_kernels:
                 reference_names.append("kernel_set_full_kernels")
             for name in reference_names:
@@ -1117,6 +1502,10 @@ def run(args) -> Dict[str, Any]:
             engines.get("kernel_set_best_practice"),
         )
 
+    kernel_microbench = None
+    if args.run_kernel_microbench:
+        kernel_microbench = _run_kernel_microbench(model, input_ids, args)
+
     if args.run_vllm:
         del model
         torch.cuda.empty_cache()
@@ -1144,6 +1533,8 @@ def run(args) -> Dict[str, Any]:
     }
     if optimization_ablation is not None:
         result["optimization_ablation"] = optimization_ablation
+    if kernel_microbench is not None:
+        result["kernel_microbench"] = kernel_microbench
     return result
 
 
@@ -1169,6 +1560,11 @@ def main() -> int:
     parser.add_argument("--run-full-kernels", action="store_true")
     parser.add_argument("--skip-full-kernels", action="store_true")
     parser.add_argument("--run-ablation-suite", action="store_true")
+    parser.add_argument("--run-kernel-microbench", action="store_true")
+    parser.add_argument("--kernel-bench-warmup", type=int, default=20)
+    parser.add_argument("--kernel-bench-iters", type=int, default=100)
+    parser.add_argument("--kernel-ctx-sweep", type=int, nargs="*", default=None)
+    parser.add_argument("--kernel-include-batch-decode", action="store_true")
     parser.add_argument("--run-vllm", action="store_true")
     parser.add_argument("--vllm-timeout-s", type=float, default=1200.0)
     parser.add_argument("--reference-json", default=None)

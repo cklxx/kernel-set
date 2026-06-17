@@ -555,6 +555,10 @@ def _render_inference_table(
             f"{_source_link(run.get('_path'), base_dir)} |"
         )
     coverage = _render_inference_kernel_coverage(run)
+    microbench = _render_inference_kernel_microbench(run)
+    if microbench:
+        lines.append("")
+        lines.extend(microbench)
     if coverage:
         lines.append("")
         lines.extend(coverage)
@@ -585,15 +589,68 @@ def _mode_changes(modes: Dict[str, Any]) -> str:
 
 
 BEST_PRACTICE_BASELINE = {
-    "argmax": "ks",
-    "attention": "ks",
+    "argmax": "torch",
+    "attention": "auto",
     "cache": "ks",
-    "embedding": "ks",
+    "embedding": "auto",
     "linear": "torch",
     "norm": "ks",
     "rope": "ks",
     "swiglu": "ks",
 }
+
+
+def _fmt_microbench_ratio(row: Dict[str, Any]) -> str:
+    ratio = row.get("speedup_ref_over_ks")
+    if ratio is None:
+        return "-"
+    ratio = float(ratio)
+    if ratio >= 1.0:
+        return f"kernel-set {ratio:.2f}x"
+    ref_impl = str(row.get("ref_impl") or "reference")
+    return f"{ref_impl} {1.0 / ratio:.2f}x"
+
+
+def _fmt_microbench_err(row: Dict[str, Any]) -> str:
+    if row.get("exact") is True:
+        return "exact"
+    rel = row.get("rel_err")
+    if rel is None:
+        return "-"
+    return f"rel {_fmt_num(rel, 4)}"
+
+
+def _render_inference_kernel_microbench(run: Dict[str, Any]) -> List[str]:
+    bench = run.get("kernel_microbench") or {}
+    rows = [
+        row for row in bench.get("rows") or []
+        if isinstance(row, dict) and row.get("status") == "ok"
+    ]
+    if not rows:
+        return []
+    out = [
+        "Qwen3-shape kernel microbench:",
+        "",
+        "| op | shape | kernel-set | reference | winner | ratio | err |",
+        "|---|---|---:|---:|---|---:|---|",
+    ]
+    for row in rows:
+        ref_impl = str(row.get("ref_impl") or "reference")
+        ref = f"`{ref_impl}` {_fmt_latency(row.get('ref_us'))}"
+        dense = row.get("torch_dense_sdpa_us")
+        if dense is not None:
+            ref += f"<br>`torch_dense_sdpa` {_fmt_latency(dense)}"
+        out.append(
+            f"| `{row.get('op')}` | `{row.get('shape')}` | "
+            f"{_fmt_latency(row.get('ks_us'))} | {ref} | "
+            f"`{row.get('winner')}` | {_fmt_microbench_ratio(row)} | "
+            f"{_fmt_microbench_err(row)} |"
+        )
+    out.extend([
+        "",
+        "These are per-kernel CUDA-event timings at the Qwen3-8B shapes used by the engine smoke; they are provider-selection evidence, not serving throughput.",
+    ])
+    return out
 
 
 def _render_inference_ablation(run: Dict[str, Any]) -> List[str]:
@@ -753,9 +810,9 @@ def render_results_readme(
     lines.append("composed engine paths.")
     lines.append("Rows with kernel coverage are integration rows, not serving-system benchmarks:")
     lines.append("`kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses")
-    lines.append("kernel-set for the memory/attention/sample kernels; `kernel_set_full_kernels`")
-    lines.append("is the slower all-kernel coverage smoke that also routes linears through")
-    lines.append("kernel-set's auditable reference GEMM path.")
+    lines.append("shape-aware provider selection for the measured Qwen3 shapes;")
+    lines.append("`kernel_set_full_kernels` is the slower all-kernel coverage smoke that")
+    lines.append("also routes linears through kernel-set's auditable reference GEMM path.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     lines.append("")
@@ -822,7 +879,7 @@ def render_root_summary(
         lines.append("")
         lines.append(
             "Kernel-coverage rows prove call-path coverage and token parity; "
-            "they are not apples-to-apples engine-throughput comparisons."
+            "the kernel microbench rows are the provider-selection evidence."
         )
         lines.append("")
         lines.extend(_render_inference_table(inference_runs))
