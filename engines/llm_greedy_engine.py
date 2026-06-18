@@ -281,6 +281,9 @@ class KernelSetLLMFullPath:
         self.seq_lens_i32 = torch.arange(
             1, self.max_total_tokens + 1, device=self.device, dtype=torch.int32
         )
+        self.decode_input_ids = torch.empty(
+            (1, 1), device=self.device, dtype=torch.long
+        )
 
     def reset_stats(self) -> None:
         self.stats = KernelStats()
@@ -472,8 +475,8 @@ class KernelSetLLMFullPath:
         return self._next_token(x[-1:].contiguous())
 
     def decode_one(self, token_id: int, pos: int):
-        ids = self.torch.tensor([[token_id]], device=self.device, dtype=self.torch.long)
-        x = self._embedding(ids)
+        self.decode_input_ids.fill_(int(token_id))
+        x = self._embedding(self.decode_input_ids)
         for li, layer in enumerate(self.layers):
             attn = layer.self_attn
             residual = x

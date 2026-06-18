@@ -25,11 +25,6 @@ END = "<!-- BENCHMARK_SUMMARY:END -->"
 DEFAULT_INFERENCE = "benchmarks/results/inference/*.json"
 KERNEL_SET_ENGINE = "kernel_set_engine"
 LEGACY_KERNEL_SET_ENGINE = "kernel_set_best_practice"
-HIDDEN_INFERENCE_ENGINES = {
-    "kernel_set_full_kernels",
-    "kernel_set_full_smoke",
-    "kernel_set_ops",
-}
 
 
 def _display_engine_name(name: str) -> str:
@@ -57,8 +52,8 @@ def _ordered_inference_engine_items(
     order: Sequence[str],
 ) -> Iterable[Tuple[str, str, Dict[str, Any]]]:
     seen = set()
-    for raw_name in order + sorted(k for k in engines if k not in order):
-        if raw_name not in engines or raw_name in HIDDEN_INFERENCE_ENGINES:
+    for raw_name in order:
+        if raw_name not in engines:
             continue
         display_name = _display_engine_name(raw_name)
         if display_name in seen:
@@ -647,8 +642,8 @@ def _render_quantized_engine_table(
     lines = [
         "Quantized checkpoint engine smoke:",
         "",
-        "| model / GPU | quant mode | engine | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |",
-        "|---|---|---|---:|---:|---:|---|---:|---|",
+        "| model / GPU | quant mode | engine | selected mode | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |",
+        "|---|---|---|---|---:|---:|---:|---|---:|---|",
     ]
     for mode, variant in (run.get("variants") or {}).items():
         if not isinstance(variant, dict) or variant.get("status") != "ok":
@@ -675,10 +670,15 @@ def _render_quantized_engine_table(
             seen_display.add(display_name)
             ratio = float(engine_tps) / float(hf_tps) if float(hf_tps) else None
             peak = engine.get("peak_memory_gb") or hf.get("peak_memory_gb")
+            selected = str(
+                engine.get("selected_candidate")
+                or engine.get("candidate_name")
+                or "default"
+            )
             lines.append(
                 f"| {run.get('model')} / {run.get('gpu_name')} "
                 f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
-                f"`{display_name}` | {_fmt_num(hf_tps, 2)} | "
+                f"`{display_name}` | `{selected}` | {_fmt_num(hf_tps, 2)} | "
                 f"{_fmt_num(engine_tps, 2)} | {_fmt_num(ratio, 2)}x | "
                 f"{_engine_exact(engine)} | {_fmt_num(peak, 2)} | "
                 f"{_source_link(run.get('_path'), base_dir)} |"

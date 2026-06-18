@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import gc
 import json
@@ -14,11 +15,36 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 DEFAULT_MODEL = "Qwen/Qwen3-8B"
 KERNEL_SET_ENGINE = "kernel_set_engine"
+ENGINE_CANDIDATE_OVERRIDES: List[Tuple[str, Dict[str, str]]] = [
+    ("default", {}),
+    ("torch_attention", {"attention": "torch"}),
+    ("torch_rope", {"rope": "torch"}),
+    ("torch_norm", {"norm": "torch"}),
+    ("torch_swiglu", {"swiglu": "torch"}),
+    ("torch_rope_attention", {"rope": "torch", "attention": "torch"}),
+    ("torch_norm_attention", {"norm": "torch", "attention": "torch"}),
+    ("torch_norm_rope_attention", {"norm": "torch", "rope": "torch", "attention": "torch"}),
+    (
+        "torch_nonlinear_cache_ks",
+        {"norm": "torch", "rope": "torch", "swiglu": "torch", "attention": "torch"},
+    ),
+    (
+        "torch_exact_fallback",
+        {
+            "embedding": "torch",
+            "norm": "torch",
+            "rope": "torch",
+            "cache": "torch",
+            "swiglu": "torch",
+            "attention": "torch",
+        },
+    ),
+]
 DEFAULT_PROMPT = (
     "用户：我在准备一次关于推理引擎优化的内部分享，听众里有模型同学、平台同学，"
     "也有刚加入项目的新同学。请用自然的日常对话方式解释：为什么同一个长一点的"
@@ -233,19 +259,24 @@ def _run_kernel_set_engine(
     }
 
 
-def _quant_engine_modes(args):
-    from engines.llm_greedy_engine import KERNEL_SET_ENGINE_MODES, TORCH_MANUAL_MODES
+def _quant_engine_candidates(args):
+    from engines.llm_greedy_engine import KERNEL_SET_ENGINE_MODES, merge_modes
 
-    variants: Dict[str, Dict[str, str]] = {
-        KERNEL_SET_ENGINE: dict(KERNEL_SET_ENGINE_MODES)
-    }
-    if args.run_torch_attention_engine:
-        modes = dict(KERNEL_SET_ENGINE_MODES)
-        modes["attention"] = "torch"
-        variants["kernel_set_torch_attention"] = modes
-    if args.run_manual_torch_engine:
-        variants["manual_torch_ops"] = dict(TORCH_MANUAL_MODES)
-    return variants
+    overrides = (
+        ENGINE_CANDIDATE_OVERRIDES
+        if args.engine_candidate_preset == "full"
+        else ENGINE_CANDIDATE_OVERRIDES
+    )
+    candidates: List[Tuple[str, Dict[str, str]]] = []
+    seen = set()
+    for name, override in overrides:
+        modes = dict(KERNEL_SET_ENGINE_MODES) if not override else merge_modes(override)
+        key = tuple(sorted(modes.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((name, modes))
+    return candidates
 
 
 def _quant_config(mode: str, dtype):
@@ -319,10 +350,18 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
             args.hf_repeat,
         )
         ref = item["engines"]["transformers"]["tokens"]
-        for engine_name, modes in _quant_engine_modes(args).items():
+        candidate_rows: Dict[str, Dict[str, Any]] = {}
+        exact_candidates: List[Tuple[str, Dict[str, Any]]] = []
+        candidates = _quant_engine_candidates(args)
+        if not args.engine_autotune:
+            candidates = candidates[:1]
+        for candidate_name, modes in candidates:
             attention = modes.get("attention")
-            all_torch = all(value == "torch" for value in modes.values())
-            item["engines"][engine_name] = _run_kernel_set_engine(
+            mostly_torch = all(
+                modes.get(key) == "torch"
+                for key in ("embedding", "norm", "rope", "cache", "attention", "swiglu")
+            )
+            candidate = _run_kernel_set_engine(
                 model,
                 tokenizer,
                 input_ids,
@@ -334,8 +373,8 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                     "generic LLM Python engine; quantized/dense linears stay "
                     "on model modules"
                     + (
-                        "; torch ops for exactness/control"
-                        if all_torch
+                        "; torch ops for exactness fallback"
+                        if mostly_torch
                         else ", ks covers norm/RoPE/KV write/SwiGLU"
                     )
                     + (
@@ -345,18 +384,47 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                     )
                 ),
                 note=(
-                    "manual torch-op control path, not serving runtime"
-                    if all_torch
+                    "exactness fallback candidate, not serving runtime"
+                    if mostly_torch
                     else (
-                        "kernel_set_engine provider selection, not serving runtime"
+                        "kernel_set_engine candidate, not serving runtime"
                         if attention == "auto"
-                        else "exactness check: torch attention, ks non-attention kernels"
+                        else f"kernel_set_engine candidate: {candidate_name}"
                     )
                 ),
             )
-            item["engines"][engine_name].update(
-                _token_match(ref, item["engines"][engine_name]["tokens"])
+            candidate.update(_token_match(ref, candidate["tokens"]))
+            candidate["candidate_name"] = candidate_name
+            candidate_rows[candidate_name] = candidate
+            if candidate.get("exact_same_as_reference") is True:
+                exact_candidates.append((candidate_name, candidate))
+        item["engine_candidates"] = candidate_rows
+        if exact_candidates:
+            selected_name, selected = max(
+                exact_candidates,
+                key=lambda pair: float(pair[1].get("tokens_per_s_new") or 0.0),
             )
+        else:
+            selected_name, selected = max(
+                candidate_rows.items(),
+                key=lambda pair: int(pair[1].get("token_match_prefix") or 0),
+            )
+        selected_row = copy.deepcopy(selected)
+        selected_row["selected_candidate"] = selected_name
+        selected_row["candidate_count"] = len(candidate_rows)
+        if exact_candidates:
+            selected_row["note"] = (
+                f"selected fastest exact kernel_set_engine candidate: {selected_name}; "
+                "not serving runtime"
+            )
+        else:
+            selected_row["note"] = (
+                f"no exact candidate found; selected longest-prefix candidate: {selected_name}; "
+                "not serving runtime"
+            )
+        item["selected_engine_candidate"] = selected_name
+        item["exact_engine_candidate_count"] = len(exact_candidates)
+        item["engines"][KERNEL_SET_ENGINE] = selected_row
         return item
     except Exception as exc:
         item["status"] = "error"
@@ -413,7 +481,9 @@ def run(args) -> Dict[str, Any]:
         "new_tokens": args.new_tokens,
         "engine": "KernelSetLLMConfigurablePath",
         "quant_modes": args.quant_modes,
-        "engine_variants": list(_quant_engine_modes(args)),
+        "engine_candidate_preset": args.engine_candidate_preset,
+        "engine_autotune": args.engine_autotune,
+        "engine_candidates": [name for name, _ in _quant_engine_candidates(args)],
         "variants": variants,
     }
 
@@ -439,10 +509,13 @@ def main() -> int:
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--hf-repeat", type=int, default=1)
     parser.add_argument("--ks-repeat", type=int, default=1)
-    parser.add_argument("--run-torch-attention-engine", action="store_true", default=True)
-    parser.add_argument("--skip-torch-attention-engine", dest="run_torch_attention_engine", action="store_false")
-    parser.add_argument("--run-manual-torch-engine", action="store_true", default=True)
-    parser.add_argument("--skip-manual-torch-engine", dest="run_manual_torch_engine", action="store_false")
+    parser.add_argument("--engine-autotune", action="store_true", default=True)
+    parser.add_argument("--skip-engine-autotune", dest="engine_autotune", action="store_false")
+    parser.add_argument("--engine-candidate-preset", choices=["fast", "full"], default="fast")
+    parser.add_argument("--run-torch-attention-engine", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-torch-attention-engine", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--run-manual-torch-engine", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-manual-torch-engine", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output", default="/content/quantized_engine_compare.json")
     args = parser.parse_args()

@@ -6,8 +6,7 @@ serving engine: scheduling, request batching, CUDA graphs, allocator policy, and
 paginated block management are still Python. The default path is the canonical
 ``kernel_set_engine`` composition: dense linears stay on torch/cuBLAS, while
 kernel-set is used for the memory/attention/sample kernels where this repo has
-useful coverage. The all-kernel GEMM path remains available only as a hidden
-diagnostic smoke via ``--run-full-kernels``.
+useful coverage.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ DEFAULT_MODEL = "Qwen/Qwen3-8B"
 DEFAULT_PROMPT = "用户：今天下班有点累，想晚上吃得简单一点，你有什么轻松的建议？\n助手："
 KERNEL_SET_ENGINE = "kernel_set_engine"
 LEGACY_KERNEL_SET_ENGINE = "kernel_set_best_practice"
-KERNEL_SET_FULL_KERNELS = "kernel_set_full_kernels"
 
 
 def _run(cmd: List[str], cwd: Optional[pathlib.Path] = None) -> None:
@@ -220,58 +218,6 @@ def _load_reference_json(path_or_url: Optional[str]) -> Optional[Dict[str, Any]]
             return json.loads(resp.read().decode("utf-8"))
     path = pathlib.Path(path_or_url)
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int):
-    import kernel_set as ks
-    from engines.llm_greedy_engine import KernelSetLLMFullPath
-
-    max_total_tokens = int(input_ids.shape[-1]) + new_tokens
-
-    def generate():
-        engine = KernelSetLLMFullPath(
-            model, ks, max_total_tokens=max_total_tokens, block_size=block_size
-        )
-        with engine.torch.inference_mode():
-            tokens, _ = engine.generate(input_ids, max_new_tokens=new_tokens)
-        return tokens, engine.stats
-
-    # Warmup once to pay lazy allocations outside the measured run.
-    generate()
-    seconds, (tokens, stats) = _timer(generate, repeat=repeat)
-    return {
-        "seconds": seconds,
-        "tokens_per_s_new": new_tokens / seconds,
-        "prompt_tokens": int(input_ids.shape[-1]),
-        "new_tokens": new_tokens,
-        "tokens": tokens,
-        "text": tokenizer.decode(tokens, skip_special_tokens=False),
-        "scope": (
-            "single-request Python engine; ks embedding/GEMM/RMSNorm/RoPE/"
-            "FlashAttn/reshape_cache/paged_decode/SwiGLU/argmax"
-        ),
-        "note": "kernel coverage smoke, not production serving",
-        "stats": asdict(stats),
-        "kernel_coverage": {
-            "covered": [
-                "ks_embedding_lookup",
-                "ks_gemm",
-                "ks_rms_norm",
-                "ks_rope_gather",
-                "ks_flash_attn",
-                "ks_reshape_and_cache",
-                "ks_paged_attn_decode",
-                "ks_swiglu",
-                "ks_argmax",
-            ],
-            "torch_fallback": [
-                "residual add",
-                "tensor reshape/view/allocation",
-                "Python request/decode loop",
-                "paged block scheduler",
-            ],
-        },
-    }
 
 
 def _run_kernel_set_variant(
@@ -1382,10 +1328,8 @@ except Exception as exc:
 
 def run(args) -> Dict[str, Any]:
     run_engine = bool(args.run_engine)
-    run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
     needs_kernel_set = (
         run_engine
-        or run_full_kernels
         or bool(args.run_ablation_suite)
         or bool(args.run_kernel_microbench)
     )
@@ -1484,13 +1428,6 @@ def run(args) -> Dict[str, Any]:
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
         apply_match(KERNEL_SET_ENGINE)
-
-    if run_full_kernels:
-        assert model is not None
-        engines[KERNEL_SET_FULL_KERNELS] = _run_kernel_set_full(
-            model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
-        )
-        apply_match(KERNEL_SET_FULL_KERNELS)
 
     optimization_ablation = None
     if args.run_ablation_suite:
@@ -1609,8 +1546,6 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     parser.set_defaults(run_engine=True)
-    parser.add_argument("--run-full-kernels", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-full-kernels", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--run-ablation-suite", action="store_true")
     parser.add_argument("--run-kernel-microbench", action="store_true")
     parser.add_argument("--kernel-bench-warmup", type=int, default=20)

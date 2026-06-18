@@ -119,9 +119,9 @@ Kernel coverage for the composed kernel-set engine:
 
 Quantized checkpoint engine smoke:
 
-| model / GPU | quant mode | engine | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |
-|---|---|---|---:|---:|---:|---|---:|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | 10.83 | 13.72 | 1.27x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine.json) |
+| model / GPU | quant mode | engine | selected mode | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |
+|---|---|---|---|---:|---:|---:|---|---:|---|
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | `default` | 10.83 | 13.72 | 1.27x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine.json) |
 
 Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.
 
