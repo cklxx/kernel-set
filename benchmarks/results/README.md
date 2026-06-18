@@ -4,15 +4,16 @@ This directory keeps human-readable benchmark reports plus canonical
 JSON runs under `runs/`. Use the JSON files as the durable data
 source; Markdown files are display artifacts.
 
-- **Canonical runs:** 21
+- **Canonical runs:** 22
 - **GPU coverage:** NVIDIA A100-SXM4-40GB (sm80), NVIDIA H20 (sm90), NVIDIA L4 (sm89), NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120)
-- **Suites:** kernel_set=17, sota=4
+- **Suites:** kernel_set=18, sota=4
 - **Index:** [`index.json`](index.json)
 
 ## Latest Runs
 
 | run | GPU | suite | dtype | timing | rows | ok / skip / import-fail / error | data |
 |---|---|---|---|---|---:|---:|---|
+| `20260618-l4-kernel-opt-final-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 14 | 14 / 0 / 0 / 0 | [20260618-l4-kernel-opt-final-nvidia-l4-fp16.json](runs/20260618-l4-kernel-opt-final-nvidia-l4-fp16.json) |
 | `20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 47 | 47 / 0 / 0 / 0 | [20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json) |
 | `20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 30 | 30 / 0 / 0 / 0 | [20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16.json) |
 | `20260616t133654z-colab-kernel-set-quant-plus-4-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 18 | 18 / 0 / 0 / 0 | [20260616t133654z-colab-kernel-set-quant-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-quant-plus-4-nvidia-l4-fp16.json) |
@@ -24,15 +25,14 @@ source; Markdown files are display artifacts.
 | `20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 18 | 18 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 | `20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 22 | 22 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 | `20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 14 | 14 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
-| `20260616-pro6000-full-kernel-set-cross-entropy-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 20 | 20 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-cross-entropy-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-cross-entropy-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 
 ## Model-Part Coverage
 
 | model part | position | suite | ops | shapes | impls | GPUs | ok / total |
 |---|---|---|---:|---:|---:|---:|---:|
-| `attention` | `decode` | kernel_set | 2 | 3 | 1 | 4 | 18 / 18 |
+| `attention` | `decode` | kernel_set | 2 | 3 | 1 | 4 | 19 / 19 |
 | `attention` | `decode` | sota | 2 | 3 | 6 | 2 | 15 / 28 |
-| `attention` | `prefill` | kernel_set | 2 | 3 | 2 | 4 | 30 / 30 |
+| `attention` | `prefill` | kernel_set | 2 | 3 | 2 | 4 | 31 / 31 |
 | `attention` | `prefill` | sota | 1 | 2 | 5 | 3 | 11 / 38 |
 | `attention` | `training` | kernel_set | 1 | 2 | 1 | 4 | 12 / 12 |
 | `elementwise` | `bulk` | kernel_set | 6 | 2 | 3 | 4 | 132 / 132 |
@@ -62,8 +62,8 @@ source; Markdown files are display artifacts.
 | `position_encoding` | `prefill` | kernel_set | 1 | 1 | 1 | 4 | 6 / 6 |
 | `position_encoding` | `prefill` | sota | 1 | 1 | 4 | 2 | 6 / 11 |
 | `position_encoding` | `training` | kernel_set | 1 | 2 | 1 | 4 | 12 / 12 |
-| `quant` | `prefill` | kernel_set | 5 | 4 | 1 | 4 | 54 / 58 |
-| `quant` | `weight` | kernel_set | 1 | 2 | 1 | 4 | 14 / 14 |
+| `quant` | `prefill` | kernel_set | 5 | 4 | 1 | 4 | 64 / 68 |
+| `quant` | `weight` | kernel_set | 1 | 2 | 1 | 4 | 16 / 16 |
 | `sampling` | `decode` | kernel_set | 3 | 4 | 2 | 4 | 72 / 72 |
 | `ssm` | `prefill` | sota | 3 | 1 | 3 | 2 | 0 / 6 |
 

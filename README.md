@@ -72,7 +72,7 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 <!-- BENCHMARK_SUMMARY:START -->
 ## Benchmarks
 
-Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **21 runs**, **1105/1256 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **22 runs**, **1119/1270 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
 Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
 
@@ -121,6 +121,24 @@ Quantized serving-engine comparison:
 No vLLM/SGLang quantized serving baseline is checked in yet. HF/Transformers rows in JSON are correctness references only, not README performance baselines.
 
 <!-- BENCHMARK_SUMMARY:END -->
+
+## Kernel Optimization Notes
+
+Latest kernel-only A/B used Colab L4 (sm89), fp16, L2-flushed CUDA-event timing
+with `bench.py --ops quant,reshape_and_cache --target-ms 100`. The baseline was
+the pre-patch `HEAD`; the final checked-in run is
+[`20260618-l4-kernel-opt-final-nvidia-l4-fp16.json`](benchmarks/results/runs/20260618-l4-kernel-opt-final-nvidia-l4-fp16.json).
+
+| kernel | shape | baseline | current | result |
+|---|---|---:|---:|---:|
+| `quantize_fp8_group` | `rows=4096,cols=4096,g=128` | 487.4 us / 103.3 GB/s | 474.1 us / 106.2 GB/s | 1.03x |
+| `quantize_fp8_group` | `rows=8192,cols=8192,g=128` | 2234.4 us / 90.1 GB/s | 2128.9 us / 94.6 GB/s | 1.05x |
+| `reshape_and_cache` | `tokens=4096,kvh=8,hd=128,blk=16` | 188.4 us / 178.1 GB/s | 188.4 us / 178.1 GB/s | no measured win |
+
+`quantize_fp8_group` now caches each <=256-column group in shared memory before
+the fp8 cast pass, avoiding one global reread for the common group-128 path.
+`reshape_and_cache` now performs direct same-dtype K/V copies; it is kept as a
+simple instruction cleanup, not a claimed performance improvement.
 
 ## Try it on a real model
 

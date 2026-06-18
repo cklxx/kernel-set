@@ -9,8 +9,8 @@
 // A slot of -1 marks a padding token that should be skipped (matches vLLM).
 //
 // Parallelization: grid.x == num_tokens, grid.y == num_kv_heads; threads stride
-// over head_dim. Pure copy with dtype-preserving conversion through fp32 so the
-// path also works if storage dtypes ever differ.
+// over head_dim. The ABI uses one dtype for source and cache, so this is a plain
+// dtype-preserving copy; avoiding fp32 round-trips matters in decode append.
 #include "kernel_set/attention.h"
 #include "common/platform.cuh"
 #include "common/dtype.cuh"
@@ -46,10 +46,8 @@ KS_GLOBAL void reshape_and_cache_kernel(
       head_dim;
 
   for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
-    k_cache[dst_base + d] =
-        from_float<scalar_t>(to_float(key[src_base + d]));
-    v_cache[dst_base + d] =
-        from_float<scalar_t>(to_float(value[src_base + d]));
+    k_cache[dst_base + d] = key[src_base + d];
+    v_cache[dst_base + d] = value[src_base + d];
   }
 }
 

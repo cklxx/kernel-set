@@ -13,8 +13,9 @@
 // hardware; tensor-core FP8 GEMM/provider selection stays separately gated.
 //
 // One CUDA block per (row, group); the block reduces the group amax via
-// ks::block_reduce_max, then casts. Correctness and clarity over speed,
-// consistent with quant_fp8.cu and the norm reference kernels.
+// ks::block_reduce_max, then casts. The common DeepSeek/QServe group size is 128,
+// so the fast path caches one group in shared memory and avoids rereading input
+// for the cast pass. Larger groups keep the generic two-pass path.
 #include "kernel_set/quant.h"
 #include "quant/quant_common.cuh"
 
@@ -65,6 +66,43 @@ KS_GLOBAL void fp8_quant_per_group_kernel(fp8_t* __restrict__ out,
   // so dividing by the scale maps amax onto qmax (no explicit clamp needed).
   for (int64_t c = col0 + threadIdx.x; c < col_end; c += blockDim.x) {
     y[c] = from_float<fp8_t>(to_float(x[c]) * inv_sc);
+  }
+}
+
+// Fast path for the production group sizes (typically 128): one thread owns one
+// column, stores the fp32 value in shared memory, then reuses it after amax.
+template <typename scalar_t, typename fp8_t>
+KS_GLOBAL void fp8_quant_per_group_cached_kernel(
+    fp8_t* __restrict__ out, float* __restrict__ scale,
+    const scalar_t* __restrict__ input, int64_t rows, int64_t cols,
+    int group_size, int64_t num_groups, float qmax) {
+  const int64_t row = blockIdx.y;
+  const int64_t grp = blockIdx.x;
+  if (row >= rows || grp >= num_groups) return;
+
+  const int64_t col0 = grp * group_size;
+  const int64_t col_end = (col0 + group_size < cols) ? (col0 + group_size) : cols;
+  const int group_len = static_cast<int>(col_end - col0);
+  const scalar_t* x = input + row * cols + col0;
+  fp8_t* y = out + row * cols + col0;
+
+  __shared__ float vals[kBlock];
+  __shared__ float red[kBlock / KS_WARP_SIZE];
+
+  float v = 0.f;
+  float local_amax = 0.f;
+  if (threadIdx.x < group_len) {
+    v = to_float(x[threadIdx.x]);
+    vals[threadIdx.x] = v;
+    local_amax = fabsf(v);
+  }
+  const float amax = block_reduce_max(local_amax, red);
+  const float sc = fmaxf(amax / qmax, kEpsScale);
+  if (threadIdx.x == 0) scale[row * num_groups + grp] = sc;
+  const float inv_sc = 1.0f / sc;
+
+  if (threadIdx.x < group_len) {
+    y[threadIdx.x] = from_float<fp8_t>(vals[threadIdx.x] * inv_sc);
   }
 }
 
@@ -131,22 +169,37 @@ ks_status_t ks_quantize_fp8_group(void* out, float* scale, const void* input,
   const dim3 block(quant::kBlock);
   const dim3 grid(static_cast<unsigned>(num_groups),
                   static_cast<unsigned>(rows));
+  const bool use_cached_group = group_size <= quant::kBlock;
 
   if (fp8_dtype == KS_DTYPE_F8E4M3) {
     auto* o = static_cast<__nv_fp8_e4m3*>(out);
     KS_DISPATCH_FLOATING_TYPES(in_dtype, "ks_quantize_fp8_group", {
-      quant::fp8_quant_per_group_kernel<scalar_t, __nv_fp8_e4m3>
-          <<<grid, block, 0, s>>>(o, scale,
-                                  static_cast<const scalar_t*>(input), rows,
-                                  cols, group_size, num_groups, qmax);
+      if (use_cached_group) {
+        quant::fp8_quant_per_group_cached_kernel<scalar_t, __nv_fp8_e4m3>
+            <<<grid, block, 0, s>>>(o, scale,
+                                    static_cast<const scalar_t*>(input), rows,
+                                    cols, group_size, num_groups, qmax);
+      } else {
+        quant::fp8_quant_per_group_kernel<scalar_t, __nv_fp8_e4m3>
+            <<<grid, block, 0, s>>>(o, scale,
+                                    static_cast<const scalar_t*>(input), rows,
+                                    cols, group_size, num_groups, qmax);
+      }
     });
   } else {
     auto* o = static_cast<__nv_fp8_e5m2*>(out);
     KS_DISPATCH_FLOATING_TYPES(in_dtype, "ks_quantize_fp8_group", {
-      quant::fp8_quant_per_group_kernel<scalar_t, __nv_fp8_e5m2>
-          <<<grid, block, 0, s>>>(o, scale,
-                                  static_cast<const scalar_t*>(input), rows,
-                                  cols, group_size, num_groups, qmax);
+      if (use_cached_group) {
+        quant::fp8_quant_per_group_cached_kernel<scalar_t, __nv_fp8_e5m2>
+            <<<grid, block, 0, s>>>(o, scale,
+                                    static_cast<const scalar_t*>(input), rows,
+                                    cols, group_size, num_groups, qmax);
+      } else {
+        quant::fp8_quant_per_group_kernel<scalar_t, __nv_fp8_e5m2>
+            <<<grid, block, 0, s>>>(o, scale,
+                                    static_cast<const scalar_t*>(input), rows,
+                                    cols, group_size, num_groups, qmax);
+      }
     });
   }
   KS_CHECK_LAUNCH();
