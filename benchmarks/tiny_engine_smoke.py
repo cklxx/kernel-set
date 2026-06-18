@@ -75,13 +75,17 @@ def main() -> None:
         assert out.new_tokens == 96
         assert out.generated_text.startswith("可以从一个用户问题")
 
-    vlm = engine.greedy(
-        ScriptedGreedySpec("gemma-vlm", answer),
-        PROMPT,
-        max_new_tokens=96,
-        image_embeds=[("slide-preview", 4)],
-    )
-    assert vlm.generated_text.startswith("先把图像摘要并入上下文")
+    for name in ("gemma-vlm", "qwen3.5-vlm"):
+        vlm = engine.greedy(
+            ScriptedGreedySpec(name, answer),
+            PROMPT,
+            max_new_tokens=96,
+            image_embeds=[("slide-preview", 4)],
+        )
+        assert vlm.model == name
+        assert vlm.prompt_tokens == len(PROMPT)
+        assert vlm.new_tokens == 96
+        assert vlm.generated_text.startswith("先把图像摘要并入上下文")
 
     image = engine.diffuse(ScriptedDiffusionSpec(), PROMPT, steps=6)
     assert image.artifact.endswith("6/6")
