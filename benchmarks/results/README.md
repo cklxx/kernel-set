@@ -79,26 +79,69 @@ source; Markdown files are display artifacts.
 | `sampling` | `decode` | kernel_set | 3 | 4 | 2 | 4 | 96 / 96 |
 | `ssm` | `prefill` | sota | 3 | 1 | 3 | 2 | 0 / 6 |
 
-## Representative Large Kernels
+## Fast Provider Large Kernels
 
-These rows keep the README focused on the model-dominant kernels: attention,
-MLA, GEMM/FP8 GEMM, and MoE routing/dispatch. They may be single-provider
-measurements when no comparable third-party provider was present in that run.
+These rows are provider/default-route comparisons for model-dominant
+kernels: attention, MLA, GEMM, FP8 GEMM, and quantized matmul. Baseline-only
+reference winners such as eager or dequant+torch are excluded from this
+headline table; native fallback gaps are reported separately below.
+
+| model part | position | op | GPU / suite | shape | fastest measured path | next | ratio | source |
+|---|---|---|---|---|---|---|---:|---|
+| `attention` | `prefill` | `attn_prefill` | NVIDIA H20 (sm90, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 335.7 us | `kernel-set` 26172.2 us | 77.96x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention` | `prefill` | `attn_prefill` | NVIDIA L4 (sm89, fp16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 599.0 us | `kernel-set` 51517.0 us | 86.01x | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `attention` | `prefill` | `attention_prefill` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 241.0 us | `kernel-set` 15925.1 us | 66.08x | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `attention` | `prefill` | `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 344.1 us | `kernel-set` 31170.0 us | 90.58x | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `attention` | `decode` | `attn_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` 340.8 us | `kernel-set` 3521.9 us | 10.33x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention` | `decode` | `attn_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` 2283.5 us | `kernel-set` 7792.1 us | 3.41x | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `attention` | `decode` | `mla_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` 303.2 us | `kernel-set` 39288.0 us | 129.58x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `linear` | `prefill` | `gemm` | NVIDIA H20 (sm90, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` 1039.8 us | `torch-compile` 1063.0 us | 1.02x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `linear` | `prefill` | `gemm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` 369.6 us | `torch-compile` 470.3 us | 1.27x | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+| `linear` | `prefill` | `gemm` | NVIDIA L4 (sm89, fp16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` 2647.0 us | `torch-compile` 2928.6 us | 1.11x | [2026-06-05t06-23-21-nvidia-l4-fp16-sota.json](runs/2026-06-05t06-23-21-nvidia-l4-fp16-sota.json) |
+| `linear` | `prefill` | `gemm_bf16` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `M=4096,N=4096,K=4096` | `cublas(a@b)` 518.1 us | `kernel-set` 17328.1 us | 33.45x | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `linear` | `prefill` | `fp8_gemm` | NVIDIA H20 (sm90, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-scaled-mm` 536.7 us | `deepgemm` 540.4 us | 1.01x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+
+## Native Fallback Diagnostics
+
+These are optimization targets, not performance claims. They show cases
+where the portable kernel-set fallback is slower than the best measured
+provider or reference path for the same shape.
+
+| op | GPU / suite | shape | best measured path | kernel-set fallback | gap | source |
+|---|---|---|---|---|---:|---|
+| `mla_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` 303.2 us | `kernel-set` 39288.0 us | 129.58x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 344.1 us | `kernel-set` 31170.0 us | 90.58x | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `attn_prefill` | NVIDIA L4 (sm89, fp16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 599.0 us | `kernel-set` 51517.0 us | 86.01x | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
+| `fp8_gemm_blockwise` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `M=8192,N=8192,K=8192,bn=128,bk=128` | `dequant+torch-matmul` 8345.6 us | `kernel-set` 681562.6 us | 81.67x | [20260618-a100-quant-w4a8-fp8-nvidia-a100-sxm4-40gb-bf16.json](runs/20260618-a100-quant-w4a8-fp8-nvidia-a100-sxm4-40gb-bf16.json) |
+| `attn_prefill` | NVIDIA H20 (sm90, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 335.7 us | `kernel-set` 26172.2 us | 77.96x | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `attention_prefill` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 243.6 us | `kernel-set` 16269.5 us | 66.79x | [20260616-pro6000-full-kernel-set-rmsnorm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-rmsnorm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
+| `gemm_bf16` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `M=4096,N=14336,K=4096` | `cublas(a@b)` 1797.1 us | `kernel-set` 67500.5 us | 37.56x | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `w4a16` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `M=8192,N=8192,K=8192,g=128` | `dequant+torch-matmul` 8707.1 us | `kernel-set` 218318.3 us | 25.07x | [20260618-a100-quant-w4a8-fp8-nvidia-a100-sxm4-40gb-bf16.json](runs/20260618-a100-quant-w4a8-fp8-nvidia-a100-sxm4-40gb-bf16.json) |
+| `gemm_bf16` | NVIDIA H20 (sm90, bf16, kernel_set) | `M=4096,N=14336,K=4096` | `cublas(a@b)` 3388.2 us | `kernel-set` 80495.2 us | 23.76x | [2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json](runs/2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json) |
+| `gemm_bf16` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `M=2048,N=4096,K=14336` | `cublas(a@b)` 647.2 us | `kernel-set` 11795.8 us | 18.23x | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `gemm_fp16` | NVIDIA L4 (sm89, fp16, kernel_set) | `M=4096,N=14336,K=4096` | `cublas(a@b)` 7678.5 us | `kernel-set` 123286.0 us | 16.06x | [20260616t133654z-colab-kernel-set-gemm-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-gemm-plus-4-nvidia-l4-fp16.json) |
+| `fp8_gemm_blockwise` | NVIDIA L4 (sm89, fp16, kernel_set) | `M=8192,N=8192,K=8192,bn=128,bk=128` | `dequant+torch-matmul` 43433.0 us | `kernel-set` 636060.7 us | 14.64x | [20260618-l4-full-kernel-set-kernel-set-w4a8-plus-3-nvidia-l4-fp16.json](runs/20260618-l4-full-kernel-set-kernel-set-w4a8-plus-3-nvidia-l4-fp16.json) |
+
+## Large-Kernel Coverage Rows
+
+Single-provider rows for large kernels that do not yet have a comparable
+provider run in the checked-in data. Use them for coverage, not provider
+ranking.
 
 | part | op | GPU / suite | shape | impl | latency | source |
 |---|---|---|---|---|---:|---|
-| `attention` | `attn_prefill` | NVIDIA H20 (sm90, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 335.7 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
-| `attention` | `attn_prefill` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 15245.7 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
-| `attention` | `attn_prefill` | NVIDIA L4 (sm89, fp16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 599.0 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
-| `attention` | `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=4,seq=1024,qh=32,kvh=8,hd=128` | `kernel-set` | 30766.6 us | [20260618-a100-full-kernel-set-kernel-set-attention-plus-3-nvidia-a100-sxm4-40gb-bf16.json](runs/20260618-a100-full-kernel-set-kernel-set-attention-plus-3-nvidia-a100-sxm4-40gb-bf16.json) |
-| `attention` | `attn_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 340.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
-| `attention` | `attn_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 2283.5 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
-| `attention` | `attention_decode` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 1780.7 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
-| `attention` | `attention_decode` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 4446.2 us | [20260618-a100-full-kernel-set-kernel-set-attention-plus-3-nvidia-a100-sxm4-40gb-bf16.json](runs/20260618-a100-full-kernel-set-kernel-set-attention-plus-3-nvidia-a100-sxm4-40gb-bf16.json) |
-| `attention` | `mla_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
-| `attention` | `mla_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `kernel-set` | 78373.4 us | [20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json](runs/20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json) |
-| `linear` | `gemm` | NVIDIA H20 (sm90, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
-| `linear` | `gemm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 369.6 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
+| `linear` | `w8a8` | NVIDIA H20 (sm90, bf16, kernel_set) | `M=4096,N=4096,K=4096` | `kernel-set` | 10002.8 us | [2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json](runs/2026-06-06t06-32-10-nvidia-h20-bf16-kernel_set.json) |
+| `linear` | `w8a8` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `M=4096,N=4096,K=4096` | `kernel-set` | 5718.0 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `linear` | `w8a8` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `M=4096,N=4096,K=4096` | `kernel-set` | 10340.4 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `linear` | `w8a8` | NVIDIA L4 (sm89, fp16, kernel_set) | `M=4096,N=4096,K=4096` | `kernel-set` | 24137.7 us | [20260618-l4-full-kernel-set-kernel-set-attention-plus-3-nvidia-l4-fp16.json](runs/20260618-l4-full-kernel-set-kernel-set-attention-plus-3-nvidia-l4-fp16.json) |
+| `moe` | `moe_grouped_gemm` | NVIDIA H20 (sm90, bf16, sota) | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `kernel-set` | 247502.2 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `moe` | `moe_grouped_gemm` | NVIDIA L4 (sm89, fp16, sota) | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `kernel-set` | 890830.3 us | [2026-06-05t06-23-21-nvidia-l4-fp16-sota.json](runs/2026-06-05t06-23-21-nvidia-l4-fp16-sota.json) |
+| `moe` | `moe_grouped_gemm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `tokens=2048,h=2048,E=64,k=6` | `kernel-set` | 11183.7 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `moe` | `moe_grouped_gemm` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `tokens=2048,h=2048,E=64,k=6` | `kernel-set` | 18913.8 us | [20260618-a100-full-kernel-set-kernel-set-w4a8-plus-3-nvidia-a100-sxm4-40gb-bf16.json](runs/20260618-a100-full-kernel-set-kernel-set-w4a8-plus-3-nvidia-a100-sxm4-40gb-bf16.json) |
+| `moe` | `moe_gate` | NVIDIA H20 (sm90, bf16, sota) | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `sgl-moe-gate` | 8.2 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
+| `moe` | `moe_gate` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `tokens=4096,E=8,k=2` | `kernel-set` | 10.4 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
+| `moe` | `moe_gate` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `tokens=4096,E=8,k=2` | `kernel-set` | 16.4 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `moe` | `moe_gate` | NVIDIA L4 (sm89, fp16, kernel_set) | `tokens=4096,E=8,k=2` | `kernel-set` | 20.5 us | [20260616t133654z-colab-kernel-set-gemm-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-gemm-plus-4-nvidia-l4-fp16.json) |
 
 ## Representative Memory-Bound Kernels
 
@@ -149,7 +192,7 @@ measurements when no comparable third-party provider was present in that run.
 ## Inference Engine Smoke
 
 Single-prompt decode smoke runs are integration checks, not apples-to-apples
-engine throughput benchmarks. They verify tokenizer/output parity for the
+engine throughput benchmarks. They record tokenizer/output match status for the
 composed engine paths. HF/Transformers rows may exist in JSON as correctness
 references, but README performance rows compare against serving engines.
 Rows with kernel coverage are integration rows, not serving-system benchmarks:

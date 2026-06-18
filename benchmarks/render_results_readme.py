@@ -52,6 +52,14 @@ def _is_kernel_set_impl(impl: Any) -> bool:
     return text == "kernel-set" or text.startswith("kernel-set-")
 
 
+def _is_reference_only_impl(impl: Any) -> bool:
+    text = str(impl or "").strip().lower().replace("_", "-")
+    return (
+        text in {"eager", "eager(.to)", "dequant+torch-matmul"}
+        or text.startswith("dequant+torch")
+    )
+
+
 def _ordered_inference_engine_items(
     engines: Dict[str, Any],
     order: Sequence[str],
@@ -411,6 +419,143 @@ def _render_representative_row_table(
             f"| `{row.get('shape')}` | `{row.get('impl')}` | "
             f"{_fmt_latency(row.get('latency_us'))} | "
             f"{_source_link(row.get('_run_json'), base_dir)} |"
+        )
+    return lines
+
+
+def _fast_large_comparisons(
+    comparisons: List[Dict[str, Any]],
+    limit: int = 12,
+    unique_by: str = "op_gpu_shape",
+) -> List[Dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in comparisons
+        if _is_large_kernel(row.get("op"))
+        and not _is_reference_only_impl(row.get("winner"))
+    ]
+
+    def priority(row: Dict[str, Any]) -> Tuple[Any, ...]:
+        op = str(row.get("op"))
+        canon = _canonical_large_op(op)
+        return (
+            _LARGE_KERNEL_PRIORITY.get(canon, _LARGE_KERNEL_PRIORITY.get(op, 100)),
+            0 if row.get("suite") == "sota" else 1,
+            0 if not _is_kernel_set_impl(row.get("winner")) else 1,
+            _gpu_rank(row.get("gpu")),
+            float(row.get("winner_latency_us") or math.inf),
+            -float(row.get("winner_vs_next") or 0.0),
+            str(row.get("shape") or ""),
+        )
+
+    rows.sort(key=priority)
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        canon = _canonical_large_op(row.get("op"))
+        if unique_by == "op":
+            key = canon
+        elif unique_by == "op_gpu":
+            key = (canon, row.get("gpu"))
+        else:
+            key = (canon, row.get("gpu"), row.get("shape"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _native_fallback_gaps(
+    comparisons: List[Dict[str, Any]],
+    limit: int = 16,
+) -> List[Dict[str, Any]]:
+    rows = [
+        dict(row)
+        for row in comparisons
+        if _is_large_kernel(row.get("op"))
+        and _is_kernel_set_impl(row.get("runner_up"))
+        and not _is_kernel_set_impl(row.get("winner"))
+    ]
+    rows.sort(key=lambda r: (
+        -float(r.get("winner_vs_next") or 0.0),
+        _LARGE_KERNEL_PRIORITY.get(
+            _canonical_large_op(r.get("op")),
+            _LARGE_KERNEL_PRIORITY.get(str(r.get("op")), 100),
+        ),
+        _gpu_rank(r.get("gpu")),
+        str(r.get("shape") or ""),
+    ))
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        key = (_canonical_large_op(row.get("op")), row.get("gpu"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _coverage_only_large_rows(
+    runs: List[Dict[str, Any]],
+    comparisons: List[Dict[str, Any]],
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    compared = {_canonical_large_op(row.get("op")) for row in comparisons}
+    rows = [
+        row
+        for row in _representative_rows(
+            runs, _is_large_kernel, limit=max(limit * 8, 64), unique_by="op_gpu"
+        )
+        if _canonical_large_op(row.get("op")) not in compared
+    ]
+    return rows[:limit]
+
+
+def _render_fast_large_table(
+    rows: List[Dict[str, Any]],
+    limit: int = 12,
+    base_dir: Optional[str] = None,
+) -> List[str]:
+    lines = [
+        "| model part | position | op | GPU / suite | shape | fastest measured path | next | ratio | source |",
+        "|---|---|---|---|---|---|---|---:|---|",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            f"| `{row.get('model_part')}` | `{row.get('position_kind_row')}` "
+            f"| `{row.get('op')}` | {row.get('gpu')} (sm{row.get('sm')}, "
+            f"{row.get('dtype')}, {row.get('suite')}) | `{row.get('shape')}` | "
+            f"`{row.get('winner')}` {_fmt_latency(row.get('winner_latency_us'))} | "
+            f"`{row.get('runner_up')}` {_fmt_latency(row.get('runner_up_latency_us'))} | "
+            f"{float(row.get('winner_vs_next') or 0.0):.2f}x | "
+            f"{_source_link(row.get('run_json'), base_dir)} |"
+        )
+    return lines
+
+
+def _render_fallback_gap_table(
+    rows: List[Dict[str, Any]],
+    limit: int = 12,
+    base_dir: Optional[str] = None,
+) -> List[str]:
+    lines = [
+        "| op | GPU / suite | shape | best measured path | kernel-set fallback | gap | source |",
+        "|---|---|---|---|---|---:|---|",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            f"| `{row.get('op')}` | {row.get('gpu')} (sm{row.get('sm')}, "
+            f"{row.get('dtype')}, {row.get('suite')}) | `{row.get('shape')}` | "
+            f"`{row.get('winner')}` {_fmt_latency(row.get('winner_latency_us'))} | "
+            f"`{row.get('runner_up')}` {_fmt_latency(row.get('runner_up_latency_us'))} | "
+            f"{float(row.get('winner_vs_next') or 0.0):.2f}x | "
+            f"{_source_link(row.get('run_json'), base_dir)} |"
         )
     return lines
 
@@ -917,7 +1062,11 @@ def render_results_readme(
     base_dir = os.path.dirname(os.path.abspath(output_path))
     gpus = sorted({f"{r.get('gpu_name')} (sm{r.get('gpu_sm')})" for r in runs})
     suites = Counter(str(r.get("suite")) for r in runs)
-    large_rows = _representative_rows(runs, _is_large_kernel, limit=24)
+    fast_large_rows = _fast_large_comparisons(
+        comparisons, limit=16, unique_by="op_gpu"
+    )
+    fallback_gap_rows = _native_fallback_gaps(comparisons, limit=16)
+    coverage_large_rows = _coverage_only_large_rows(runs, comparisons, limit=12)
     memory_rows = _representative_rows(runs, _is_memory_kernel, limit=12)
     lines: List[str] = []
     lines.append("# kernel-set benchmark results")
@@ -939,16 +1088,41 @@ def render_results_readme(
     lines.append("")
     lines.extend(_render_coverage_table(runs))
     lines.append("")
-    lines.append("## Representative Large Kernels")
+    lines.append("## Fast Provider Large Kernels")
     lines.append("")
-    lines.append("These rows keep the README focused on the model-dominant kernels: attention,")
-    lines.append("MLA, GEMM/FP8 GEMM, and MoE routing/dispatch. They may be single-provider")
-    lines.append("measurements when no comparable third-party provider was present in that run.")
+    lines.append("These rows are provider/default-route comparisons for model-dominant")
+    lines.append("kernels: attention, MLA, GEMM, FP8 GEMM, and quantized matmul. Baseline-only")
+    lines.append("reference winners such as eager or dequant+torch are excluded from this")
+    lines.append("headline table; native fallback gaps are reported separately below.")
     lines.append("")
-    if large_rows:
-        lines.extend(_render_representative_row_table(large_rows, base_dir=base_dir))
+    if fast_large_rows:
+        lines.extend(_render_fast_large_table(
+            fast_large_rows, limit=16, base_dir=base_dir))
     else:
-        lines.append("No large-kernel rows found yet.")
+        lines.append("No large-kernel provider comparisons found yet.")
+    lines.append("")
+    lines.append("## Native Fallback Diagnostics")
+    lines.append("")
+    lines.append("These are optimization targets, not performance claims. They show cases")
+    lines.append("where the portable kernel-set fallback is slower than the best measured")
+    lines.append("provider or reference path for the same shape.")
+    lines.append("")
+    if fallback_gap_rows:
+        lines.extend(_render_fallback_gap_table(fallback_gap_rows, base_dir=base_dir))
+    else:
+        lines.append("No native fallback gaps found yet.")
+    lines.append("")
+    lines.append("## Large-Kernel Coverage Rows")
+    lines.append("")
+    lines.append("Single-provider rows for large kernels that do not yet have a comparable")
+    lines.append("provider run in the checked-in data. Use them for coverage, not provider")
+    lines.append("ranking.")
+    lines.append("")
+    if coverage_large_rows:
+        lines.extend(_render_representative_row_table(
+            coverage_large_rows, base_dir=base_dir))
+    else:
+        lines.append("No coverage-only large-kernel rows found yet.")
     lines.append("")
     lines.append("## Representative Memory-Bound Kernels")
     lines.append("")
@@ -967,7 +1141,7 @@ def render_results_readme(
     lines.append("## Inference Engine Smoke")
     lines.append("")
     lines.append("Single-prompt decode smoke runs are integration checks, not apples-to-apples")
-    lines.append("engine throughput benchmarks. They verify tokenizer/output parity for the")
+    lines.append("engine throughput benchmarks. They record tokenizer/output match status for the")
     lines.append("composed engine paths. HF/Transformers rows may exist in JSON as correctness")
     lines.append("references, but README performance rows compare against serving engines.")
     lines.append("Rows with kernel coverage are integration rows, not serving-system benchmarks:")
@@ -996,7 +1170,10 @@ def render_root_summary(
     inference_runs: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     comparisons = _best_comparisons(runs)
-    large_rows = _representative_rows(runs, _is_large_kernel, limit=8, unique_by="op")
+    fast_large_rows = _fast_large_comparisons(
+        comparisons, limit=10, unique_by="op_gpu"
+    )
+    fallback_gap_rows = _native_fallback_gaps(comparisons, limit=4)
     memory_comparisons = [r for r in comparisons if _is_memory_kernel(r.get("op"))]
     gpus = sorted({f"{r.get('gpu_name')} sm{r.get('gpu_sm')}" for r in runs})
     ok = sum(_status_counts(r.get("rows") or []).get("ok", 0) for r in runs)
@@ -1017,20 +1194,36 @@ def render_root_summary(
         "Rows are scoped by their suite: `sota` rows compare installed "
         "production providers; `kernel_set` rows are diagnostic "
         "kernel-set/reference runs and are not promoted to default routing by "
-        "themselves."
+        "themselves. The production claim is the fastest measured "
+        "provider/default-route path; native fallback gaps stay visible as "
+        "optimization targets in the detailed results."
     )
-    if large_rows:
+    if fast_large_rows:
         lines.append("")
-        lines.append("Representative large-kernel rows:")
+        lines.append("Fast provider/default-route large kernels:")
         lines.append("")
-        lines.append("| GPU | op | shape | measured impl | latency |")
-        lines.append("|---|---|---|---|---:|")
-        for row in large_rows:
+        lines.append("| GPU | op | shape | fastest measured path | next | ratio |")
+        lines.append("|---|---|---|---|---|---:|")
+        for row in fast_large_rows:
             lines.append(
-                f"| {row.get('_gpu')} sm{row.get('_sm')} | `{row.get('op')}` | "
-                f"`{row.get('shape')}` | `{row.get('impl')}` | "
-                f"{_fmt_latency(row.get('latency_us'))} |"
+                f"| {row.get('gpu')} sm{row.get('sm')} | `{row.get('op')}` | "
+                f"`{row.get('shape')}` | "
+                f"`{row.get('winner')}` {_fmt_latency(row.get('winner_latency_us'))} | "
+                f"`{row.get('runner_up')}` {_fmt_latency(row.get('runner_up_latency_us'))} | "
+                f"{float(row.get('winner_vs_next') or 0.0):.2f}x |"
             )
+    if fallback_gap_rows:
+        lines.append("")
+        lines.append(
+            "Native fallback diagnostics are listed in the detailed results; "
+            "the largest checked-in gaps are "
+            + ", ".join(
+                f"`{row.get('op')}` on {row.get('gpu')} "
+                f"({float(row.get('winner_vs_next') or 0.0):.2f}x)"
+                for row in fallback_gap_rows[:3]
+            )
+            + "."
+        )
     if memory_comparisons:
         lines.append("")
         lines.append("Memory-bound provider highlights:")
@@ -1049,7 +1242,7 @@ def render_root_summary(
         lines.append("Engine smoke:")
         lines.append("")
         lines.append(
-            "Kernel-coverage rows prove call-path coverage and token parity; "
+            "Kernel-coverage rows record call-path coverage and token-match status; "
             "checked-in kernel benchmark tables provide provider-selection evidence."
         )
         lines.append("")

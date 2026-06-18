@@ -74,20 +74,24 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 
 Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **40 runs**, **1449/1614 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
-Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
+Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves. The production claim is the fastest measured provider/default-route path; native fallback gaps stay visible as optimization targets in the detailed results.
 
-Representative large-kernel rows:
+Fast provider/default-route large kernels:
 
-| GPU | op | shape | measured impl | latency |
-|---|---|---|---|---:|
-| NVIDIA H20 sm90 | `attn_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 335.7 us |
-| NVIDIA H20 sm90 | `attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 340.8 us |
-| NVIDIA H20 sm90 | `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us |
-| NVIDIA H20 sm90 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us |
-| NVIDIA H20 sm90 | `fp8_gemm` | `M=4096,N=4096,K=4096` | `torch-scaled-mm` | 536.7 us |
-| NVIDIA A100-SXM4-40GB sm80 | `fp8_gemm_blockwise` | `M=4096,N=4096,K=4096,bn=128,bk=128` | `kernel-set` | 79413.8 us |
-| NVIDIA H20 sm90 | `w8a8` | `M=4096,N=4096,K=4096` | `kernel-set` | 10002.8 us |
-| NVIDIA H20 sm90 | `w4a16` | `M=4096,N=4096,K=4096` | `kernel-set` | 19182.0 us |
+| GPU | op | shape | fastest measured path | next | ratio |
+|---|---|---|---|---|---:|
+| NVIDIA H20 sm90 | `attn_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 335.7 us | `kernel-set` 26172.2 us | 77.96x |
+| NVIDIA L4 sm89 | `attn_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` 599.0 us | `kernel-set` 51517.0 us | 86.01x |
+| NVIDIA RTX PRO 6000 Blackwell Server Edition sm120 | `attention_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 241.0 us | `kernel-set` 15925.1 us | 66.08x |
+| NVIDIA A100-SXM4-40GB sm80 | `attention_prefill` | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` 344.1 us | `kernel-set` 31170.0 us | 90.58x |
+| NVIDIA H20 sm90 | `attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` 340.8 us | `kernel-set` 3521.9 us | 10.33x |
+| NVIDIA L4 sm89 | `attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` 2283.5 us | `kernel-set` 7792.1 us | 3.41x |
+| NVIDIA H20 sm90 | `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` 303.2 us | `kernel-set` 39288.0 us | 129.58x |
+| NVIDIA H20 sm90 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` 1039.8 us | `torch-compile` 1063.0 us | 1.02x |
+| NVIDIA RTX PRO 6000 Blackwell Server Edition sm120 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` 369.6 us | `torch-compile` 470.3 us | 1.27x |
+| NVIDIA L4 sm89 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` 2647.0 us | `torch-compile` 2928.6 us | 1.11x |
+
+Native fallback diagnostics are listed in the detailed results; the largest checked-in gaps are `mla_decode` on NVIDIA H20 (129.58x), `attention_prefill` on NVIDIA A100-SXM4-40GB (90.58x), `attn_prefill` on NVIDIA L4 (86.01x).
 
 Memory-bound provider highlights:
 
@@ -102,7 +106,7 @@ Memory-bound provider highlights:
 
 Engine smoke:
 
-Kernel-coverage rows prove call-path coverage and token parity; checked-in kernel benchmark tables provide provider-selection evidence.
+Kernel-coverage rows record call-path coverage and token-match status; checked-in kernel benchmark tables provide provider-selection evidence.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
