@@ -106,7 +106,6 @@ Kernel-coverage rows prove call-path coverage and token parity; checked-in kerne
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 15.20 | yes | reference; historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](benchmarks/results/inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 16.24 | yes | historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](benchmarks/results/inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `sglang` | SGLang Engine.generate | 16.40 | no (104/197) | Colab L4 SGLang Engine.generate; greedy output diverged from HF reference after prompt + 3 generated tokens | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](benchmarks/results/inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_engine` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention | 15.65 | no (136/197) | shape-aware kernel-set engine composition from Qwen3 kernel microbench; Python loop/allocation and unfused Q/K/V + gate/up remain; historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](benchmarks/results/inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
@@ -117,16 +116,9 @@ Kernel coverage for the composed kernel-set engine:
 |---|---|---|---|
 | `kernel_set_engine` | `ks_embedding_lookup(auto multi-token)`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_paged_attn_decode(auto short-context)`<br>`ks_reshape_and_cache`<br>`ks_swiglu` | embedding single-token=torch<br>linear=torch/cuBLAS<br>attention prefill/long-context=torch SDPA<br>argmax=torch<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `embedding_lookup`=1<br>`paged_attn_decode`=3420<br>`reshape_and_cache`=3456<br>`rmsnorm`=13920<br>`rope`=3456<br>`swiglu`=3456<br>`torch_argmax`=96<br>`torch_attention_prefill`=36<br>`torch_embedding`=95<br>`torch_linear`=24288 |
 
-Quantized checkpoint engine smoke:
+Quantized serving-engine comparison:
 
-| model / GPU | quant mode | engine | selected mode | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |
-|---|---|---|---|---:|---:|---:|---|---:|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bf16` | `kernel_set_engine` | `torch_nonlinear_cache_ks` | 15.19 | 15.05 | 0.99x | yes | 15.34 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_int8` | `kernel_set_engine` | `torch_exact_fallback` | 5.12 | 5.04 | 0.98x | yes | 8.98 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | `torch_swiglu` | 10.87 | 14.18 | 1.30x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_fp4` | `kernel_set_engine` | `torch_nonlinear_cache_ks` | 10.88 | 10.23 | 0.94x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](benchmarks/results/inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
-
-Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.
+No vLLM/SGLang quantized serving baseline is checked in yet. HF/Transformers rows in JSON are correctness references only, not README performance baselines.
 
 <!-- BENCHMARK_SUMMARY:END -->
 

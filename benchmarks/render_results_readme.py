@@ -597,7 +597,6 @@ def _render_inference_table(
     ]
     engines = run.get("engines") or {}
     order = [
-        "transformers",
         "vllm",
         "sglang",
         "tensorrt_llm",
@@ -640,18 +639,20 @@ def _render_quantized_engine_table(
     if not run:
         return []
     lines = [
-        "Quantized checkpoint engine smoke:",
+        "Quantized serving-engine comparison:",
         "",
-        "| model / GPU | quant mode | engine | selected mode | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |",
-        "|---|---|---|---|---:|---:|---:|---|---:|---|",
+        "| model / GPU | quant mode | engine | selected mode | vLLM tok/s | SGLang tok/s | engine tok/s | engine / vLLM | engine / SGLang | token match | peak GB | source |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---|",
     ]
     for mode, variant in (run.get("variants") or {}).items():
         if not isinstance(variant, dict) or variant.get("status") != "ok":
             continue
         engines = variant.get("engines") or {}
-        hf = engines.get("transformers") or {}
-        hf_tps = hf.get("tokens_per_s_new")
-        if hf_tps is None:
+        vllm = engines.get("vllm") or {}
+        sglang = engines.get("sglang") or {}
+        vllm_tps = vllm.get("tokens_per_s_new")
+        sglang_tps = sglang.get("tokens_per_s_new")
+        if vllm_tps is None and sglang_tps is None:
             continue
         display_engines = [KERNEL_SET_ENGINE, LEGACY_KERNEL_SET_ENGINE]
         seen_display = set()
@@ -668,8 +669,21 @@ def _render_quantized_engine_table(
             if engine_tps is None:
                 continue
             seen_display.add(display_name)
-            ratio = float(engine_tps) / float(hf_tps) if float(hf_tps) else None
-            peak = engine.get("peak_memory_gb") or hf.get("peak_memory_gb")
+            ratio_vllm = (
+                float(engine_tps) / float(vllm_tps)
+                if vllm_tps is not None and float(vllm_tps)
+                else None
+            )
+            ratio_sglang = (
+                float(engine_tps) / float(sglang_tps)
+                if sglang_tps is not None and float(sglang_tps)
+                else None
+            )
+            peak = (
+                engine.get("peak_memory_gb")
+                or vllm.get("peak_memory_gb")
+                or sglang.get("peak_memory_gb")
+            )
             selected = str(
                 engine.get("selected_candidate")
                 or engine.get("candidate_name")
@@ -678,17 +692,24 @@ def _render_quantized_engine_table(
             lines.append(
                 f"| {run.get('model')} / {run.get('gpu_name')} "
                 f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
-                f"`{display_name}` | `{selected}` | {_fmt_num(hf_tps, 2)} | "
-                f"{_fmt_num(engine_tps, 2)} | {_fmt_num(ratio, 2)}x | "
+                f"`{display_name}` | `{selected}` | {_fmt_num(vllm_tps, 2)} | "
+                f"{_fmt_num(sglang_tps, 2)} | {_fmt_num(engine_tps, 2)} | "
+                f"{_fmt_num(ratio_vllm, 2)}x | {_fmt_num(ratio_sglang, 2)}x | "
                 f"{_engine_exact(engine)} | {_fmt_num(peak, 2)} | "
                 f"{_source_link(run.get('_path'), base_dir)} |"
             )
-    if len(lines) == 3:
-        return []
+    if len(lines) == 4:
+        return [
+            "Quantized serving-engine comparison:",
+            "",
+            "No vLLM/SGLang quantized serving baseline is checked in yet. "
+            "HF/Transformers rows in JSON are correctness references only, "
+            "not README performance baselines.",
+        ]
     lines.extend(
         [
             "",
-            "Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.",
+            "Rows compare against vLLM/SGLang serving baselines. HF/Transformers rows, when present in JSON, are correctness references only. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.",
         ]
     )
     return lines
@@ -936,7 +957,8 @@ def render_results_readme(
     lines.append("")
     lines.append("Single-prompt decode smoke runs are integration checks, not apples-to-apples")
     lines.append("engine throughput benchmarks. They verify tokenizer/output parity for the")
-    lines.append("composed engine paths.")
+    lines.append("composed engine paths. HF/Transformers rows may exist in JSON as correctness")
+    lines.append("references, but README performance rows compare against serving engines.")
     lines.append("Rows with kernel coverage are integration rows, not serving-system benchmarks:")
     lines.append("`kernel_set_engine` keeps dense linears on torch/cuBLAS and uses")
     lines.append("shape-aware provider selection for the measured Qwen3 shapes.")
