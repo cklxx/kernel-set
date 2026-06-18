@@ -233,7 +233,7 @@ def _run_kernel_set_engine(
 
 
 def _quant_engine_modes(args):
-    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES
+    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES, TORCH_MANUAL_MODES
 
     variants: Dict[str, Dict[str, str]] = {
         "kernel_set_best_practice": dict(BEST_PRACTICE_MODES)
@@ -242,6 +242,8 @@ def _quant_engine_modes(args):
         modes = dict(BEST_PRACTICE_MODES)
         modes["attention"] = "torch"
         variants["kernel_set_torch_attention"] = modes
+    if args.run_manual_torch_engine:
+        variants["manual_torch_ops"] = dict(TORCH_MANUAL_MODES)
     return variants
 
 
@@ -318,6 +320,7 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
         ref = item["engines"]["transformers"]["tokens"]
         for engine_name, modes in _quant_engine_modes(args).items():
             attention = modes.get("attention")
+            all_torch = all(value == "torch" for value in modes.values())
             item["engines"][engine_name] = _run_kernel_set_engine(
                 model,
                 tokenizer,
@@ -328,7 +331,12 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                 modes,
                 scope=(
                     "generic causal-LM Python engine; quantized/dense linears stay "
-                    "on model modules, ks covers norm/RoPE/KV write/SwiGLU"
+                    "on model modules"
+                    + (
+                        "; torch ops for exactness/control"
+                        if all_torch
+                        else ", ks covers norm/RoPE/KV write/SwiGLU"
+                    )
                     + (
                         "/short decode"
                         if attention == "auto"
@@ -336,9 +344,13 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                     )
                 ),
                 note=(
-                    "best-practice provider selection, not serving runtime"
-                    if attention == "auto"
-                    else "exactness check: torch attention, ks non-attention kernels"
+                    "manual torch-op control path, not serving runtime"
+                    if all_torch
+                    else (
+                        "best-practice provider selection, not serving runtime"
+                        if attention == "auto"
+                        else "exactness check: torch attention, ks non-attention kernels"
+                    )
                 ),
             )
             item["engines"][engine_name].update(
@@ -428,6 +440,8 @@ def main() -> int:
     parser.add_argument("--ks-repeat", type=int, default=1)
     parser.add_argument("--run-torch-attention-engine", action="store_true", default=True)
     parser.add_argument("--skip-torch-attention-engine", dest="run_torch_attention_engine", action="store_false")
+    parser.add_argument("--run-manual-torch-engine", action="store_true", default=True)
+    parser.add_argument("--skip-manual-torch-engine", dest="run_manual_torch_engine", action="store_false")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output", default="/content/quantized_engine_compare.json")
     args = parser.parse_args()

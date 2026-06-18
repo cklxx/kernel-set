@@ -617,7 +617,12 @@ def _render_quantized_engine_table(
         hf_tps = hf.get("tokens_per_s_new")
         if hf_tps is None:
             continue
-        for engine_name in sorted(k for k in engines if k.startswith("kernel_set_")):
+        display_engines = sorted(
+            k
+            for k in engines
+            if k.startswith("kernel_set_") or k == "manual_torch_ops"
+        )
+        for engine_name in display_engines:
             engine = engines.get(engine_name) or {}
             if engine.get("exact_same_as_reference") is not True:
                 continue
