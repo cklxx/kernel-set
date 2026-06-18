@@ -49,7 +49,7 @@ why they sit terminal in every chain.
 
 ## 1. What kernel-set implements (the `kernel_set_abi` surface)
 
-Eight quant ops are real CUDA kernels in `kernels/src/quant/` and
+The quant CUDA surface below is implemented in `kernels/src/quant/` and
 `kernels/src/gemm/`. Status legend: **GPU-verified** = correctness-gated against
 a torch reference on real silicon; **correctness-only** = numerically verified
 but not perf-competitive; **throughput-only** = runs and benched but *not*
@@ -57,12 +57,12 @@ correctness-gated; **pending** = just-added, header-declared, awaiting GPU verif
 
 | ABI symbol | File | What it does | Layout / modes | Status |
 | --- | --- | --- | --- | --- |
-| `ks_quantize_fp8` / `ks_dequantize_fp8` | `quant/quant_fp8.cu` | fp8 e4m3/e5m2 ↔ f16/bf16/f32 | per-tensor / per-token; fp32 scale | **GPU-verified** sm89+ (round-trip rel-L2 ~2.65e-2; dequant 0.0 on L4 + Blackwell). `ARCH_UNSUPPORTED` on sm80 (no FP8 HW) |
+| `ks_quantize_fp8` / `ks_dequantize_fp8` | `quant/quant_fp8.cu` | fp8 e4m3/e5m2 ↔ f16/bf16/f32 | per-tensor / per-token; fp32 scale | **GPU-verified** sm89+ (round-trip rel-L2 ~2.65e-2; dequant 0.0 on L4 + Blackwell). Quant/dequant uses cuda_fp8 software conversion on sm80; tensor-core fp8 GEMM is still provider/hardware-gated |
 | `ks_quantize_int8` / `ks_dequantize_int8` | `quant/quant_int8.cu` | int8 symmetric ↔ f16/bf16/f32 | per-tensor / per-token; `scale=amax/127` | **GPU-verified** (round-trip rel-L2 ~8.6e-3; dequant 0.0) |
 | `ks_dequantize_int4` | `quant/dequant_int4.cu` | int4 packed AWQ/GPTQ affine → out dtype | group-wise along K; scales/zeros `[K/group, N]`. **Packing: int32 words, 8 nibbles packed along K** (`[K/8, N]`, `q = (word >> 4j) & 0xF`) | **GPU-verified** (rel_err 0 vs exact unpack ref) |
 | `ks_gemm_w8a8` | `gemm/gemm_w8a8.cu` | int8 × int8 → out dtype | dp4a int32 accum; A per-token, B per-channel | **GPU-verified** (rel_err 0) but **~2 % peak** |
 | `ks_gemm_fp8` | `gemm/gemm_fp8.cu` | fp8 × fp8 → out dtype, SIMT software-dequant, fp32 accum, runs **sm80+** | per-tensor / per-token / per-channel; **no blockwise mode** | **Correctness-only** (rel_err 0.00246 on L4, 5.6 TFLOP/s ≈ 2 % peak). HW fp8-MMA path inert behind `KS_ENABLE_FP8_MMA` |
-| `ks_gemm_w4a16` | `gemm/gemm_w4a16.cu` | int4 weights × f16/bf16, group-wise | **Packing: two int4/byte** (even-K low nibble, odd-K high) — **DIFFERENT** from `ks_dequantize_int4` and from on-disk AWQ/GPTQ | **Throughput-only** — *not correctness-verified on any GPU* |
+| `ks_gemm_w4a16` | `gemm/gemm_w4a16.cu` | int4 weights × f16/bf16, group-wise | **Packing: two int4/byte** (even-K low nibble, odd-K high) — **DIFFERENT** from `ks_dequantize_int4` and from on-disk AWQ/GPTQ | **Correctness-gated in bench** against exact K-packed int4 dequant + torch matmul; portable fallback, not the production-fast path |
 | `ks_gemm_fp8_blockwise` | `gemm/gemm_fp8_blockwise.cu` | DeepSeek-V3 blockwise fp8: 128×128 weight block / 1×128 act tile, fp32 two-level accumulation, sm80+ software dequant | `a_scale [M, ⌈K/block_k⌉]`, `b_scale [⌈K/block_k⌉, ⌈N/block_n⌉]` | **NEW / GPU-verified L4** (max rel_err 3.7e-2, incl. ragged shapes) |
 | `ks_quantize_fp8_group` | `quant/quant_fp8_group.cu` | 1×group dynamic fp8 quant (per-token-group activation format the blockwise GEMM consumes) | `scale [rows, ⌈cols/group_size⌉]`, group_size typ. 128 | **NEW / GPU-verified L4** (round-trip rel_err 3.1e-2) |
 
@@ -86,7 +86,7 @@ correctness-gated; **pending** = just-added, header-declared, awaiting GPU verif
 
 ### Wired logical ops (Tier-2 dispatch)
 
-Exactly three quant logical ops are wired into the runtime dispatcher today
+The quant logical ops below are wired into the runtime dispatcher
 (`backends/_registry.py`, `gemm-quant` domain). Each routes to the industry-best
 provider for the `(sm, dtype)` cell and falls back to kernel-set:
 
@@ -95,7 +95,7 @@ provider for the `(sm, dtype)` cell and falls back to kernel-set:
 | `fp8_gemm` | — *(no FP8 HW on Ampere)* | vLLM-CUTLASS / torch `_scaled_mm` / FBGEMM | deep_gemm (blockwise) | deep_gemm (blockwise) | `ks_gemm_w8a8`* |
 | `int8_gemm` | vLLM CUTLASS / GemLite | vLLM CUTLASS / GemLite | vLLM CUTLASS | vLLM Marlin-int8 | `ks_gemm_w8a8` |
 | `w4a16` | unified Marlin / GemLite / torchao-int4 | unified Marlin / GemLite | vLLM Machete | vLLM Machete | `ks_gemm_w4a16` |
-| `w4a8` *(new)* | unified Marlin-QQQ | unified Marlin-QQQ | vLLM Machete | vLLM Machete | `ks` raise |
+| `w4a8` *(new)* | unified Marlin-QQQ / sgl-kernel QServe | unified Marlin-QQQ / sgl-kernel QServe | vLLM Machete | vLLM Machete | `ks` raise |
 
 Chain detail (from `_registry.py`, 2026 re-survey wiring):
 
@@ -108,7 +108,9 @@ Chain detail (from `_registry.py`, 2026 re-survey wiring):
 * **`w4a16`**: vLLM Machete (sm90a) → **unified Marlin** GPTQ/AWQ (sm80) → GemLite
   → torchao-int4 → kernel-set.
 * **`w4a8`** *(new op)*: vLLM Machete (int4 weight + fp8/int8 act, sm90) → unified
-  Marlin-QQQ (sm80) → kernel-set terminal.
+  Marlin-QQQ (sm80) → sgl-kernel QServe W4A8 (int8 act + int4 weight, sm80)
+  → kernel-set terminal. The QServe adapter requires QServe-packed metadata and
+  otherwise lets dispatch try the next provider.
 
 > **Marlin is unified.** The vendored 2026 vLLM collapsed `gptq_marlin_gemm`,
 > `fp8_marlin_gemm`, `marlin_qqq_gemm`, `gptq_marlin_24_gemm` into a single
@@ -135,7 +137,7 @@ dispatch (see the gap analysis — the unwired ones are the *true holes*):
 | `awq_gemm` | vllm (awq_marlin) | via `w4a16` (after repack) |
 | `dequantize_int4` | autoawq (`ks_dequantize_int4`) | ks ABI only |
 | `int4_weight_only_gemm_tinygemm` | torchao | **yes** — torchao-int4 in `w4a16` |
-| `w4a8_gemm` | vllm (Machete W4A8) | **yes** — own `w4a8` op (Machete + Marlin-QQQ) |
+| `w4a8_gemm` | vllm (Machete W4A8) | **yes** — own `w4a8` op (Machete + Marlin-QQQ + sgl-kernel QServe) |
 | `nvfp4_gemm` | flashinfer | yes — `nvfp4_gemm` op (sm100) |
 | `mxfp4_gemm` | torchao / gemlite | yes — `mxfp4_gemm` op |
 | `fp4_quantize` | vllm | **no — true hole** |
@@ -198,6 +200,11 @@ The landed and newly-wired pieces, in one place:
   (`scale [rows, ⌈cols/group⌉]`) that `ks_gemm_fp8_blockwise` and DeepGEMM
   consume. Closes the Class-1 "per-token-group dynamic quant" prerequisite.
   (round-trip rel_err 3.1e-2.)
+* **W4A8 benchmark coverage** — `bench.py --ops w4a8` now builds QServe-format
+  int8-activation / int4-weight tensors, gates sgl-kernel per-group W4A8 against
+  an exact dequant+torch reference, and persists clean `op=w4a8` rows. If
+  `sgl_kernel` is absent the row is skipped and is not shown as a performance
+  comparison.
 * **Six newly-wired dispatch ops** — `fp8_gemm_blockwise`,
   `per_token_group_quant`, `nvfp4_gemm`, `mxfp4_gemm`, `fp8_attention`, and
   `fp8_kv_cache` are now first-class entries in `_OPS_RAW` / `dispatch` /
@@ -229,7 +236,8 @@ Landed (commit `b764f57`, 29 dispatch ops, 287 optimal cells):
   * linear-attn / SSM: FLA `fused_recurrent_*` (decode-optimal), mamba-ssm
     `selective_state_update`, `causal_conv1d_update`.
 * **New `w4a8` op** — int4 weight + fp8/int8 activation: Machete (sm90) → unified
-  Marlin-QQQ (sm80) → ks terminal. Best W4A8 path Ampere→Hopper.
+  Marlin-QQQ (sm80) → sgl-kernel QServe W4A8 (sm80) → ks terminal. Best W4A8
+  path is provider-backed; kernel-set does not pretend to own a native W4A8 C ABI.
 * **Linear-attn fallbacks cross-checked vs FLA** (fla 0.5.0, GPU): `gated_delta_rule`
   1.0e-2, `gated_linear_attn` 2.6e-3, `rwkv_wkv7` 7.4e-3 — the ks fallbacks and the
   FLA provider are now numerically interchangeable (an rwkv-7 sign bug vs FLA's

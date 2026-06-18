@@ -24,7 +24,13 @@ import pytest
 
 # dispatch is import-safe with no torch / CUDA / shared library.
 from kernel_set import dispatch
-from kernel_set.backends import KERNEL_SET, OP_ORDER, OPS, SGL_KERNEL
+from kernel_set.backends import (
+    KERNEL_SET,
+    OP_ORDER,
+    OPS,
+    SGL_KERNEL,
+    ProviderCallUnsupported,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -912,6 +918,7 @@ def test_compute_bound_prefers_external_when_available(monkeypatch):
         ("w4a16", {"vllm"}, 90, "int4", "vllm-machete"),
         ("w4a8", {"vllm"}, 80, "int4", "vllm-marlin"),
         ("w4a8", {"vllm"}, 90, "int4", "vllm-machete"),
+        ("w4a8", {"sgl_kernel"}, 80, "int4", SGL_KERNEL),
         ("w8a16_fp8", {"vllm"}, 80, "bf16", "vllm-fp8-marlin"),
         ("sparse_2_4_gemm", {"vllm"}, 90, "fp8", "vllm-cutlass-sparse"),
         ("bitnet_gemm", {"bitblas"}, 80, "fp16", "bitblas"),
@@ -1020,6 +1027,9 @@ def test_w4a8_new_op_marlin_ampere_machete_hopper(monkeypatch):
     dispatch.reset_cache()
     _mock_available(monkeypatch, available_libs=set(), sm=90)
     assert dispatch.which("w4a8", dtype="int4") == KERNEL_SET
+    dispatch.reset_cache()
+    _mock_available(monkeypatch, available_libs={"sgl_kernel"}, sm=80)
+    assert dispatch.which("w4a8", dtype="int4") == SGL_KERNEL
 
 
 def test_w8a16_fp8_new_op_marlin_weight_only(monkeypatch):
@@ -1499,6 +1509,20 @@ def test_vllm_marlin_adapters_use_unified_marlin_gemm(monkeypatch):
     assert _registry._w8a16_fp8_marlin(a, b, scales) == "marlin_out"
     assert calls[-1][11] == "float8_e4m3fn"
     assert calls[-1][12:15] == (2, 8, 4)
+
+
+def test_w4a8_vllm_rejects_qserve_metadata():
+    torch = pytest.importorskip("torch")
+    from kernel_set.backends import _registry
+
+    a8 = torch.zeros(2, 4, dtype=torch.int8)
+    b = torch.zeros(8, 2, dtype=torch.int8)
+    scales = torch.ones(1, 8)
+
+    with pytest.raises(ProviderCallUnsupported):
+        _registry._w4a8_marlin(a8, b, scales, scale_i8=torch.ones(1, 8))
+    with pytest.raises(ProviderCallUnsupported):
+        _registry._w4a8_machete(a8, b, scales, scale_i8=torch.ones(1, 8))
 
 
 def test_fa4_blackwell_only(monkeypatch):

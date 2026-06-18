@@ -1,10 +1,8 @@
 // kernel-set — dynamic FP8 quantize / dequantize (E4M3 / E5M2).
 //
-// FP8 hardware conversions require sm_89+ (Ada) / sm_90 (Hopper). The kernels
-// here are arch-gated: the FP8 conversion paths only compile where the
-// __nv_fp8_* intrinsics exist, and the public ABI returns
-// KS_ERROR_ARCH_UNSUPPORTED at runtime on older GPUs (checked via the device's
-// compute capability) so a sm_80 build links and runs cleanly.
+// FP8 quant/dequant uses cuda_fp8 conversion types. CUDA provides software
+// conversions on pre-sm89 devices, so this path can run on A100-class hardware;
+// tensor-core FP8 GEMM remains a separate sm89+/provider concern.
 //
 // quantize:  out_fp8 = cast_to_fp8(in / scale),  scale = amax / qmax
 //   qmax = 448 (E4M3) or 57344 (E5M2).
@@ -165,7 +163,7 @@ ks_status_t ks_quantize_fp8(void* out, float* scale, const void* input,
                     "ks_quantize_fp8: fp8_dtype must be e4m3 or e5m2");
   if (!ks::quant::device_has_fp8())
     KS_RETURN_ERROR(KS_ERROR_ARCH_UNSUPPORTED,
-                    "ks_quantize_fp8: FP8 requires sm_89+ (Ada/Hopper)");
+                    "ks_quantize_fp8: built without cuda_fp8 conversion types");
 
 #if defined(KS_QUANT_FP8_AVAILABLE)
   const int64_t numel = rows * cols;
@@ -258,7 +256,7 @@ ks_status_t ks_dequantize_fp8(void* out, const void* input, const float* scale,
                     "ks_dequantize_fp8: fp8_dtype must be e4m3 or e5m2");
   if (!ks::quant::device_has_fp8())
     KS_RETURN_ERROR(KS_ERROR_ARCH_UNSUPPORTED,
-                    "ks_dequantize_fp8: FP8 requires sm_89+ (Ada/Hopper)");
+                    "ks_dequantize_fp8: built without cuda_fp8 conversion types");
 
 #if defined(KS_QUANT_FP8_AVAILABLE)
   // qmax is only needed to validate fp8_dtype above; dequant rescales by the

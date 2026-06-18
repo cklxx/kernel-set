@@ -4,9 +4,9 @@ This directory keeps human-readable benchmark reports plus canonical
 JSON runs under `runs/`. Use the JSON files as the durable data
 source; Markdown files are display artifacts.
 
-- **Canonical runs:** 20
+- **Canonical runs:** 21
 - **GPU coverage:** NVIDIA A100-SXM4-40GB (sm80), NVIDIA H20 (sm90), NVIDIA L4 (sm89), NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120)
-- **Suites:** kernel_set=16, sota=4
+- **Suites:** kernel_set=17, sota=4
 - **Index:** [`index.json`](index.json)
 
 ## Latest Runs
@@ -40,7 +40,7 @@ source; Markdown files are display artifacts.
 | `embedding` | `decode` | kernel_set | 1 | 1 | 2 | 4 | 12 / 12 |
 | `embedding` | `prefill` | kernel_set | 1 | 2 | 2 | 4 | 24 / 24 |
 | `embedding` | `training` | kernel_set | 1 | 3 | 1 | 4 | 18 / 18 |
-| `linear` | `prefill` | kernel_set | 4 | 7 | 3 | 4 | 84 / 84 |
+| `linear` | `prefill` | kernel_set | 6 | 13 | 4 | 4 | 99 / 102 |
 | `linear` | `prefill` | sota | 3 | 3 | 9 | 3 | 48 / 68 |
 | `loss` | `training` | kernel_set | 2 | 4 | 2 | 4 | 36 / 36 |
 | `loss` | `training` | sota | 2 | 2 | 4 | 3 | 20 / 32 |
@@ -62,8 +62,8 @@ source; Markdown files are display artifacts.
 | `position_encoding` | `prefill` | kernel_set | 1 | 1 | 1 | 4 | 6 / 6 |
 | `position_encoding` | `prefill` | sota | 1 | 1 | 4 | 2 | 6 / 11 |
 | `position_encoding` | `training` | kernel_set | 1 | 2 | 1 | 4 | 12 / 12 |
-| `quant` | `prefill` | kernel_set | 4 | 2 | 1 | 4 | 44 / 48 |
-| `quant` | `weight` | kernel_set | 1 | 2 | 1 | 4 | 12 / 12 |
+| `quant` | `prefill` | kernel_set | 5 | 4 | 1 | 4 | 54 / 58 |
+| `quant` | `weight` | kernel_set | 1 | 2 | 1 | 4 | 14 / 14 |
 | `sampling` | `decode` | kernel_set | 3 | 4 | 2 | 4 | 72 / 72 |
 | `ssm` | `prefill` | sota | 3 | 1 | 3 | 2 | 0 / 6 |
 
@@ -78,7 +78,7 @@ measurements when no comparable third-party provider was present in that run.
 | `attention` | `attn_prefill` | NVIDIA H20 (sm90, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 335.7 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
 | `attention` | `attn_prefill` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 15245.7 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
 | `attention` | `attn_prefill` | NVIDIA L4 (sm89, fp16, sota) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 599.0 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
-| `attention` | `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=1,seq=2048,qh=32,kvh=8,hd=128` | `sdpa(flash/efficient)` | 344.1 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
+| `attention` | `attention_prefill` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `b=4,seq=1024,qh=32,kvh=8,hd=128` | `kernel-set` | 30793.7 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
 | `attention` | `attn_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 340.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
 | `attention` | `attn_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `flashinfer` | 2283.5 us | [2026-06-04t16-21-49-nvidia-l4-fp16-sota.json](runs/2026-06-04t16-21-49-nvidia-l4-fp16-sota.json) |
 | `attention` | `attention_decode` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 1780.7 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |

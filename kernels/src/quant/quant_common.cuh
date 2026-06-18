@@ -44,18 +44,17 @@ KS_DI int round_to_int(float v) {
 }
 
 // ---------------------------------------------------------------------------
-// Host helper: does the current device expose hardware FP8 (sm_89+)?
-// FP8 kernels are arch-gated; on older GPUs the public ABI returns
-// KS_ERROR_ARCH_UNSUPPORTED instead of launching a kernel that cannot compile
-// the conversion intrinsics.
+// Host helper: are FP8 conversion types available in this build?
+// Quant/dequant kernels only cast through cuda_fp8 types; <cuda_fp8.h> provides
+// software conversions on pre-sm89 devices. Tensor-core FP8 GEMM is still gated
+// separately by the GEMM/provider path.
 // ---------------------------------------------------------------------------
 inline bool device_has_fp8() {
-  int dev = 0;
-  if (gpuGetDevice(&dev) != gpuSuccess) return false;
-  gpuDeviceProp_t prop;
-  if (gpuGetDeviceProperties(&prop, dev) != gpuSuccess) return false;
-  const int sm = prop.major * 10 + prop.minor;
-  return sm >= 89;
+#if defined(KS_HAS_FP8_TYPES)
+  return true;
+#else
+  return false;
+#endif
 }
 
 }  // namespace quant

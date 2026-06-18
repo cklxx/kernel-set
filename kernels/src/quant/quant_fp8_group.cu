@@ -8,11 +8,9 @@
 //   out[r, c] = fp8(input[r, c] / scale)
 //   scale[r, g] = scale                        (scale layout [rows, ceil(cols/gs)])
 //
-// FP8 hardware conversions require sm_89+ (Ada/Hopper). Like quant_fp8.cu the
-// kernel is arch-gated: the FP8 conversion path only compiles where the
-// __nv_fp8_* intrinsics exist (always available via <cuda_fp8.h> under
-// KS_HAS_FP8_TYPES, so the .so links on every arch), and the public ABI returns
-// KS_ERROR_ARCH_UNSUPPORTED at runtime on older GPUs (device_has_fp8()).
+// FP8 quant uses cuda_fp8 conversion types. CUDA provides software conversions
+// on pre-sm89 devices, so activation quantization is usable on A100-class
+// hardware; tensor-core FP8 GEMM/provider selection stays separately gated.
 //
 // One CUDA block per (row, group); the block reduces the group amax via
 // ks::block_reduce_max, then casts. Correctness and clarity over speed,
@@ -113,7 +111,7 @@ ks_status_t ks_quantize_fp8_group(void* out, float* scale, const void* input,
                     "ks_quantize_fp8_group: fp8_dtype must be e4m3 or e5m2");
   if (!ks::quant::device_has_fp8())
     KS_RETURN_ERROR(KS_ERROR_ARCH_UNSUPPORTED,
-                    "ks_quantize_fp8_group: FP8 requires sm_89+ (Ada/Hopper)");
+                    "ks_quantize_fp8_group: built without cuda_fp8 conversion types");
 
 #if defined(KS_QUANT_FP8_GROUP_AVAILABLE)
   // num_groups = ceil(cols / group_size); group_size > 0 so this is >= 1 and

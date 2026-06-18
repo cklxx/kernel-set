@@ -793,8 +793,10 @@ def _fill_util(r: Result, gpu: GpuInfo) -> None:
         if peak > 0:
             r.bw_util = 100.0 * r.gbps / peak
     if not math.isnan(r.tflops):
-        # w8a8 is int8 math; tag it so the peak lookup picks tf8
-        dn = "int8" if r.op == "w8a8" else r.dtype
+        # w8a8/fp8 blockwise use low-precision tensor-core roofline targets.
+        dn = "int8" if r.op in {"w8a8", "w4a8"} else (
+            "fp8" if r.op in {"fp8_gemm", "fp8_gemm_blockwise"} else r.dtype
+        )
         peak = peak_for_metric(gpu, dn, "tflops")
         if peak > 0:
             r.compute_util = 100.0 * r.tflops / peak
@@ -1255,16 +1257,38 @@ def _bench_w4a16(ctx: Ctx, m, n, k, group_size=128) -> Result:
         r.note = "w4a16 activations must be fp16/bf16"
         return r
     a = ctx.rand(m, k)
-    # b_packed: two int4 per byte -> [K, N/2] uint8 (N must be even)
-    b_packed = torch.randint(0, 255, (k, n // 2), device="cuda", dtype=torch.uint8)
+    # b_packed: two int4 per byte packed along K -> [K/2, N] uint8.
+    b_packed = torch.randint(0, 255, (k // 2, n), device="cuda", dtype=torch.uint8)
     n_groups = (k + group_size - 1) // group_size
-    scales = ctx.rand(n_groups, n) * 0.02
-    zeros = ctx.rand(n_groups, n)
+    scales = (torch.rand(n_groups, n, device="cuda", dtype=ctx.dt) * 0.02 + 1e-3)
+    zeros = torch.full((n_groups, n), 8.0, device="cuda", dtype=ctx.dt)
     out = ctx.empty(m, n)
 
     def run():
         ks.gemm.gemm_w4a16(out, a, b_packed, scales, zeros,
                            m=m, n=n, k=k, group_size=group_size)
+
+    try:
+        ks.gemm.gemm_w4a16(out, a, b_packed, scales, zeros,
+                           m=m, n=n, k=k, group_size=group_size)
+        torch.cuda.synchronize()
+        kk = torch.arange(k, device="cuda")
+        byte = b_packed[kk >> 1]                      # [K, N]
+        codes = torch.where(
+            (kk & 1).view(k, 1).bool(),
+            (byte >> 4) & 0xF,
+            byte & 0xF,
+        ).float()
+        g = kk // group_size
+        weight = ((codes - zeros.float()[g]) * scales.float()[g]).to(ctx.dt)
+        ref = (a.float() @ weight.float()).to(ctx.dt)
+        r.rel_err = rel_err(out, ref)
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    r.note = "exact K-packed int4 dequant + torch matmul ref"
+    if not gate_correctness(r, ctx):
+        return r
 
     try:
         r.set_ks_timing(time_op(run))
@@ -1274,13 +1298,238 @@ def _bench_w4a16(ctx: Ctx, m, n, k, group_size=128) -> Result:
     flops = 2.0 * m * n * k
     r.tflops = flops / (r.ks_us * 1e-6) / 1e12
     _fill_util(r, ctx.gpu)
-    r.note = "no portable torch int4 ref; throughput only (uncorrectness-gated)"
+    r.set_ref_timing(time_op(_sink(lambda: a.float() @ weight.float())))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "dequant+torch-matmul"
     return r
 
 
 for _lbl, _m, _n, _k in _GEMM_SHAPES[:3]:
     register("w4a16", _lbl)(
         (lambda m, n, k: lambda c: _bench_w4a16(c, m, n, k))(_m, _n, _k))
+
+
+# ------------------------------- W4A8 GEMM --------------------------------- #
+def _qserve_sym_quantize_int8(t):
+    scale = (t.abs().amax(dim=-1, keepdim=True) / 127.0).clamp_min(1e-12)
+    q = torch.clamp(torch.round(t / scale), -128, 127).to(torch.int8)
+    return q, scale.to(torch.float16)
+
+
+def _qserve_group_quantize_int4(t, group_size):
+    chn_scale = (t.abs().amax(dim=-1, keepdim=True) / 119.0).clamp_min(1e-12)
+    t_i8 = torch.clamp(torch.round(t / chn_scale), -119, 119)
+    tg = t_i8.reshape(-1, group_size)
+    tmin = tg.min(dim=-1, keepdim=True)[0]
+    tmax = tg.max(dim=-1, keepdim=True)[0]
+    scale_i8 = torch.round((tmax - tmin) / 15.0).clamp_min(1.0)
+    zero_i8 = torch.round(-tmin / scale_i8).clamp(0, 15)
+    q = torch.clamp(torch.round(tg / scale_i8) + zero_i8, 0, 15)
+    return (
+        q.reshape(t.shape).to(torch.int8),
+        chn_scale.to(torch.float16),
+        scale_i8.reshape(t.shape[0], -1).to(torch.int8),
+        zero_i8.reshape(t.shape[0], -1).to(torch.int8),
+    )
+
+
+def _qserve_pack_w4a8_group(qweight, chn_scale, scale_i8, zero_i8, group_size):
+    out_features, in_features = qweight.shape
+    assert group_size == 128
+    qw = (
+        qweight.reshape(
+            out_features // 32, 2, 2, 8, in_features // 32, 2, 4, 4)
+        .permute(0, 4, 3, 6, 1, 5, 2, 7)
+        .contiguous()
+        .permute(0, 1, 2, 3, 5, 6, 7, 4)
+        .contiguous()
+        .to(torch.int8)
+    )
+    packed = ((qw[..., 1] << 4) + qw[..., 0]).reshape(
+        out_features // 32, in_features // 32, 32, 16)
+    packed = packed.reshape(out_features, in_features // 2).contiguous()
+
+    chn = chn_scale.reshape(out_features).contiguous()
+    si8 = scale_i8.reshape(out_features, in_features // group_size).t().contiguous()
+    si8 = si8.reshape(in_features // group_size, out_features // 32, 32)
+    si8 = si8.reshape(in_features // group_size, out_features // 32, 4, 8)
+    si8 = si8.transpose(-2, -1).contiguous()
+    si8 = si8.reshape(in_features // group_size, out_features).contiguous()
+
+    zi8 = (-zero_i8).reshape(out_features, in_features // group_size).t().contiguous()
+    zi8 = zi8.reshape(in_features // group_size, out_features // 32, 32)
+    zi8 = zi8.reshape(in_features // group_size, out_features // 32, 4, 8)
+    zi8 = zi8.transpose(-2, -1).contiguous()
+    zi8 = (zi8.reshape(in_features // group_size, out_features).contiguous() * si8)
+    return packed, chn, si8, zi8
+
+
+def _bench_w4a8_qserve_sgl(ctx: Ctx, m, n, k, group_size=128) -> Result:
+    r = Result("w4a8", f"M={m},N={n},K={k},g={group_size},provider=sgl-qserve",
+               "fp16")
+    if n % 32 or k % 32 or k % group_size:
+        r.status = "skip"
+        r.note = "qserve W4A8 needs N,K multiples of 32 and K multiple of group"
+        return r
+    try:
+        import sgl_kernel
+    except Exception as exc:
+        r.status = "skip"
+        r.note = f"sgl_kernel unavailable: {type(exc).__name__}: {exc}"
+        return r
+
+    a = torch.randn(m, k, device="cuda", dtype=torch.float32) * 0.01
+    b = torch.randn(n, k, device="cuda", dtype=torch.float32) * 0.01
+    a_q, a_scale = _qserve_sym_quantize_int8(a)
+    b_q, b_chn_scale, b_scale_i8, b_zero_i8 = _qserve_group_quantize_int4(
+        b, group_size)
+    b_pack, b_chn_pack, b_scale_i8_pack, b_zero_i8_pack = (
+        _qserve_pack_w4a8_group(
+            b_q, b_chn_scale, b_scale_i8, b_zero_i8, group_size)
+    )
+
+    def run():
+        return sgl_kernel.qserve_w4a8_per_group_gemm(
+            a_q, b_pack, b_zero_i8_pack, b_scale_i8_pack, b_chn_pack, a_scale)
+
+    try:
+        out = run()
+        torch.cuda.synchronize()
+    except Exception as exc:
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+
+    b_dq = (
+        (b_q.reshape(-1, group_size).float()
+         - b_zero_i8.reshape(-1, 1).float())
+        * b_scale_i8.reshape(-1, 1).float()
+    ).reshape(n, k)
+    ref = ((a_q.float() @ b_dq.t()) * a_scale.float() * b_chn_scale.float().t())
+    ref = ref.to(torch.float16)
+    r.rel_err = rel_err(out, ref)
+    r.tol = 0.03
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct:
+        r.status = "INCORRECT"
+        return r
+
+    r.set_ks_timing(time_op(_sink(run)))
+    flops = 2.0 * m * n * k
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: a_q.float() @ b_dq.t())))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "dequant+torch-matmul"
+    r.note = "sgl-kernel QServe per-group W4A8; int8 act + int4 weight"
+    return r
+
+
+for _lbl, _m, _n, _k in _GEMM_SHAPES[:3]:
+    register("w4a8", _lbl)(
+        (lambda m, n, k: lambda c: _bench_w4a8_qserve_sgl(c, m, n, k))(
+            _m, _n, _k))
+
+
+# --------------------------- FP8 BLOCKWISE GEMM ---------------------------- #
+def _make_fp8_blockwise_inputs(m: int, n: int, k: int, block_n: int, block_k: int):
+    if not hasattr(torch, "float8_e4m3fn"):
+        raise RuntimeError("torch has no float8_e4m3fn")
+    qmax = 448.0
+    a_f = torch.randn(m, k, device="cuda", dtype=torch.float32) * 0.1
+    b_f = torch.randn(k, n, device="cuda", dtype=torch.float32) * 0.1
+    num_kblocks = (k + block_k - 1) // block_k
+    num_nblocks = (n + block_n - 1) // block_n
+    a_scale = torch.empty(m, num_kblocks, device="cuda", dtype=torch.float32)
+    b_scale = torch.empty(num_kblocks, num_nblocks, device="cuda", dtype=torch.float32)
+    for kb, k0 in enumerate(range(0, k, block_k)):
+        k1 = min(k0 + block_k, k)
+        a_scale[:, kb] = (a_f[:, k0:k1].abs().amax(dim=1) / qmax).clamp_min(1e-12)
+        for nb, n0 in enumerate(range(0, n, block_n)):
+            n1 = min(n0 + block_n, n)
+            b_scale[kb, nb] = (
+                b_f[k0:k1, n0:n1].abs().amax() / qmax
+            ).clamp_min(1e-12)
+    a8 = torch.empty(m, k, device="cuda", dtype=torch.float8_e4m3fn)
+    b8 = torch.empty(k, n, device="cuda", dtype=torch.float8_e4m3fn)
+    for kb, k0 in enumerate(range(0, k, block_k)):
+        k1 = min(k0 + block_k, k)
+        a8[:, k0:k1] = (a_f[:, k0:k1] / a_scale[:, kb:kb + 1]).to(
+            torch.float8_e4m3fn)
+        for nb, n0 in enumerate(range(0, n, block_n)):
+            n1 = min(n0 + block_n, n)
+            b8[k0:k1, n0:n1] = (b_f[k0:k1, n0:n1] / b_scale[kb, nb]).to(
+                torch.float8_e4m3fn)
+    a_deq = torch.empty_like(a_f)
+    b_deq = torch.empty_like(b_f)
+    for kb, k0 in enumerate(range(0, k, block_k)):
+        k1 = min(k0 + block_k, k)
+        a_deq[:, k0:k1] = a8[:, k0:k1].float() * a_scale[:, kb:kb + 1]
+        for nb, n0 in enumerate(range(0, n, block_n)):
+            n1 = min(n0 + block_n, n)
+            b_deq[k0:k1, n0:n1] = b8[k0:k1, n0:n1].float() * b_scale[kb, nb]
+    return a8, b8, a_scale, b_scale, a_deq, b_deq
+
+
+def _bench_fp8_gemm_blockwise(ctx: Ctx, m, n, k, block_n=128, block_k=128) -> Result:
+    r = Result("fp8_gemm_blockwise",
+               f"M={m},N={n},K={k},bn={block_n},bk={block_k}", ctx.dtype_name)
+    if ctx.dt not in (torch.float16, torch.bfloat16, torch.float32):
+        r.status = "skip"
+        r.note = "fp8 blockwise output must be fp16/bf16/fp32"
+        return r
+    try:
+        a8, b8, a_scale, b_scale, a_deq, b_deq = _make_fp8_blockwise_inputs(
+            m, n, k, block_n, block_k)
+    except Exception as exc:
+        if "float8_e4m3fn" in str(exc):
+            r.status = "skip"
+            r.note = "torch has no float8_e4m3fn"
+        else:
+            r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    out = ctx.empty(m, n)
+
+    def run():
+        ks.gemm.gemm_fp8_blockwise(out, a8, b8, a_scale, b_scale,
+                                   m=m, n=n, k=k, block_n=block_n,
+                                   block_k=block_k)
+
+    try:
+        ks.gemm.gemm_fp8_blockwise(out, a8, b8, a_scale, b_scale,
+                                   m=m, n=n, k=k, block_n=block_n,
+                                   block_k=block_k)
+        torch.cuda.synchronize()
+        ref = (a_deq @ b_deq).to(ctx.dt)
+        r.rel_err = rel_err(out, ref)
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "fp8 blockwise requires fp8 type support (ARCH_UNSUPPORTED)"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+    r.tol = 0.06
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct and r.status == "ok":
+        r.status = "INCORRECT"
+    r.note = "DeepSeek-style 1x128/128x128 fp8 block scales; dequant+torch ref"
+    if not r.is_correct:
+        return r
+
+    r.set_ks_timing(time_op(run))
+    flops = 2.0 * m * n * k
+    r.tflops = flops / (r.ks_us * 1e-6) / 1e12
+    _fill_util(r, ctx.gpu)
+    r.set_ref_timing(time_op(_sink(lambda: a_deq @ b_deq)))
+    r.speedup = r.ref_us / r.ks_us
+    r.baseline = "dequant+torch-matmul"
+    return r
+
+
+for _lbl, _m, _n, _k in _GEMM_SHAPES[:3]:
+    register("fp8_gemm_blockwise", _lbl)(
+        (lambda m, n, k: lambda c: _bench_fp8_gemm_blockwise(c, m, n, k))(
+            _m, _n, _k))
 
 
 # -------------------------------- MoE -------------------------------------- #
@@ -2057,6 +2306,63 @@ def _bench_dequantize_fp8(ctx: Ctx, rows, cols) -> Result:
     return r
 
 
+def _bench_quantize_fp8_group(ctx: Ctx, rows, cols, group_size=128) -> Result:
+    r = Result("quantize_fp8_group", f"rows={rows},cols={cols},g={group_size}",
+               ctx.dtype_name)
+    if not hasattr(torch, "float8_e4m3fn"):
+        r.status = "skip"
+        r.note = "torch has no float8_e4m3fn"
+        return r
+    x = ctx.rand(rows, cols)
+    out = torch.empty(rows, cols, device="cuda", dtype=torch.float8_e4m3fn)
+    n_groups = (cols + group_size - 1) // group_size
+    scale = torch.empty(rows, n_groups, device="cuda", dtype=torch.float32)
+
+    def run():
+        ks.quant.quantize_fp8_group(out, scale, x, rows, cols,
+                                    group_size=group_size,
+                                    fp8_dtype=ks.DType.F8E4M3)
+
+    try:
+        ks.quant.quantize_fp8_group(out, scale, x, rows, cols,
+                                    group_size=group_size,
+                                    fp8_dtype=ks.DType.F8E4M3)
+        torch.cuda.synchronize()
+    except Exception as exc:
+        if _is_arch_unsupported(exc):
+            r.status = "skip"
+            r.note = "fp8 group quant unavailable in this build (ARCH_UNSUPPORTED)"
+            return r
+        r.status = f"error: {type(exc).__name__}: {exc}"
+        return r
+
+    xf = x.float()
+    ref_scale = []
+    for start in range(0, cols, group_size):
+        group = xf[:, start:start + group_size]
+        ref_scale.append((group.abs().amax(dim=1) / 448.0).clamp_min(1e-12))
+    ref_scale_t = torch.stack(ref_scale, dim=1)
+    expanded = scale.repeat_interleave(group_size, dim=1)[:, :cols]
+    deq = out.float() * expanded
+    r.rel_err = max(
+        rel_err(scale, ref_scale_t),
+        ((deq - xf).norm() / xf.norm().clamp_min(1e-6)).item(),
+    )
+    r.tol = 0.10
+    r.is_correct = r.rel_err <= r.tol
+    if not r.is_correct and r.status == "ok":
+        r.status = "INCORRECT"
+    r.note = "1x128 fp8 activation quant; scale=group_amax/448; rel-L2 gate @0.10"
+    if not r.is_correct:
+        return r
+
+    r.set_ks_timing(time_op(run))
+    nbytes = rows * cols * dtype_bytes(ctx.dt) + rows * cols
+    r.gbps = nbytes / (r.ks_us * 1e-6) / 1e9
+    _fill_util(r, ctx.gpu)
+    return r
+
+
 def _bench_quantize_int8(ctx: Ctx, rows, cols) -> Result:
     r = Result("quantize_int8", f"rows={rows},cols={cols}", ctx.dtype_name)
     x = ctx.rand(rows, cols)
@@ -2189,6 +2495,9 @@ for _lbl, _rows, _cols in _QUANT_SHAPES:
         (lambda rw, cl: lambda c: _bench_quantize_fp8(c, rw, cl))(_rows, _cols))
     register("quant", f"dequantize_fp8,{_lbl}")(
         (lambda rw, cl: lambda c: _bench_dequantize_fp8(c, rw, cl))(_rows, _cols))
+    register("quant", f"quantize_fp8_group,{_lbl}")(
+        (lambda rw, cl: lambda c: _bench_quantize_fp8_group(c, rw, cl))(
+            _rows, _cols))
     register("quant", f"quantize_int8,{_lbl}")(
         (lambda rw, cl: lambda c: _bench_quantize_int8(c, rw, cl))(_rows, _cols))
     register("quant", f"dequantize_int8,{_lbl}")(
@@ -2616,7 +2925,8 @@ for _lbl, _rows, _cols in _LOG_SOFTMAX_SHAPES:
 ALL_OPS = [
     # forward / GEMM / attention / MoE / sampling / loss / optimizer (existing)
     "rmsnorm", "layernorm", "swiglu", "rope", "attention",
-    "gemm", "w8a8", "w4a16", "moe", "sampling", "cross_entropy", "adamw",
+    "gemm", "w8a8", "w4a16", "w4a8", "fp8_gemm_blockwise", "moe", "sampling",
+    "cross_entropy", "adamw",
     # full-op-coverage additions (every remaining kernel-set compute op):
     "rmsnorm_bwd", "layernorm_bwd",                     # norm backward
     "geglu", "swiglu_bwd",                              # activation

@@ -48,6 +48,7 @@ _MODEL_PART_BY_OP = {
     "embedding_bwd": "embedding",
     "flash_attn_bwd": "attention",
     "fp8_gemm": "linear",
+    "fp8_gemm_blockwise": "linear",
     "fused_add_rmsnorm": "norm",
     "fused_linear_ce": "loss",
     "fused_moe": "moe",
@@ -65,6 +66,7 @@ _MODEL_PART_BY_OP = {
     "moe_permute": "moe",
     "moe_unpermute": "moe",
     "quantize_fp8": "quant",
+    "quantize_fp8_group": "quant",
     "quantize_int8": "quant",
     "reshape_and_cache": "attention",
     "rmsnorm": "norm",
@@ -79,6 +81,7 @@ _MODEL_PART_BY_OP = {
     "swiglu": "mlp",
     "swiglu_bwd": "mlp",
     "w4a16": "linear",
+    "w4a8": "linear",
     "w8a8": "linear",
 }
 
@@ -181,7 +184,7 @@ def _derive_model_part(op: Any) -> str:
         return "attention"
     if "norm" in op_name:
         return "norm"
-    if "gemm" in op_name or op_name in {"w4a16", "w8a8"}:
+    if "gemm" in op_name or op_name in {"w4a16", "w4a8", "w8a8"}:
         return "linear"
     if "rope" in op_name:
         return "position_encoding"

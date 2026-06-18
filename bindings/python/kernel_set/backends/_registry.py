@@ -615,8 +615,11 @@ def _w4a16_torchao_int4(a, b_packed, scales, zeros=None, *, group_size=128,
 def _w4a8_machete(a8, b_packed, b_scales=None, a_scales=None, *,
                   b_zeros=None, group_size=None, out_dtype=None,
                   b_channel_scales=None, a_token_scales=None, schedule=None,
-                  **_):
+                  **kw):
     # Machete W4A8: int4 weight with fp8/int8 activation and token/channel scales.
+    if (kw.get("scale_i8") is not None or kw.get("w_szs") is not None or
+            kw.get("a_ssums") is not None):
+        raise ProviderCallUnsupported("Machete W4A8 does not accept QServe metadata")
     import torch
     from vllm import _custom_ops as ops
     channel_scales = b_channel_scales if b_channel_scales is not None else b_scales
@@ -629,8 +632,12 @@ def _w4a8_machete(a8, b_packed, b_scales=None, a_scales=None, *,
 
 def _w4a8_marlin(a8, b_packed, b_scales, a_scales=None, *, global_scale=None,
                  workspace=None, size_m=None, size_n=None, size_k=None,
-                 **_):
+                 **kw):
     # Unified Marlin QQQ/W4A8: signed int4 weights + int8/fp8 activations.
+    if (kw.get("zeros") is not None or kw.get("b_zeros") is not None or
+            kw.get("scale_i8") is not None or kw.get("w_szs") is not None or
+            kw.get("a_ssums") is not None):
+        raise ProviderCallUnsupported("Marlin W4A8 does not accept QServe metadata")
     from vllm import _custom_ops as ops
     m, k = a8.shape
     size_m = size_m or m
@@ -1126,6 +1133,39 @@ def _int8_gemm_sgl(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
     sk = _imp("sgl_kernel")
     return sk.int8_scaled_mm(a8, b8, a_scale, b_scale,
                              out_dtype or torch.bfloat16)
+
+
+def _w4a8_qserve_sgl(a8, b_packed, b_scales, a_scales=None, *,
+                     zeros=None, scale_i8=None, b_zeros=None, w_szs=None,
+                     a_ssums=None, out_dtype=None, **_):
+    # sgl-kernel QServe W4A8:
+    #   per-group: int8 activations + packed int4 weights + group int8 scales
+    #   per-chan:  int8 activations + packed int4 weights + channel scales
+    import torch
+    sk = _imp("sgl_kernel")
+    if out_dtype not in (None, torch.float16):
+        raise ProviderCallUnsupported("sgl-qserve W4A8 only returns fp16")
+
+    z = zeros if zeros is not None else b_zeros
+    if z is not None or scale_i8 is not None:
+        if z is None or scale_i8 is None or a_scales is None:
+            raise ProviderCallUnsupported(
+                "sgl-qserve W4A8 per-group needs zeros, scale_i8, b_scales, a_scales"
+            )
+        return sk.qserve_w4a8_per_group_gemm(
+            a8, b_packed, z, scale_i8, b_scales, a_scales)
+
+    if w_szs is not None or a_ssums is not None:
+        if w_szs is None or a_ssums is None or a_scales is None:
+            raise ProviderCallUnsupported(
+                "sgl-qserve W4A8 per-channel needs w_szs, a_ssums, b_scales, a_scales"
+            )
+        return sk.qserve_w4a8_per_chn_gemm(
+            a8, b_packed, b_scales, a_scales, w_szs, a_ssums)
+
+    raise ProviderCallUnsupported(
+        "sgl-qserve W4A8 needs QServe-packed metadata; try vLLM Marlin/Machete"
+    )
 
 
 def _int8_gemm_vllm(a8, b8, a_scale, b_scale, *, out_dtype=None, **_):
@@ -2165,6 +2205,9 @@ _OPS_RAW: List[Op] = [
                  "from vllm import _custom_ops as ops; ops.marlin_gemm; "
                  "ops.gptq_marlin_repack",
                  _w4a8_marlin, "Marlin QQQ/W4A8 (Ampere/Ada)"),
+        _sgl_provider(2, _w4a8_qserve_sgl, min_sm=80,
+                      dtypes="int4 weights, int8 acts",
+                      note="QServe W4A8 per-channel/per-group (Ampere+)"),
         _ks_provider(_ks_unsupported("w4a8 GEMM"), "",
                      "no portable W4A8 kernel; needs vLLM Machete/Marlin"),
     ]),

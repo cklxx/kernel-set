@@ -72,7 +72,7 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 <!-- BENCHMARK_SUMMARY:START -->
 ## Benchmarks
 
-Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **20 runs**, **1078/1226 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **21 runs**, **1105/1256 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
 Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
 
@@ -85,9 +85,9 @@ Representative large-kernel rows:
 | NVIDIA H20 sm90 | `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us |
 | NVIDIA H20 sm90 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us |
 | NVIDIA H20 sm90 | `fp8_gemm` | `M=4096,N=4096,K=4096` | `torch-scaled-mm` | 536.7 us |
-| NVIDIA H20 sm90 | `moe_grouped_gemm` | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `kernel-set` | 247502.2 us |
-| NVIDIA H20 sm90 | `moe_gate` | `tokens=4096,h=4096,inter=14336,E=8,k=2` | `sgl-moe-gate` | 8.2 us |
-| NVIDIA H20 sm90 | `moe_permute` | `tokens=2048,h=2048,E=64,k=6` | `kernel-set` | 63.8 us |
+| NVIDIA A100-SXM4-40GB sm80 | `fp8_gemm_blockwise` | `M=4096,N=4096,K=4096,bn=128,bk=128` | `kernel-set` | 79622.7 us |
+| NVIDIA H20 sm90 | `w8a8` | `M=4096,N=4096,K=4096` | `kernel-set` | 10002.8 us |
+| NVIDIA H20 sm90 | `w4a16` | `M=4096,N=4096,K=4096` | `kernel-set` | 19182.0 us |
 
 Memory-bound provider highlights:
 

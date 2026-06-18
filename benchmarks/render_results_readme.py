@@ -128,11 +128,15 @@ _LARGE_KERNEL_PRIORITY = {
     "gemm_bf16": 3,
     "gemm_fp16": 3,
     "fp8_gemm": 4,
-    "moe_grouped_gemm": 5,
-    "fused_moe": 5,
-    "moe_gate": 6,
-    "moe_permute": 7,
-    "moe_unpermute": 8,
+    "fp8_gemm_blockwise": 4,
+    "w8a8": 5,
+    "w4a16": 6,
+    "w4a8": 7,
+    "moe_grouped_gemm": 8,
+    "fused_moe": 8,
+    "moe_gate": 9,
+    "moe_permute": 10,
+    "moe_unpermute": 11,
 }
 
 _MEMORY_KERNEL_PRIORITY = {
@@ -155,6 +159,10 @@ _LARGE_KERNEL_CANONICAL = {
     "gemm_bf16": "gemm",
     "gemm_fp16": "gemm",
     "fp8_gemm": "fp8_gemm",
+    "fp8_gemm_blockwise": "fp8_gemm_blockwise",
+    "w8a8": "w8a8",
+    "w4a16": "w4a16",
+    "w4a8": "w4a8",
     "moe_grouped_gemm": "moe_grouped_gemm",
     "fused_moe": "moe_grouped_gemm",
     "moe_gate": "moe_gate",
@@ -281,6 +289,8 @@ def _representative_rows(
     for run in runs:
         for row in run.get("rows") or []:
             if row.get("status") != "ok" or row.get("latency_us") is None:
+                continue
+            if row.get("source_role") == "baseline":
                 continue
             if not predicate(row.get("op")):
                 continue
