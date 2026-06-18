@@ -1290,6 +1290,51 @@ def _render_root_top(comparisons: List[Dict[str, Any]], limit: int = 6) -> List[
     return out
 
 
+def _validate_display_framing(
+    runs: List[Dict[str, Any]],
+    results_text: str,
+    root_text: Optional[str] = None,
+) -> List[str]:
+    """Guard the benchmark display contract.
+
+    Headline large-kernel rows must be provider/default-route comparisons, not
+    single-provider native fallback rows or reference-only baselines. Native
+    fallback rows can still be shown, but only in diagnostic/coverage sections.
+    """
+    errors: List[str] = []
+    texts = [("results README", results_text)]
+    if root_text is not None:
+        texts.append(("root README", root_text))
+    forbidden = [
+        "Representative large-kernel rows:",
+        "## Representative Large Kernels",
+        "| GPU | op | shape | measured impl | latency |",
+    ]
+    for label, text in texts:
+        for phrase in forbidden:
+            if phrase in text:
+                errors.append(f"{label}: stale large-kernel framing phrase {phrase!r}")
+
+    comparisons = _best_comparisons(runs)
+    result_fast_rows = _fast_large_comparisons(
+        comparisons, limit=16, unique_by="op_gpu")
+    root_fast_rows = _fast_large_comparisons(
+        comparisons, limit=10, unique_by="op_gpu")
+    for label, rows in (
+        ("results fast large table", result_fast_rows),
+        ("root fast large table", root_fast_rows),
+    ):
+        for row in rows:
+            if not row.get("runner_up"):
+                errors.append(
+                    f"{label}: {row.get('op')} has no comparison runner-up")
+            if _is_reference_only_impl(row.get("winner")):
+                errors.append(
+                    f"{label}: {row.get('op')} promotes reference-only "
+                    f"winner {row.get('winner')!r}")
+    return errors
+
+
 def update_root_readme(path: str, block: str) -> str:
     text = _read(path)
     if START in text and END in text:
@@ -1318,6 +1363,10 @@ def cmd_render(args: argparse.Namespace) -> int:
             args.root_readme,
             render_root_summary(runs, inference_runs=inference_runs),
         )
+
+    framing_errors = _validate_display_framing(runs, results_text, root_text)
+    if framing_errors:
+        raise ValueError("\n".join(framing_errors))
 
     checks: List[Tuple[str, str]] = [
         (args.index, index_text),
