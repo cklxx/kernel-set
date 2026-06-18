@@ -44,7 +44,9 @@ def _run_capture(cmd: List[str], cwd: Optional[pathlib.Path] = None) -> str:
     )
 
 
-def _install_deps(include_vllm: bool) -> None:
+def _install_deps(
+    include_vllm: bool, include_sglang: bool, sglang_package: str
+) -> None:
     pkgs = [
         "cmake>=3.24",
         "transformers>=4.51.0",
@@ -54,6 +56,8 @@ def _install_deps(include_vllm: bool) -> None:
     ]
     if include_vllm:
         pkgs.append("vllm==0.10.2")
+    if include_sglang:
+        pkgs.append(sglang_package)
     _run([sys.executable, "-m", "pip", "install", "-q", *pkgs])
 
 
@@ -1348,11 +1352,170 @@ def _run_kernel_microbench(model, input_ids, args) -> Dict[str, Any]:
     }
 
 
-def _run_vllm_subprocess(args, input_token_count: int) -> Optional[Dict[str, Any]]:
+def _subprocess_work_dir(args) -> pathlib.Path:
+    out = pathlib.Path(args.output)
+    work_dir = out.parent if str(out.parent) else pathlib.Path("/content")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    return work_dir
+
+
+def _subprocess_env_with_cuda_libs() -> Dict[str, str]:
+    env = dict(os.environ)
+    candidates: List[pathlib.Path] = []
+    try:
+        import site
+
+        site_roots = site.getsitepackages()
+        user_site = site.getusersitepackages()
+        if user_site:
+            site_roots.append(user_site)
+    except Exception:
+        site_roots = []
+    for root in site_roots:
+        nvidia = pathlib.Path(root) / "nvidia"
+        if nvidia.exists():
+            candidates.extend(nvidia.glob("*/lib"))
+            candidates.extend(nvidia.glob("*/lib64"))
+    candidates.extend(
+        pathlib.Path(path)
+        for path in (
+            "/usr/local/cuda/lib64",
+            "/usr/local/cuda/targets/x86_64-linux/lib",
+            "/usr/local/cuda-12.8/lib64",
+            "/usr/local/cuda-12.8/targets/x86_64-linux/lib",
+        )
+    )
+    existing = [str(path) for path in candidates if path.exists()]
+    current = env.get("LD_LIBRARY_PATH")
+    if current:
+        existing.append(current)
+    if existing:
+        env["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(existing))
+    return env
+
+
+def _write_text_only_sitecustomize(work_dir: pathlib.Path) -> pathlib.Path:
+    stub_dir = work_dir / "sglang_text_only_site"
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    (stub_dir / "sitecustomize.py").write_text(
+        r'''
+import enum
+import importlib.machinery
+import sys
+import types
+
+
+def _missing_vision_fn(name):
+    def fn(*_args, **_kwargs):
+        raise RuntimeError(f"torchvision.{name} is unavailable in this text-only run")
+
+    fn.__name__ = name.rsplit(".", 1)[-1]
+    return fn
+
+
+def _module_getattr(prefix):
+    def get(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return _missing_vision_fn(f"{prefix}.{name}")
+
+    return get
+
+
+class ImageReadMode(enum.Enum):
+    UNCHANGED = "UNCHANGED"
+    GRAY = "GRAY"
+    GRAY_ALPHA = "GRAY_ALPHA"
+    RGB = "RGB"
+    RGB_ALPHA = "RGB_ALPHA"
+
+
+class InterpolationMode(enum.Enum):
+    NEAREST = "nearest"
+    NEAREST_EXACT = "nearest-exact"
+    BILINEAR = "bilinear"
+    BICUBIC = "bicubic"
+    BOX = "box"
+    HAMMING = "hamming"
+    LANCZOS = "lanczos"
+
+
+tv = types.ModuleType("torchvision")
+tv_io = types.ModuleType("torchvision.io")
+tv_transforms = types.ModuleType("torchvision.transforms")
+tv_transforms_functional = types.ModuleType("torchvision.transforms.functional")
+tv_transforms_v2 = types.ModuleType("torchvision.transforms.v2")
+tv_transforms_v2_functional = types.ModuleType("torchvision.transforms.v2.functional")
+
+tv_io.decode_jpeg = _missing_vision_fn("io.decode_jpeg")
+tv_io.decode_image = _missing_vision_fn("io.decode_image")
+tv_io.ImageReadMode = ImageReadMode
+tv_io.__getattr__ = _module_getattr("io")
+
+tv_transforms.InterpolationMode = InterpolationMode
+tv_transforms.functional = tv_transforms_functional
+tv_transforms.v2 = tv_transforms_v2
+tv_transforms.__getattr__ = _module_getattr("transforms")
+tv_transforms_functional.__getattr__ = _module_getattr("transforms.functional")
+tv_transforms_v2.functional = tv_transforms_v2_functional
+tv_transforms_v2.__getattr__ = _module_getattr("transforms.v2")
+tv_transforms_v2_functional.__getattr__ = _module_getattr("transforms.v2.functional")
+for name in ("pil_to_tensor", "to_pil_image", "to_tensor", "resize", "center_crop", "normalize"):
+    setattr(tv_transforms_functional, name, _missing_vision_fn(name))
+
+tv.io = tv_io
+tv.transforms = tv_transforms
+tv.__version__ = "0.0.text_only_stub"
+tv.__path__ = []
+tv_transforms.__path__ = []
+tv_transforms_v2.__path__ = []
+
+for module in (tv, tv_io, tv_transforms, tv_transforms_functional, tv_transforms_v2, tv_transforms_v2_functional):
+    module.__file__ = "<torchvision_text_only_stub>"
+tv.__spec__ = importlib.machinery.ModuleSpec("torchvision", loader=None)
+tv_io.__spec__ = importlib.machinery.ModuleSpec("torchvision.io", loader=None)
+tv_transforms.__spec__ = importlib.machinery.ModuleSpec("torchvision.transforms", loader=None)
+tv_transforms_functional.__spec__ = importlib.machinery.ModuleSpec("torchvision.transforms.functional", loader=None)
+tv_transforms_v2.__spec__ = importlib.machinery.ModuleSpec("torchvision.transforms.v2", loader=None)
+tv_transforms_v2_functional.__spec__ = importlib.machinery.ModuleSpec("torchvision.transforms.v2.functional", loader=None)
+
+sys.modules["torchvision"] = tv
+sys.modules["torchvision.io"] = tv_io
+sys.modules["torchvision.transforms"] = tv_transforms
+sys.modules["torchvision.transforms.functional"] = tv_transforms_functional
+sys.modules["torchvision.transforms.v2"] = tv_transforms_v2
+sys.modules["torchvision.transforms.v2.functional"] = tv_transforms_v2_functional
+
+tc = types.ModuleType("torchcodec")
+tc_decoders = types.ModuleType("torchcodec.decoders")
+
+
+class VideoDecoder:
+    def __init__(self, *_args, **_kwargs):
+        raise RuntimeError("torchcodec video decode is unavailable in this text-only run")
+
+
+tc_decoders.VideoDecoder = VideoDecoder
+tc.decoders = tc_decoders
+tc.__path__ = []
+tc.__file__ = "<torchcodec_text_only_stub>"
+tc_decoders.__file__ = "<torchcodec_text_only_stub>"
+tc.__spec__ = importlib.machinery.ModuleSpec("torchcodec", loader=None)
+tc_decoders.__spec__ = importlib.machinery.ModuleSpec("torchcodec.decoders", loader=None)
+sys.modules["torchcodec"] = tc
+sys.modules["torchcodec.decoders"] = tc_decoders
+''',
+        encoding="utf-8",
+    )
+    return stub_dir
+
+
+def _run_vllm_subprocess(args, prompt_text: str) -> Optional[Dict[str, Any]]:
     if not args.run_vllm:
         return None
-    inner = pathlib.Path("/content/qwen3_vllm_inner.py")
-    output = pathlib.Path("/content/qwen3_vllm_result.json")
+    work_dir = _subprocess_work_dir(args)
+    inner = work_dir / "qwen3_vllm_inner.py"
+    output = work_dir / "qwen3_vllm_result.json"
     vllm_dtype = "bfloat16" if args.dtype == "bf16" else "float16"
     inner.write_text(
         f"""
@@ -1361,7 +1524,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from vllm import LLM, SamplingParams
 
 model_id = {args.model!r}
-prompt = {args.prompt!r}
+prompt = {prompt_text!r}
 new_tokens = {args.new_tokens}
 out_path = {str(output)!r}
 if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
@@ -1408,36 +1571,251 @@ json.dump({{
     return json.loads(output.read_text(encoding="utf-8"))
 
 
+def _run_sglang_subprocess(args, prompt_text: str) -> Optional[Dict[str, Any]]:
+    if not args.run_sglang:
+        return None
+    work_dir = _subprocess_work_dir(args)
+    stub_dir = _write_text_only_sitecustomize(work_dir)
+    inner = work_dir / "qwen3_sglang_inner.py"
+    output = work_dir / "qwen3_sglang_result.json"
+    sglang_dtype = "bfloat16" if args.dtype == "bf16" else "float16"
+    inner.write_text(
+        f"""
+import json, time, torch
+from transformers import AutoTokenizer
+
+model_id = {args.model!r}
+prompt = {prompt_text!r}
+new_tokens = {args.new_tokens}
+dtype = {sglang_dtype!r}
+out_path = {str(output)!r}
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+prompt_ids = tokenizer(prompt, return_tensors='pt').input_ids[0].tolist()
+
+
+def _engine_class():
+    import sglang as sgl
+    if hasattr(sgl, "Engine"):
+        return sgl.Engine
+    from sglang.srt.entrypoints.engine import Engine
+    return Engine
+
+
+def _make_engine():
+    engine_cls = _engine_class()
+    attempts = [
+        {{"model_path": model_id, "dtype": dtype, "mem_fraction_static": 0.85, "context_length": 1024}},
+        {{"model_path": model_id, "dtype": dtype, "mem_fraction_static": 0.85}},
+        {{"model_path": model_id, "dtype": dtype}},
+        {{"model_path": model_id}},
+        {{"model": model_id, "dtype": dtype, "mem_fraction_static": 0.85, "context_length": 1024}},
+        {{"model": model_id, "dtype": dtype, "mem_fraction_static": 0.85}},
+        {{"model": model_id, "dtype": dtype}},
+        {{"model": model_id}},
+    ]
+    last_error = None
+    for kwargs in attempts:
+        try:
+            return engine_cls(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _generate(llm):
+    sampling_params = {{"temperature": 0.0, "max_new_tokens": new_tokens}}
+    attempts = [
+        lambda: llm.generate([prompt], sampling_params),
+        lambda: llm.generate(prompt, sampling_params),
+        lambda: llm.generate([prompt], sampling_params=sampling_params),
+        lambda: llm.generate(prompt, sampling_params=sampling_params),
+    ]
+    last_error = None
+    for fn in attempts:
+        try:
+            return fn()
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _get(obj, key):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _first(obj):
+    if isinstance(obj, (list, tuple)) and obj:
+        return obj[0]
+    return obj
+
+
+def _as_int_list(value):
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    if not isinstance(value, (list, tuple)):
+        return None
+    try:
+        return [int(x) for x in value]
+    except Exception:
+        return None
+
+
+def _extract_output(result):
+    item = _first(result)
+    nested = _first(_get(item, "outputs"))
+    meta = _get(item, "meta_info")
+    nested_meta = _get(nested, "meta_info")
+    text = (
+        _get(item, "text")
+        or _get(nested, "text")
+        or _get(item, "output")
+        or _get(nested, "output")
+        or ""
+    )
+    for source in (item, nested, meta, nested_meta):
+        ids = _as_int_list(_get(source, "output_ids"))
+        if ids is None:
+            ids = _as_int_list(_get(source, "token_ids"))
+        if ids is None:
+            ids = _as_int_list(_get(source, "output_token_ids"))
+        if ids is None:
+            ids = _as_int_list(_get(source, "completion_token_ids"))
+        if ids is not None:
+            return text, ids
+    return text, None
+
+
+def _shutdown(llm):
+    for name in ("shutdown", "release", "close"):
+        fn = getattr(llm, name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+            return
+
+
+def main():
+    llm = _make_engine()
+    try:
+        _generate(llm)
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        outs = _generate(llm)
+        torch.cuda.synchronize()
+        seconds = time.perf_counter() - t0
+        generated_text, generated_ids = _extract_output(outs)
+        if generated_ids is not None:
+            if generated_ids[:len(prompt_ids)] == prompt_ids:
+                tokens = generated_ids
+                completion_ids = generated_ids[len(prompt_ids):]
+            else:
+                completion_ids = generated_ids
+                tokens = prompt_ids + completion_ids
+        else:
+            full_text = generated_text if generated_text.startswith(prompt) else prompt + generated_text
+            tokens = tokenizer(full_text, return_tensors='pt').input_ids[0].tolist()
+            completion_ids = tokens[len(prompt_ids):]
+        json.dump({{
+          "seconds": seconds,
+          "tokens_per_s_new": new_tokens / seconds,
+          "prompt_tokens": len(prompt_ids),
+          "new_tokens": new_tokens,
+          "tokens": tokens,
+          "generated_tokens": completion_ids,
+          "text": tokenizer.decode(tokens, skip_special_tokens=False),
+          "generated_text": generated_text,
+          "scope": "SGLang Engine.generate",
+          "note": ""
+        }}, open(out_path, "w"), indent=2)
+    finally:
+        _shutdown(llm)
+
+
+if __name__ == "__main__":
+    main()
+""",
+        encoding="utf-8",
+    )
+    env = _subprocess_env_with_cuda_libs()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(stub_dir)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    )
+    proc = subprocess.run(
+        [sys.executable, str(inner)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=args.sglang_timeout_s,
+        env=env,
+    )
+    print(proc.stdout[-4000:], flush=True)
+    if proc.returncode != 0 or not output.exists():
+        print(f"SGLang failed rc={proc.returncode}; omitted from result table", flush=True)
+        return None
+    return json.loads(output.read_text(encoding="utf-8"))
+
+
 def run(args) -> Dict[str, Any]:
-    _install_deps(include_vllm=args.run_vllm)
+    run_best_practice = bool(args.run_best_practice)
+    run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
+    needs_kernel_set = (
+        run_best_practice
+        or run_full_kernels
+        or bool(args.run_ablation_suite)
+        or bool(args.run_kernel_microbench)
+    )
+    needs_hf_model = (not args.skip_hf) or needs_kernel_set
+
+    _install_deps(
+        include_vllm=args.run_vllm,
+        include_sglang=args.run_sglang,
+        sglang_package=args.sglang_package,
+    )
     reference = _load_reference_json(args.reference_json_url or args.reference_json)
-    repo = _prepare_repo(pathlib.Path(args.repo), args.clone_url, args.repo_ref)
-    arch = args.arch or _detect_sm()
-    lib = _build_kernel_set(repo, arch)
-    os.environ["KERNEL_SET_LIB"] = str(lib)
-    os.environ["KERNEL_SET_LIB_DIR"] = str(lib.parent)
-    sys.path.insert(0, str(repo / "bindings" / "python"))
+    if needs_kernel_set:
+        repo = _prepare_repo(pathlib.Path(args.repo), args.clone_url, args.repo_ref)
+        arch = args.arch or _detect_sm()
+        lib = _build_kernel_set(repo, arch)
+        os.environ["KERNEL_SET_LIB"] = str(lib)
+        os.environ["KERNEL_SET_LIB_DIR"] = str(lib.parent)
+        sys.path.insert(0, str(repo / "bindings" / "python"))
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoTokenizer
 
     torch.manual_seed(0)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required")
-    dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        device_map={"": "cuda"},
-    ).eval()
-    model.requires_grad_(False)
-
-    enc = tokenizer(args.prompt, return_tensors="pt").to("cuda")
+    enc = tokenizer(args.prompt, return_tensors="pt")
     input_ids = enc.input_ids[:, : args.prompt_tokens].contiguous()
     attention_mask = enc.attention_mask[:, : args.prompt_tokens].contiguous()
     prompt_text = tokenizer.decode(input_ids[0], skip_special_tokens=False)
+    model = None
+    if needs_hf_model:
+        from transformers import AutoModelForCausalLM
+
+        dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+            device_map={"": "cuda"},
+        ).eval()
+        model.requires_grad_(False)
+        input_ids = input_ids.to("cuda")
+        attention_mask = attention_mask.to("cuda")
 
     reference_tokens: Optional[List[int]] = None
     reference_run_id = (
@@ -1454,8 +1832,6 @@ def run(args) -> Dict[str, Any]:
         reference_engines = {}
 
     engines: Dict[str, Any] = {}
-    run_best_practice = bool(args.run_best_practice)
-    run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
     if args.skip_hf:
         if args.merge_reference_engines:
             reference_names = ["transformers", "vllm", "sglang"]
@@ -1468,6 +1844,7 @@ def run(args) -> Dict[str, Any]:
                 if isinstance(engine, dict):
                     engines[name] = _kernel_set_reference_row(engine, reference_run_id)
     else:
+        assert model is not None
         engines["transformers"] = _run_hf(
             model, tokenizer, input_ids, attention_mask, args.new_tokens, args.hf_repeat
         )
@@ -1478,12 +1855,14 @@ def run(args) -> Dict[str, Any]:
             engines[name].update(_token_match(reference_tokens, engines[name]["tokens"]))
 
     if run_best_practice:
+        assert model is not None
         engines["kernel_set_best_practice"] = _run_kernel_set_best_practice(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
         apply_match("kernel_set_best_practice")
 
     if run_full_kernels:
+        assert model is not None
         engines["kernel_set_full_kernels"] = _run_kernel_set_full(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
@@ -1491,6 +1870,7 @@ def run(args) -> Dict[str, Any]:
 
     optimization_ablation = None
     if args.run_ablation_suite:
+        assert model is not None
         optimization_ablation = _run_composition_ablation(
             model,
             tokenizer,
@@ -1504,16 +1884,44 @@ def run(args) -> Dict[str, Any]:
 
     kernel_microbench = None
     if args.run_kernel_microbench:
+        assert model is not None
         kernel_microbench = _run_kernel_microbench(model, input_ids, args)
+    elif args.merge_reference_engines and isinstance(reference, dict):
+        ref_microbench = reference.get("kernel_microbench")
+        if isinstance(ref_microbench, dict):
+            kernel_microbench = copy.deepcopy(ref_microbench)
+
+    if (
+        optimization_ablation is None
+        and args.merge_reference_engines
+        and isinstance(reference, dict)
+    ):
+        ref_ablation = reference.get("optimization_ablation")
+        if isinstance(ref_ablation, dict):
+            optimization_ablation = copy.deepcopy(ref_ablation)
+
+    def release_model() -> None:
+        nonlocal model
+        if model is not None:
+            del model
+            model = None
+            torch.cuda.empty_cache()
 
     if args.run_vllm:
-        del model
-        torch.cuda.empty_cache()
-        vllm = _run_vllm_subprocess(args, int(input_ids.shape[-1]))
+        release_model()
+        vllm = _run_vllm_subprocess(args, prompt_text)
         if vllm is not None:
             if reference_tokens is not None:
                 vllm.update(_token_match(reference_tokens, vllm["tokens"]))
             engines["vllm"] = vllm
+
+    if args.run_sglang:
+        release_model()
+        sglang = _run_sglang_subprocess(args, prompt_text)
+        if sglang is not None:
+            if reference_tokens is not None:
+                sglang.update(_token_match(reference_tokens, sglang["tokens"]))
+            engines["sglang"] = sglang
 
     props = torch.cuda.get_device_properties(0)
     result = {
@@ -1567,6 +1975,9 @@ def main() -> int:
     parser.add_argument("--kernel-include-batch-decode", action="store_true")
     parser.add_argument("--run-vllm", action="store_true")
     parser.add_argument("--vllm-timeout-s", type=float, default=1200.0)
+    parser.add_argument("--run-sglang", action="store_true")
+    parser.add_argument("--sglang-timeout-s", type=float, default=1800.0)
+    parser.add_argument("--sglang-package", default="sglang[all]")
     parser.add_argument("--reference-json", default=None)
     parser.add_argument("--reference-json-url", default=None)
     parser.add_argument("--merge-reference-engines", action="store_true")
