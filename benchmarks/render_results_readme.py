@@ -425,7 +425,7 @@ def build_index(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _render_run_table(
     runs: List[Dict[str, Any]],
-    limit: int = 12,
+    limit: int = 24,
     base_dir: Optional[str] = None,
 ) -> List[str]:
     lines = [

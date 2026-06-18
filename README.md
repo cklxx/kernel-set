@@ -72,7 +72,7 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 <!-- BENCHMARK_SUMMARY:START -->
 ## Benchmarks
 
-Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **24 runs**, **1125/1284 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **40 runs**, **1449/1614 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
 Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
 
@@ -85,7 +85,7 @@ Representative large-kernel rows:
 | NVIDIA H20 sm90 | `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us |
 | NVIDIA H20 sm90 | `gemm` | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us |
 | NVIDIA H20 sm90 | `fp8_gemm` | `M=4096,N=4096,K=4096` | `torch-scaled-mm` | 536.7 us |
-| NVIDIA A100-SXM4-40GB sm80 | `fp8_gemm_blockwise` | `M=4096,N=4096,K=4096,bn=128,bk=128` | `kernel-set` | 79622.7 us |
+| NVIDIA A100-SXM4-40GB sm80 | `fp8_gemm_blockwise` | `M=4096,N=4096,K=4096,bn=128,bk=128` | `kernel-set` | 79413.8 us |
 | NVIDIA H20 sm90 | `w8a8` | `M=4096,N=4096,K=4096` | `kernel-set` | 10002.8 us |
 | NVIDIA H20 sm90 | `w4a16` | `M=4096,N=4096,K=4096` | `kernel-set` | 19182.0 us |
 
@@ -97,7 +97,7 @@ Memory-bound provider highlights:
 | NVIDIA L4 sm89 | `fused_add_rmsnorm` | `kernel-set` 2333.7 us | `flashinfer-norm` 4622.8 us | 1.98x |
 | NVIDIA H20 sm90 | `swiglu` | `kernel-set` 12.1 us | `flashinfer-act` 12.5 us | 1.03x |
 | NVIDIA L4 sm89 | `swiglu` | `kernel-set` 12.3 us | `flashinfer-act` 13.3 us | 1.08x |
-| NVIDIA A100-SXM4-40GB sm80 | `swiglu` | `kernel-set` 8.2 us | `eager` 33.8 us | 4.12x |
+| NVIDIA A100-SXM4-40GB sm80 | `swiglu` | `kernel-set` 8.2 us | `eager` 37.9 us | 4.63x |
 | NVIDIA RTX PRO 6000 Blackwell Server Edition sm120 | `swiglu` | `kernel-set` 6.1 us | `eager` 12.3 us | 2.02x |
 
 Engine smoke:
