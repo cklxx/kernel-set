@@ -560,6 +560,7 @@ def _render_inference_table(
         "transformers",
         "vllm",
         "sglang",
+        "tensorrt_llm",
         "kernel_set_best_practice",
         "kernel_set_full_kernels",
         "kernel_set_ops",

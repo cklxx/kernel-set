@@ -186,15 +186,15 @@ def _run_kernel_set_engine(
 ):
     import kernel_set as ks
     import torch
-    from engines.causal_lm_greedy_engine import (
-        KernelSetCausalLMConfigurablePath,
+    from engines.llm_greedy_engine import (
+        KernelSetLLMConfigurablePath,
         kernel_coverage_for_modes,
     )
 
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def make_engine():
-        return KernelSetCausalLMConfigurablePath(
+        return KernelSetLLMConfigurablePath(
             model,
             ks,
             max_total_tokens=max_total_tokens,
@@ -233,7 +233,7 @@ def _run_kernel_set_engine(
 
 
 def _quant_engine_modes(args):
-    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES, TORCH_MANUAL_MODES
+    from engines.llm_greedy_engine import BEST_PRACTICE_MODES, TORCH_MANUAL_MODES
 
     variants: Dict[str, Dict[str, str]] = {
         "kernel_set_best_practice": dict(BEST_PRACTICE_MODES)
@@ -410,7 +410,7 @@ def run(args) -> Dict[str, Any]:
         "gpu_sm": props.major * 10 + props.minor,
         "dtype": args.dtype,
         "new_tokens": args.new_tokens,
-        "engine": "KernelSetCausalLMConfigurablePath",
+        "engine": "KernelSetLLMConfigurablePath",
         "quant_modes": args.quant_modes,
         "engine_variants": list(_quant_engine_modes(args)),
         "variants": variants,

@@ -221,12 +221,12 @@ def _load_reference_json(path_or_url: Optional[str]) -> Optional[Dict[str, Any]]
 
 def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int):
     import kernel_set as ks
-    from engines.causal_lm_greedy_engine import KernelSetCausalLMFullPath
+    from engines.llm_greedy_engine import KernelSetLLMFullPath
 
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def generate():
-        engine = KernelSetCausalLMFullPath(
+        engine = KernelSetLLMFullPath(
             model, ks, max_total_tokens=max_total_tokens, block_size=block_size
         )
         with engine.torch.inference_mode():
@@ -285,15 +285,15 @@ def _run_kernel_set_variant(
 ):
     import kernel_set as ks
     import torch
-    from engines.causal_lm_greedy_engine import (
-        KernelSetCausalLMConfigurablePath,
+    from engines.llm_greedy_engine import (
+        KernelSetLLMConfigurablePath,
         kernel_coverage_for_modes,
     )
 
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def make_engine():
-        return KernelSetCausalLMConfigurablePath(
+        return KernelSetLLMConfigurablePath(
             model,
             ks,
             max_total_tokens=max_total_tokens,
@@ -335,7 +335,7 @@ def _run_kernel_set_variant(
 def _run_kernel_set_best_practice(
     model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
 ):
-    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES
+    from engines.llm_greedy_engine import BEST_PRACTICE_MODES
 
     return _run_kernel_set_variant(
         model,
@@ -380,7 +380,7 @@ def _run_composition_ablation(
     reference_tokens: Optional[List[int]],
     baseline_engine: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    from engines.causal_lm_greedy_engine import ABLATION_VARIANTS, merge_modes
+    from engines.llm_greedy_engine import ABLATION_VARIANTS, merge_modes
 
     variants: List[Dict[str, Any]] = []
     if baseline_engine is None:
@@ -437,7 +437,7 @@ def _run_kernel_microbench(model, input_ids, args) -> Dict[str, Any]:
     import kernel_set as ks
     import torch
     import torch.nn.functional as F
-    from engines.causal_lm_greedy_engine import make_rope_cache, rms_eps
+    from engines.llm_greedy_engine import make_rope_cache, rms_eps
 
     torch.manual_seed(1234)
     config = model.config
@@ -1214,6 +1214,166 @@ if __name__ == "__main__":
     return json.loads(output.read_text(encoding="utf-8"))
 
 
+def _run_tensorrt_llm_subprocess(args, prompt_text: str) -> Optional[Dict[str, Any]]:
+    if not args.run_tensorrt_llm:
+        return None
+    work_dir = _subprocess_work_dir(args)
+    inner = work_dir / "qwen3_tensorrt_llm_inner.py"
+    output = work_dir / "qwen3_tensorrt_llm_result.json"
+    error_output = work_dir / "qwen3_tensorrt_llm_error.json"
+    trt_dtype = "bfloat16" if args.dtype == "bf16" else "float16"
+    inner.write_text(
+        f"""
+import json, subprocess, sys, time, traceback, torch
+from transformers import AutoTokenizer
+
+model_id = {args.model!r}
+prompt = {prompt_text!r}
+new_tokens = {args.new_tokens}
+dtype = {trt_dtype!r}
+package = {args.tensorrt_llm_package!r}
+out_path = {str(output)!r}
+err_path = {str(error_output)!r}
+
+
+def _write_error(exc):
+    json.dump({{
+        "error": f"{{type(exc).__name__}}: {{exc}}",
+        "traceback_tail": traceback.format_exc()[-4000:],
+        "scope": "TensorRT-LLM LLM.generate",
+        "note": "NVIDIA TensorRT-LLM attempt failed; not a performance row",
+    }}, open(err_path, "w"), indent=2)
+
+
+def _make_llm(LLM):
+    attempts = [
+        {{"model": model_id, "dtype": dtype}},
+        {{"model": model_id}},
+    ]
+    last_error = None
+    for kwargs in attempts:
+        try:
+            return LLM(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _make_sampling_params(SamplingParams):
+    attempts = [
+        {{"temperature": 0.0, "max_tokens": new_tokens}},
+        {{"temperature": 0.0, "max_new_tokens": new_tokens}},
+        {{"temperature": 0.0}},
+    ]
+    last_error = None
+    for kwargs in attempts:
+        try:
+            return SamplingParams(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+    raise last_error
+
+
+def _first_output(result):
+    if result is None:
+        return None
+    if isinstance(result, (list, tuple)):
+        return result[0] if result else None
+    result = list(result)
+    return result[0] if result else None
+
+
+def _get(obj, key):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _extract_text_and_ids(result):
+    item = _first_output(result)
+    nested = _first_output(_get(item, "outputs"))
+    text = _get(nested, "text") or _get(item, "text") or ""
+    token_ids = (
+        _get(nested, "token_ids")
+        or _get(nested, "tokens")
+        or _get(item, "token_ids")
+        or _get(item, "output_token_ids")
+    )
+    if hasattr(token_ids, "tolist"):
+        token_ids = token_ids.tolist()
+    if isinstance(token_ids, (list, tuple)):
+        try:
+            token_ids = [int(x) for x in token_ids]
+        except Exception:
+            token_ids = None
+    else:
+        token_ids = None
+    return text, token_ids
+
+
+try:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", package], check=True)
+    from tensorrt_llm import LLM, SamplingParams
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    prompt_ids = tokenizer(prompt, return_tensors="pt").input_ids[0].tolist()
+    llm = _make_llm(LLM)
+    params = _make_sampling_params(SamplingParams)
+    llm.generate([prompt], params)
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    result = llm.generate([prompt], params)
+    torch.cuda.synchronize()
+    seconds = time.perf_counter() - t0
+    generated_text, completion_ids = _extract_text_and_ids(result)
+    if completion_ids is None:
+        tokens = tokenizer(prompt + generated_text, return_tensors="pt").input_ids[0].tolist()
+        completion_ids = tokens[len(prompt_ids):]
+    else:
+        tokens = prompt_ids + completion_ids
+    json.dump({{
+      "seconds": seconds,
+      "tokens_per_s_new": new_tokens / seconds,
+      "prompt_tokens": len(prompt_ids),
+      "new_tokens": new_tokens,
+      "tokens": tokens,
+      "generated_tokens": completion_ids,
+      "text": tokenizer.decode(tokens, skip_special_tokens=False),
+      "generated_text": generated_text,
+      "scope": "TensorRT-LLM LLM.generate",
+      "note": "NVIDIA TensorRT-LLM high-level LLM API"
+    }}, open(out_path, "w"), indent=2)
+except Exception as exc:
+    _write_error(exc)
+    raise
+""",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [sys.executable, str(inner)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=args.tensorrt_llm_timeout_s,
+    )
+    print(proc.stdout[-4000:], flush=True)
+    if proc.returncode != 0 or not output.exists():
+        if error_output.exists():
+            row = json.loads(error_output.read_text(encoding="utf-8"))
+        else:
+            row = {
+                "error": f"TensorRT-LLM failed rc={proc.returncode}",
+                "scope": "TensorRT-LLM LLM.generate",
+                "note": proc.stdout[-2000:],
+            }
+        print(f"TensorRT-LLM failed rc={proc.returncode}; omitted from result table", flush=True)
+        return row
+    return json.loads(output.read_text(encoding="utf-8"))
+
+
 def run(args) -> Dict[str, Any]:
     run_best_practice = bool(args.run_best_practice)
     run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
@@ -1372,6 +1532,14 @@ def run(args) -> Dict[str, Any]:
                 sglang.update(_token_match(reference_tokens, sglang["tokens"]))
             engines["sglang"] = sglang
 
+    if args.run_tensorrt_llm:
+        release_model()
+        tensorrt_llm = _run_tensorrt_llm_subprocess(args, prompt_text)
+        if tensorrt_llm is not None:
+            if reference_tokens is not None and "tokens" in tensorrt_llm:
+                tensorrt_llm.update(_token_match(reference_tokens, tensorrt_llm["tokens"]))
+            engines["tensorrt_llm"] = tensorrt_llm
+
     props = torch.cuda.get_device_properties(0)
     result = {
         "schema_version": 1,
@@ -1427,6 +1595,9 @@ def main() -> int:
     parser.add_argument("--run-sglang", action="store_true")
     parser.add_argument("--sglang-timeout-s", type=float, default=1800.0)
     parser.add_argument("--sglang-package", default="sglang")
+    parser.add_argument("--run-tensorrt-llm", action="store_true")
+    parser.add_argument("--tensorrt-llm-timeout-s", type=float, default=2400.0)
+    parser.add_argument("--tensorrt-llm-package", default="tensorrt_llm")
     parser.add_argument("--reference-json", default=None)
     parser.add_argument("--reference-json-url", default=None)
     parser.add_argument("--merge-reference-engines", action="store_true")

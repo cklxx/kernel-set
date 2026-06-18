@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from .causal_lm_greedy_engine import (
+from .llm_greedy_engine import (
     ABLATION_VARIANTS,
     BEST_PRACTICE_MODES,
-    KernelSetCausalLMBestPracticePath,
-    KernelSetCausalLMConfigurablePath,
-    KernelSetCausalLMFullPath,
+    KernelSetLLMBestPracticePath,
+    KernelSetLLMConfigurablePath,
+    KernelSetLLMFullPath,
     KernelStats,
     TORCH_MANUAL_MODES,
     kernel_coverage_for_modes,
@@ -17,9 +17,9 @@ from .causal_lm_greedy_engine import (
     rms_eps,
 )
 
-KernelSetQwen3FullPath = KernelSetCausalLMFullPath
-KernelSetQwen3ConfigurablePath = KernelSetCausalLMConfigurablePath
-KernelSetQwen3BestPracticePath = KernelSetCausalLMBestPracticePath
+KernelSetQwen3FullPath = KernelSetLLMFullPath
+KernelSetQwen3ConfigurablePath = KernelSetLLMConfigurablePath
+KernelSetQwen3BestPracticePath = KernelSetLLMBestPracticePath
 
 __all__ = [
     "ABLATION_VARIANTS",
