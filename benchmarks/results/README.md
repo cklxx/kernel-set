@@ -140,34 +140,27 @@ Single-prompt decode smoke runs are integration checks, not apples-to-apples
 engine throughput benchmarks. They verify tokenizer/output parity for the
 composed engine paths.
 Rows with kernel coverage are integration rows, not serving-system benchmarks:
-`kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses
-shape-aware provider selection for the measured Qwen3 shapes;
-`kernel_set_full_kernels` is the slower all-kernel coverage smoke that
-also routes linears through kernel-set's auditable reference GEMM path.
+`kernel_set_engine` keeps dense linears on torch/cuBLAS and uses
+shape-aware provider selection for the measured Qwen3 shapes.
 
 | model / GPU | engine | scope | new tok/s | token match | notes | source |
 |---|---|---|---:|---|---|---|
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `transformers` | HuggingFace generate | 15.20 | yes | reference; historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `vllm` | vLLM LLM.generate | 16.24 | yes | historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 | Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `sglang` | SGLang Engine.generate | 16.40 | no (104/197) | Colab L4 SGLang Engine.generate; greedy output diverged from HF reference after prompt + 3 generated tokens | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_best_practice` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention | 15.65 | no (136/197) | shape-aware best-practice composition from Qwen3 kernel microbench; Python loop/allocation and unfused Q/K/V + gate/up remain; historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `kernel_set_engine` | single-request Python engine; torch/cuBLAS linears + ks RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention | 15.65 | no (136/197) | shape-aware kernel-set engine composition from Qwen3 kernel microbench; Python loop/allocation and unfused Q/K/V + gate/up remain; historical baseline from 20260618-qwen3-8b-l4-long-greedy-vllm | [20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json](inference/20260618-qwen3-8b-l4-long-greedy-vllm-sglang.json) |
 
 Kernel coverage for the composed kernel-set engine:
 
 | engine | covered kernel-set kernels | remaining torch/Python path | counted calls |
 |---|---|---|---|
-| `kernel_set_best_practice` | `ks_embedding_lookup(auto multi-token)`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_paged_attn_decode(auto short-context)`<br>`ks_reshape_and_cache`<br>`ks_swiglu` | embedding single-token=torch<br>linear=torch/cuBLAS<br>attention prefill/long-context=torch SDPA<br>argmax=torch<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `embedding_lookup`=1<br>`paged_attn_decode`=3420<br>`reshape_and_cache`=3456<br>`rmsnorm`=13920<br>`rope`=3456<br>`swiglu`=3456<br>`torch_argmax`=96<br>`torch_attention_prefill`=36<br>`torch_embedding`=95<br>`torch_linear`=24288 |
+| `kernel_set_engine` | `ks_embedding_lookup(auto multi-token)`<br>`ks_rms_norm`<br>`ks_rope_gather`<br>`ks_paged_attn_decode(auto short-context)`<br>`ks_reshape_and_cache`<br>`ks_swiglu` | embedding single-token=torch<br>linear=torch/cuBLAS<br>attention prefill/long-context=torch SDPA<br>argmax=torch<br>residual add<br>tensor reshape/view/allocation<br>Python request/decode loop<br>paged block scheduler | `embedding_lookup`=1<br>`paged_attn_decode`=3420<br>`reshape_and_cache`=3456<br>`rmsnorm`=13920<br>`rope`=3456<br>`swiglu`=3456<br>`torch_argmax`=96<br>`torch_attention_prefill`=36<br>`torch_embedding`=95<br>`torch_linear`=24288 |
 
 Quantized checkpoint engine smoke:
 
 | model / GPU | quant mode | engine | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |
 |---|---|---|---:|---:|---:|---|---:|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bf16` | `manual_torch_ops` | 14.97 | 14.76 | 0.99x | yes | 15.34 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_int8` | `manual_torch_ops` | 5.06 | 4.88 | 0.96x | yes | 8.98 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_best_practice` | 10.83 | 13.72 | 1.27x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_torch_attention` | 10.83 | 12.47 | 1.15x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `manual_torch_ops` | 10.83 | 9.91 | 0.92x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_fp4` | `manual_torch_ops` | 10.64 | 10.01 | 0.94x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | 10.83 | 13.72 | 1.27x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
 
 Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.
 

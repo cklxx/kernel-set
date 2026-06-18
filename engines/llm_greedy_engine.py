@@ -93,7 +93,7 @@ class KernelStats:
     torch_argmax_calls: int = 0
 
 
-BEST_PRACTICE_MODES = {
+KERNEL_SET_ENGINE_MODES = {
     "embedding": "auto",
     "linear": "torch",
     "norm": "ks",
@@ -103,6 +103,7 @@ BEST_PRACTICE_MODES = {
     "swiglu": "ks",
     "argmax": "torch",
 }
+BEST_PRACTICE_MODES = KERNEL_SET_ENGINE_MODES
 
 TORCH_MANUAL_MODES = {
     "embedding": "torch",
@@ -170,7 +171,7 @@ ABLATION_VARIANTS = [
 
 
 def merge_modes(overrides: Dict[str, str]) -> Dict[str, str]:
-    modes = dict(BEST_PRACTICE_MODES)
+    modes = dict(KERNEL_SET_ENGINE_MODES)
     modes.update(overrides)
     return modes
 
@@ -649,8 +650,8 @@ class KernelSetLLMConfigurablePath(KernelSetLLMFullPath):
         return int(logits.argmax(dim=-1).item()), logits
 
 
-class KernelSetLLMBestPracticePath(KernelSetLLMConfigurablePath):
-    """Kernel-set best-practice path with shape-aware provider selection."""
+class KernelSetLLMEnginePath(KernelSetLLMConfigurablePath):
+    """Canonical kernel-set engine path with shape-aware provider selection."""
 
     def __init__(self, model, ks, max_total_tokens: int, block_size: int = 16):
         super().__init__(
@@ -658,21 +659,26 @@ class KernelSetLLMBestPracticePath(KernelSetLLMConfigurablePath):
             ks,
             max_total_tokens=max_total_tokens,
             block_size=block_size,
-            op_modes=BEST_PRACTICE_MODES,
+            op_modes=KERNEL_SET_ENGINE_MODES,
         )
 
 
+KernelSetLLMBestPracticePath = KernelSetLLMEnginePath
 KernelSetCausalLMFullPath = KernelSetLLMFullPath
 KernelSetCausalLMConfigurablePath = KernelSetLLMConfigurablePath
-KernelSetCausalLMBestPracticePath = KernelSetLLMBestPracticePath
+KernelSetCausalLMEnginePath = KernelSetLLMEnginePath
+KernelSetCausalLMBestPracticePath = KernelSetLLMEnginePath
 
 __all__ = [
     "ABLATION_VARIANTS",
     "BEST_PRACTICE_MODES",
+    "KERNEL_SET_ENGINE_MODES",
     "KernelSetCausalLMBestPracticePath",
+    "KernelSetCausalLMEnginePath",
     "KernelSetCausalLMConfigurablePath",
     "KernelSetCausalLMFullPath",
     "KernelSetLLMBestPracticePath",
+    "KernelSetLLMEnginePath",
     "KernelSetLLMConfigurablePath",
     "KernelSetLLMFullPath",
     "KernelStats",

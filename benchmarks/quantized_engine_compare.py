@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real quantized-checkpoint smoke for the generic causal-LM engine."""
+"""Real quantized-checkpoint smoke for the generic LLM engine."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 
 DEFAULT_MODEL = "Qwen/Qwen3-8B"
+KERNEL_SET_ENGINE = "kernel_set_engine"
 DEFAULT_PROMPT = (
     "用户：我在准备一次关于推理引擎优化的内部分享，听众里有模型同学、平台同学，"
     "也有刚加入项目的新同学。请用自然的日常对话方式解释：为什么同一个长一点的"
@@ -233,13 +234,13 @@ def _run_kernel_set_engine(
 
 
 def _quant_engine_modes(args):
-    from engines.llm_greedy_engine import BEST_PRACTICE_MODES, TORCH_MANUAL_MODES
+    from engines.llm_greedy_engine import KERNEL_SET_ENGINE_MODES, TORCH_MANUAL_MODES
 
     variants: Dict[str, Dict[str, str]] = {
-        "kernel_set_best_practice": dict(BEST_PRACTICE_MODES)
+        KERNEL_SET_ENGINE: dict(KERNEL_SET_ENGINE_MODES)
     }
     if args.run_torch_attention_engine:
-        modes = dict(BEST_PRACTICE_MODES)
+        modes = dict(KERNEL_SET_ENGINE_MODES)
         modes["attention"] = "torch"
         variants["kernel_set_torch_attention"] = modes
     if args.run_manual_torch_engine:
@@ -330,7 +331,7 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                 args.block_size,
                 modes,
                 scope=(
-                    "generic causal-LM Python engine; quantized/dense linears stay "
+                    "generic LLM Python engine; quantized/dense linears stay "
                     "on model modules"
                     + (
                         "; torch ops for exactness/control"
@@ -347,7 +348,7 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
                     "manual torch-op control path, not serving runtime"
                     if all_torch
                     else (
-                        "best-practice provider selection, not serving runtime"
+                        "kernel_set_engine provider selection, not serving runtime"
                         if attention == "auto"
                         else "exactness check: torch attention, ks non-attention kernels"
                     )

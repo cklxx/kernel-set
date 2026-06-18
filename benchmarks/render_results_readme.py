@@ -23,6 +23,51 @@ START = "<!-- BENCHMARK_SUMMARY:START -->"
 END = "<!-- BENCHMARK_SUMMARY:END -->"
 
 DEFAULT_INFERENCE = "benchmarks/results/inference/*.json"
+KERNEL_SET_ENGINE = "kernel_set_engine"
+LEGACY_KERNEL_SET_ENGINE = "kernel_set_best_practice"
+HIDDEN_INFERENCE_ENGINES = {
+    "kernel_set_full_kernels",
+    "kernel_set_full_smoke",
+    "kernel_set_ops",
+}
+
+
+def _display_engine_name(name: str) -> str:
+    if name == LEGACY_KERNEL_SET_ENGINE:
+        return KERNEL_SET_ENGINE
+    return name
+
+
+def _display_engine_text(text: Any) -> str:
+    out = str(text or "")
+    replacements = {
+        "kernel_set_best_practice": KERNEL_SET_ENGINE,
+        "shape-aware best-practice composition": "shape-aware kernel-set engine composition",
+        "best-practice kernel-set composition": "kernel-set engine composition",
+        "best-practice provider selection": "kernel_set_engine provider selection",
+        "best-practice path": "kernel_set_engine path",
+    }
+    for old, new in replacements.items():
+        out = out.replace(old, new)
+    return out
+
+
+def _ordered_inference_engine_items(
+    engines: Dict[str, Any],
+    order: Sequence[str],
+) -> Iterable[Tuple[str, str, Dict[str, Any]]]:
+    seen = set()
+    for raw_name in order + sorted(k for k in engines if k not in order):
+        if raw_name not in engines or raw_name in HIDDEN_INFERENCE_ENGINES:
+            continue
+        display_name = _display_engine_name(raw_name)
+        if display_name in seen:
+            continue
+        engine = engines.get(raw_name)
+        if not isinstance(engine, dict):
+            continue
+        seen.add(display_name)
+        yield raw_name, display_name, engine
 
 
 def _read(path: str) -> str:
@@ -561,24 +606,19 @@ def _render_inference_table(
         "vllm",
         "sglang",
         "tensorrt_llm",
-        "kernel_set_best_practice",
-        "kernel_set_full_kernels",
-        "kernel_set_ops",
-        "kernel_set_full_smoke",
+        KERNEL_SET_ENGINE,
+        LEGACY_KERNEL_SET_ENGINE,
     ]
-    for name in order + sorted(k for k in engines if k not in order):
-        if name not in engines:
-            continue
-        engine = engines[name] or {}
+    for _raw_name, display_name, engine in _ordered_inference_engine_items(engines, order):
         if engine.get("status") == "not_run" or "error" in engine:
             continue
         tps = _fmt_num(engine.get("tokens_per_s_new"), 2)
         match = _engine_exact(engine)
-        note = str(engine.get("note") or "")
-        scope = str(engine.get("scope") or "single prompt greedy")
+        note = _display_engine_text(engine.get("note"))
+        scope = _display_engine_text(engine.get("scope") or "single prompt greedy")
         lines.append(
             f"| {run.get('model')} / {run.get('gpu_name')} "
-            f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{name}` | "
+            f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{display_name}` | "
             f"{scope} | {tps} | {match} | {note} | "
             f"{_source_link(run.get('_path'), base_dir)} |"
         )
@@ -618,24 +658,27 @@ def _render_quantized_engine_table(
         hf_tps = hf.get("tokens_per_s_new")
         if hf_tps is None:
             continue
-        display_engines = sorted(
-            k
-            for k in engines
-            if k.startswith("kernel_set_") or k == "manual_torch_ops"
-        )
+        display_engines = [KERNEL_SET_ENGINE, LEGACY_KERNEL_SET_ENGINE]
+        seen_display = set()
         for engine_name in display_engines:
             engine = engines.get(engine_name) or {}
+            display_name = _display_engine_name(engine_name)
+            if not engine:
+                continue
+            if display_name in seen_display:
+                continue
             if engine.get("exact_same_as_reference") is not True:
                 continue
             engine_tps = engine.get("tokens_per_s_new")
             if engine_tps is None:
                 continue
+            seen_display.add(display_name)
             ratio = float(engine_tps) / float(hf_tps) if float(hf_tps) else None
             peak = engine.get("peak_memory_gb") or hf.get("peak_memory_gb")
             lines.append(
                 f"| {run.get('model')} / {run.get('gpu_name')} "
                 f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
-                f"`{engine_name}` | {_fmt_num(hf_tps, 2)} | "
+                f"`{display_name}` | {_fmt_num(hf_tps, 2)} | "
                 f"{_fmt_num(engine_tps, 2)} | {_fmt_num(ratio, 2)}x | "
                 f"{_engine_exact(engine)} | {_fmt_num(peak, 2)} | "
                 f"{_source_link(run.get('_path'), base_dir)} |"
@@ -663,14 +706,14 @@ def _fmt_pct(x: Any) -> str:
 
 def _mode_changes(modes: Dict[str, Any]) -> str:
     changes = []
-    for key in sorted(BEST_PRACTICE_BASELINE):
+    for key in sorted(ENGINE_BASELINE_MODES):
         value = str(modes.get(key) or "")
-        if value and value != BEST_PRACTICE_BASELINE[key]:
+        if value and value != ENGINE_BASELINE_MODES[key]:
             changes.append(f"{key}={value}")
     return "<br>".join(changes) if changes else "baseline"
 
 
-BEST_PRACTICE_BASELINE = {
+ENGINE_BASELINE_MODES = {
     "argmax": "torch",
     "attention": "auto",
     "cache": "ks",
@@ -741,30 +784,34 @@ def _render_inference_ablation(run: Dict[str, Any]) -> List[str]:
     if not variants:
         return []
     rows = [
-        "Composition ablation from the best-practice path:",
+        "Composition ablation from the kernel_set_engine path:",
         "",
-        "| variant | new tok/s | vs best-practice | token match | changed component | notes |",
+        "| variant | new tok/s | vs engine | token match | changed component | notes |",
         "|---|---:|---:|---|---|---|",
     ]
     for row in variants:
         if not isinstance(row, dict):
             continue
+        pct = row.get("vs_kernel_set_engine_pct", row.get("vs_best_practice_pct"))
         rows.append(
-            f"| `{row.get('name')}` | {_fmt_num(row.get('tokens_per_s_new'), 2)} "
-            f"| {_fmt_pct(row.get('vs_best_practice_pct'))} | {_engine_exact(row)} "
-            f"| {_mode_changes(row.get('op_modes') or {})} | {row.get('note') or ''} |"
+            f"| `{_display_engine_name(str(row.get('name') or ''))}` | "
+            f"{_fmt_num(row.get('tokens_per_s_new'), 2)} "
+            f"| {_fmt_pct(pct)} | {_engine_exact(row)} "
+            f"| {_mode_changes(row.get('op_modes') or {})} | "
+            f"{_display_engine_text(row.get('note'))} |"
         )
     note = ablation.get("note")
     if note:
-        rows.extend(["", str(note)])
+        rows.extend(["", _display_engine_text(note)])
     return rows
 
 
 def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
     engines = run.get("engines") or {}
     rows: List[str] = []
-    for name, engine in engines.items():
-        if not isinstance(engine, dict) or "error" in engine:
+    order = [KERNEL_SET_ENGINE, LEGACY_KERNEL_SET_ENGINE]
+    for _raw_name, display_name, engine in _ordered_inference_engine_items(engines, order):
+        if "error" in engine:
             continue
         coverage = engine.get("kernel_coverage") or {}
         stats = engine.get("stats") or {}
@@ -779,7 +826,7 @@ def _render_inference_kernel_coverage(run: Dict[str, Any]) -> List[str]:
         ]
         rows.append(
             "| "
-            + f"`{name}` | "
+            + f"`{display_name}` | "
             + "<br>".join(f"`{item}`" for item in covered)
             + " | "
             + ("<br>".join(fallbacks) if fallbacks else "-")
@@ -891,10 +938,8 @@ def render_results_readme(
     lines.append("engine throughput benchmarks. They verify tokenizer/output parity for the")
     lines.append("composed engine paths.")
     lines.append("Rows with kernel coverage are integration rows, not serving-system benchmarks:")
-    lines.append("`kernel_set_best_practice` keeps dense linears on torch/cuBLAS and uses")
-    lines.append("shape-aware provider selection for the measured Qwen3 shapes;")
-    lines.append("`kernel_set_full_kernels` is the slower all-kernel coverage smoke that")
-    lines.append("also routes linears through kernel-set's auditable reference GEMM path.")
+    lines.append("`kernel_set_engine` keeps dense linears on torch/cuBLAS and uses")
+    lines.append("shape-aware provider selection for the measured Qwen3 shapes.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
     quant_table = _render_quantized_engine_table(inference_runs or [], base_dir=base_dir)

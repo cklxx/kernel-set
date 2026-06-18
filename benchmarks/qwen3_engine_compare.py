@@ -3,11 +3,11 @@
 
 This runner is intentionally small and auditable. It is not a production
 serving engine: scheduling, request batching, CUDA graphs, allocator policy, and
-paginated block management are still Python. The default path is the
-best-practice composition: dense linears stay on torch/cuBLAS, while kernel-set
-is used for the memory/attention/sample kernels where this repo has useful
-coverage. The all-kernel GEMM path remains available as a coverage smoke via
-``--run-full-kernels``.
+paginated block management are still Python. The default path is the canonical
+``kernel_set_engine`` composition: dense linears stay on torch/cuBLAS, while
+kernel-set is used for the memory/attention/sample kernels where this repo has
+useful coverage. The all-kernel GEMM path remains available only as a hidden
+diagnostic smoke via ``--run-full-kernels``.
 """
 
 from __future__ import annotations
@@ -29,6 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_MODEL = "Qwen/Qwen3-8B"
 DEFAULT_PROMPT = "用户：今天下班有点累，想晚上吃得简单一点，你有什么轻松的建议？\n助手："
+KERNEL_SET_ENGINE = "kernel_set_engine"
+LEGACY_KERNEL_SET_ENGINE = "kernel_set_best_practice"
+KERNEL_SET_FULL_KERNELS = "kernel_set_full_kernels"
 
 
 def _run(cmd: List[str], cwd: Optional[pathlib.Path] = None) -> None:
@@ -332,10 +335,10 @@ def _run_kernel_set_variant(
     }
 
 
-def _run_kernel_set_best_practice(
+def _run_kernel_set_engine(
     model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
 ):
-    from engines.llm_greedy_engine import BEST_PRACTICE_MODES
+    from engines.llm_greedy_engine import KERNEL_SET_ENGINE_MODES
 
     return _run_kernel_set_variant(
         model,
@@ -344,13 +347,13 @@ def _run_kernel_set_best_practice(
         new_tokens,
         repeat,
         block_size,
-        modes=BEST_PRACTICE_MODES,
+        modes=KERNEL_SET_ENGINE_MODES,
         scope=(
             "single-request Python engine; torch/cuBLAS linears + ks "
             "RMSNorm/RoPE/KV write/short-decode/SwiGLU + shape-aware embedding/attention"
         ),
         note=(
-            "shape-aware best-practice composition from Qwen3 kernel microbench; "
+            "shape-aware kernel-set engine composition from Qwen3 kernel microbench; "
             "Python loop/allocation and unfused Q/K/V + gate/up remain"
         ),
     )
@@ -384,15 +387,15 @@ def _run_composition_ablation(
 
     variants: List[Dict[str, Any]] = []
     if baseline_engine is None:
-        baseline_engine = _run_kernel_set_best_practice(
+        baseline_engine = _run_kernel_set_engine(
             model, tokenizer, input_ids, new_tokens, repeat, block_size
         )
         if reference_tokens is not None:
             baseline_engine.update(_token_match(reference_tokens, baseline_engine["tokens"]))
     variants.append(
         _ablation_row(
-            "kernel_set_best_practice",
-            "baseline: torch/cuBLAS linears plus ks non-linear/cache kernels and shape-aware embedding/attention",
+            KERNEL_SET_ENGINE,
+            "baseline: torch/cuBLAS linears plus kernel-set non-linear/cache kernels and shape-aware embedding/attention",
             baseline_engine,
         )
     )
@@ -415,19 +418,22 @@ def _run_composition_ablation(
             engine.update(_token_match(reference_tokens, engine["tokens"]))
         row = _ablation_row(name, note, engine)
         if baseline_tps:
-            row["vs_best_practice_pct"] = (
+            row["vs_kernel_set_engine_pct"] = (
                 (float(engine["tokens_per_s_new"]) / baseline_tps - 1.0) * 100.0
             )
+            row["vs_best_practice_pct"] = row["vs_kernel_set_engine_pct"]
         variants.append(row)
 
     for row in variants:
+        if "vs_kernel_set_engine_pct" not in row:
+            row["vs_kernel_set_engine_pct"] = 0.0
         if "vs_best_practice_pct" not in row:
-            row["vs_best_practice_pct"] = 0.0
+            row["vs_best_practice_pct"] = row["vs_kernel_set_engine_pct"]
     return {
-        "baseline": "kernel_set_best_practice",
+        "baseline": KERNEL_SET_ENGINE,
         "variants": variants,
         "note": (
-            "Each row changes one component from the best-practice path unless "
+            "Each row changes one component from the kernel_set_engine path unless "
             "the name says manual_torch_ops; same prompt, greedy 4-token decode."
         ),
     }
@@ -1375,10 +1381,10 @@ except Exception as exc:
 
 
 def run(args) -> Dict[str, Any]:
-    run_best_practice = bool(args.run_best_practice)
+    run_engine = bool(args.run_engine)
     run_full_kernels = bool(args.run_full_kernels and not args.skip_full_kernels)
     needs_kernel_set = (
-        run_best_practice
+        run_engine
         or run_full_kernels
         or bool(args.run_ablation_suite)
         or bool(args.run_kernel_microbench)
@@ -1441,17 +1447,26 @@ def run(args) -> Dict[str, Any]:
         reference_engines = {}
 
     engines: Dict[str, Any] = {}
+
+    def merge_reference_engine(out_name: str, ref_names: List[str]) -> None:
+        for ref_name in ref_names:
+            engine = reference_engines.get(ref_name)
+            if isinstance(engine, dict):
+                engines[out_name] = _kernel_set_reference_row(engine, reference_run_id)
+                return
+
     if args.skip_hf:
         if args.merge_reference_engines:
-            reference_names = ["transformers", "vllm", "sglang"]
-            if not run_best_practice:
-                reference_names.append("kernel_set_best_practice")
-            if not run_full_kernels:
-                reference_names.append("kernel_set_full_kernels")
+            reference_names = ["transformers", "vllm", "sglang", "tensorrt_llm"]
             for name in reference_names:
                 engine = reference_engines.get(name)
                 if isinstance(engine, dict):
                     engines[name] = _kernel_set_reference_row(engine, reference_run_id)
+            if not run_engine:
+                merge_reference_engine(
+                    KERNEL_SET_ENGINE,
+                    [KERNEL_SET_ENGINE, LEGACY_KERNEL_SET_ENGINE],
+                )
     else:
         assert model is not None
         engines["transformers"] = _run_hf(
@@ -1463,19 +1478,19 @@ def run(args) -> Dict[str, Any]:
         if reference_tokens is not None and name in engines:
             engines[name].update(_token_match(reference_tokens, engines[name]["tokens"]))
 
-    if run_best_practice:
+    if run_engine:
         assert model is not None
-        engines["kernel_set_best_practice"] = _run_kernel_set_best_practice(
+        engines[KERNEL_SET_ENGINE] = _run_kernel_set_engine(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
-        apply_match("kernel_set_best_practice")
+        apply_match(KERNEL_SET_ENGINE)
 
     if run_full_kernels:
         assert model is not None
-        engines["kernel_set_full_kernels"] = _run_kernel_set_full(
+        engines[KERNEL_SET_FULL_KERNELS] = _run_kernel_set_full(
             model, tokenizer, input_ids, args.new_tokens, args.ks_repeat, args.block_size
         )
-        apply_match("kernel_set_full_kernels")
+        apply_match(KERNEL_SET_FULL_KERNELS)
 
     optimization_ablation = None
     if args.run_ablation_suite:
@@ -1488,7 +1503,7 @@ def run(args) -> Dict[str, Any]:
             args.ks_repeat,
             args.block_size,
             reference_tokens,
-            engines.get("kernel_set_best_practice"),
+            engines.get(KERNEL_SET_ENGINE),
         )
 
     kernel_microbench = None
@@ -1544,7 +1559,7 @@ def run(args) -> Dict[str, Any]:
     result = {
         "schema_version": 1,
         "run_id": args.run_id
-        or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-qwen3-8b-best-practice"),
+        or dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-qwen3-8b-kernel-set-engine"),
         "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
         "model": args.model,
         "prompt": prompt_text,
@@ -1579,11 +1594,23 @@ def main() -> int:
     parser.add_argument("--hf-repeat", type=int, default=1)
     parser.add_argument("--ks-repeat", type=int, default=1)
     parser.add_argument("--skip-hf", action="store_true")
-    parser.add_argument("--run-best-practice", dest="run_best_practice", action="store_true")
-    parser.add_argument("--skip-best-practice", dest="run_best_practice", action="store_false")
-    parser.set_defaults(run_best_practice=True)
-    parser.add_argument("--run-full-kernels", action="store_true")
-    parser.add_argument("--skip-full-kernels", action="store_true")
+    parser.add_argument("--run-engine", dest="run_engine", action="store_true")
+    parser.add_argument("--skip-engine", dest="run_engine", action="store_false")
+    parser.add_argument(
+        "--run-best-practice",
+        dest="run_engine",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--skip-best-practice",
+        dest="run_engine",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    parser.set_defaults(run_engine=True)
+    parser.add_argument("--run-full-kernels", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-full-kernels", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--run-ablation-suite", action="store_true")
     parser.add_argument("--run-kernel-microbench", action="store_true")
     parser.add_argument("--kernel-bench-warmup", type=int, default=20)
