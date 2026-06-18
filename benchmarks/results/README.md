@@ -160,7 +160,10 @@ Quantized checkpoint engine smoke:
 
 | model / GPU | quant mode | engine | selected mode | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |
 |---|---|---|---|---:|---:|---:|---|---:|---|
-| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | `default` | 10.83 | 13.72 | 1.27x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine.json](inference/20260618-qwen3-8b-l4-quantized-engine.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bf16` | `kernel_set_engine` | `torch_nonlinear_cache_ks` | 15.19 | 15.05 | 0.99x | yes | 15.34 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_int8` | `kernel_set_engine` | `torch_exact_fallback` | 5.12 | 5.04 | 0.98x | yes | 8.98 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_nf4` | `kernel_set_engine` | `torch_swiglu` | 10.87 | 14.18 | 1.30x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
+| Qwen/Qwen3-8B / NVIDIA L4 (sm89, bf16) | `bnb_fp4` | `kernel_set_engine` | `torch_nonlinear_cache_ks` | 10.88 | 10.23 | 0.94x | yes | 5.84 | [20260618-qwen3-8b-l4-quantized-engine-autotuned.json](inference/20260618-qwen3-8b-l4-quantized-engine-autotuned.json) |
 
 Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.
 
