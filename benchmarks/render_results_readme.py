@@ -606,34 +606,40 @@ def _render_quantized_engine_table(
     lines = [
         "Quantized checkpoint engine smoke:",
         "",
-        "| model / GPU | quant mode | Transformers tok/s | kernel-set tok/s | kernel-set / HF | token match | peak GB | source |",
-        "|---|---|---:|---:|---:|---|---:|---|",
+        "| model / GPU | quant mode | engine | Transformers tok/s | engine tok/s | engine / HF | token match | peak GB | source |",
+        "|---|---|---|---:|---:|---:|---|---:|---|",
     ]
     for mode, variant in (run.get("variants") or {}).items():
         if not isinstance(variant, dict) or variant.get("status") != "ok":
             continue
         engines = variant.get("engines") or {}
         hf = engines.get("transformers") or {}
-        ks = engines.get("kernel_set_best_practice") or {}
         hf_tps = hf.get("tokens_per_s_new")
-        ks_tps = ks.get("tokens_per_s_new")
-        if hf_tps is None or ks_tps is None:
+        if hf_tps is None:
             continue
-        ratio = float(ks_tps) / float(hf_tps) if float(hf_tps) else None
-        peak = ks.get("peak_memory_gb") or hf.get("peak_memory_gb")
-        lines.append(
-            f"| {run.get('model')} / {run.get('gpu_name')} "
-            f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
-            f"{_fmt_num(hf_tps, 2)} | {_fmt_num(ks_tps, 2)} | "
-            f"{_fmt_num(ratio, 2)}x | {_engine_exact(ks)} | "
-            f"{_fmt_num(peak, 2)} | {_source_link(run.get('_path'), base_dir)} |"
-        )
+        for engine_name in sorted(k for k in engines if k.startswith("kernel_set_")):
+            engine = engines.get(engine_name) or {}
+            if engine.get("exact_same_as_reference") is not True:
+                continue
+            engine_tps = engine.get("tokens_per_s_new")
+            if engine_tps is None:
+                continue
+            ratio = float(engine_tps) / float(hf_tps) if float(hf_tps) else None
+            peak = engine.get("peak_memory_gb") or hf.get("peak_memory_gb")
+            lines.append(
+                f"| {run.get('model')} / {run.get('gpu_name')} "
+                f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
+                f"`{engine_name}` | {_fmt_num(hf_tps, 2)} | "
+                f"{_fmt_num(engine_tps, 2)} | {_fmt_num(ratio, 2)}x | "
+                f"{_engine_exact(engine)} | {_fmt_num(peak, 2)} | "
+                f"{_source_link(run.get('_path'), base_dir)} |"
+            )
     if len(lines) == 3:
         return []
     lines.extend(
         [
             "",
-            "Rows are real checkpoint loads with greedy decode. `kernel_set_best_practice` keeps quantized/dense linears inside the model modules and uses kernel-set for the non-linear/cache/decode kernels that the generic causal-LM engine owns.",
+            "Rows are real checkpoint loads with greedy decode and exact token parity against the same quantized Transformers model. Non-exact diagnostic engine rows remain in the JSON but are not displayed as comparison data.",
         ]
     )
     return lines

@@ -173,18 +173,20 @@ def _run_hf(model, tokenizer, input_ids, attention_mask, new_tokens: int, repeat
     }
 
 
-def _run_kernel_set_best_practice(
+def _run_kernel_set_engine(
     model,
     tokenizer,
     input_ids,
     new_tokens: int,
     repeat: int,
     block_size: int,
+    modes: Dict[str, str],
+    scope: str,
+    note: str,
 ):
     import kernel_set as ks
     import torch
     from engines.causal_lm_greedy_engine import (
-        BEST_PRACTICE_MODES,
         KernelSetCausalLMConfigurablePath,
         kernel_coverage_for_modes,
     )
@@ -197,7 +199,7 @@ def _run_kernel_set_best_practice(
             ks,
             max_total_tokens=max_total_tokens,
             block_size=block_size,
-            op_modes=BEST_PRACTICE_MODES,
+            op_modes=modes,
         )
 
     warm = make_engine()
@@ -221,16 +223,26 @@ def _run_kernel_set_best_practice(
         "new_tokens": new_tokens,
         "tokens": tokens,
         "text": tokenizer.decode(tokens, skip_special_tokens=False),
-        "scope": (
-            "generic causal-LM Python engine; quantized/dense linears stay on "
-            "model modules, ks covers norm/RoPE/KV write/short decode/SwiGLU"
-        ),
-        "note": "single-request integration path, not serving runtime",
-        "op_modes": BEST_PRACTICE_MODES,
+        "scope": scope,
+        "note": note,
+        "op_modes": modes,
         "stats": asdict(stats),
-        "kernel_coverage": kernel_coverage_for_modes(BEST_PRACTICE_MODES),
+        "kernel_coverage": kernel_coverage_for_modes(modes),
         "peak_memory_gb": _gpu_peak_gb(),
     }
+
+
+def _quant_engine_modes(args):
+    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES
+
+    variants: Dict[str, Dict[str, str]] = {
+        "kernel_set_best_practice": dict(BEST_PRACTICE_MODES)
+    }
+    if args.run_torch_attention_engine:
+        modes = dict(BEST_PRACTICE_MODES)
+        modes["attention"] = "torch"
+        variants["kernel_set_torch_attention"] = modes
+    return variants
 
 
 def _quant_config(mode: str, dtype):
@@ -303,18 +315,35 @@ def _run_one_mode(args, tokenizer, input_ids_cpu, attention_mask_cpu, mode: str)
             args.new_tokens,
             args.hf_repeat,
         )
-        item["engines"]["kernel_set_best_practice"] = _run_kernel_set_best_practice(
-            model,
-            tokenizer,
-            input_ids,
-            args.new_tokens,
-            args.ks_repeat,
-            args.block_size,
-        )
         ref = item["engines"]["transformers"]["tokens"]
-        item["engines"]["kernel_set_best_practice"].update(
-            _token_match(ref, item["engines"]["kernel_set_best_practice"]["tokens"])
-        )
+        for engine_name, modes in _quant_engine_modes(args).items():
+            attention = modes.get("attention")
+            item["engines"][engine_name] = _run_kernel_set_engine(
+                model,
+                tokenizer,
+                input_ids,
+                args.new_tokens,
+                args.ks_repeat,
+                args.block_size,
+                modes,
+                scope=(
+                    "generic causal-LM Python engine; quantized/dense linears stay "
+                    "on model modules, ks covers norm/RoPE/KV write/SwiGLU"
+                    + (
+                        "/short decode"
+                        if attention == "auto"
+                        else "; attention uses torch SDPA for exactness"
+                    )
+                ),
+                note=(
+                    "best-practice provider selection, not serving runtime"
+                    if attention == "auto"
+                    else "exactness check: torch attention, ks non-attention kernels"
+                ),
+            )
+            item["engines"][engine_name].update(
+                _token_match(ref, item["engines"][engine_name]["tokens"])
+            )
         return item
     except Exception as exc:
         item["status"] = "error"
@@ -371,6 +400,7 @@ def run(args) -> Dict[str, Any]:
         "new_tokens": args.new_tokens,
         "engine": "KernelSetCausalLMConfigurablePath",
         "quant_modes": args.quant_modes,
+        "engine_variants": list(_quant_engine_modes(args)),
         "variants": variants,
     }
 
@@ -396,6 +426,8 @@ def main() -> int:
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--hf-repeat", type=int, default=1)
     parser.add_argument("--ks-repeat", type=int, default=1)
+    parser.add_argument("--run-torch-attention-engine", action="store_true", default=True)
+    parser.add_argument("--skip-torch-attention-engine", dest="run_torch_attention_engine", action="store_false")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--output", default="/content/quantized_engine_compare.json")
     args = parser.parse_args()
