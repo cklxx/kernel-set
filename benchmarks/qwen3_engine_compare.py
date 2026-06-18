@@ -1581,7 +1581,7 @@ def _run_sglang_subprocess(args, prompt_text: str) -> Optional[Dict[str, Any]]:
     sglang_dtype = "bfloat16" if args.dtype == "bf16" else "float16"
     inner.write_text(
         f"""
-import json, time, torch
+import json, signal, time, torch
 from transformers import AutoTokenizer
 
 model_id = {args.model!r}
@@ -1693,15 +1693,31 @@ def _extract_output(result):
     return text, None
 
 
+class _ShutdownTimeout(Exception):
+    pass
+
+
+def _shutdown_timeout_handler(_signum, _frame):
+    raise _ShutdownTimeout()
+
+
 def _shutdown(llm):
-    for name in ("shutdown", "release", "close"):
-        fn = getattr(llm, name, None)
-        if callable(fn):
-            try:
-                fn()
-            except Exception:
-                pass
-            return
+    old_handler = signal.signal(signal.SIGALRM, _shutdown_timeout_handler)
+    signal.alarm(30)
+    try:
+        for name in ("shutdown", "release", "close"):
+            fn = getattr(llm, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except _ShutdownTimeout:
+                    print("SGLang shutdown timed out; continuing", flush=True)
+                except Exception:
+                    pass
+                return
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def main():
@@ -1977,7 +1993,7 @@ def main() -> int:
     parser.add_argument("--vllm-timeout-s", type=float, default=1200.0)
     parser.add_argument("--run-sglang", action="store_true")
     parser.add_argument("--sglang-timeout-s", type=float, default=1800.0)
-    parser.add_argument("--sglang-package", default="sglang[all]")
+    parser.add_argument("--sglang-package", default="sglang")
     parser.add_argument("--reference-json", default=None)
     parser.add_argument("--reference-json-url", default=None)
     parser.add_argument("--merge-reference-engines", action="store_true")

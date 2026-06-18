@@ -886,7 +886,7 @@ def render_root_summary(
         lines.append("")
         lines.append(
             "Kernel-coverage rows prove call-path coverage and token parity; "
-            "the kernel microbench rows are the provider-selection evidence."
+            "checked-in kernel benchmark tables provide provider-selection evidence."
         )
         lines.append("")
         lines.extend(_render_inference_table(inference_runs))
