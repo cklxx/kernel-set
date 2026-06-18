@@ -51,6 +51,19 @@ KS_API ks_status_t ks_paged_attn_decode(
     int max_blocks_per_seq, float softmax_scale, ks_dtype_t dtype,
     ks_stream_t stream);
 
+/* Split-K paged KV-cache decode. The caller supplies workspace:
+ *   partial_out: [num_splits, num_seqs, num_heads, head_dim]
+ *   partial_lse: [num_splits, num_seqs, num_heads] fp32.
+ * Each split scans a disjoint context chunk, then a combine pass merges partial
+ * states by log-sum-exp. This exposes the standard workspace shape used to test
+ * whether long-context decode is limited by per-head underfill. */
+KS_API ks_status_t ks_paged_attn_decode_split_k(
+    void* out, void* partial_out, float* partial_lse, const void* q,
+    const void* k_cache, const void* v_cache, const int32_t* block_tables,
+    const int32_t* seq_lens, int num_seqs, int num_heads, int num_kv_heads,
+    int head_dim, int block_size, int max_blocks_per_seq, int num_splits,
+    float softmax_scale, ks_dtype_t dtype, ks_stream_t stream);
+
 /* Write new K/V into a paged cache at the given slots (prefill & decode append).
  *   key,value: [num_tokens, num_kv_heads, head_dim]
  *   slot_mapping: [num_tokens] int32 -> flat slot = block_id*block_size + off */
@@ -91,6 +104,16 @@ KS_API ks_status_t ks_mla_decode(
     int num_heads, int kv_lora_rank, int rope_dim, int block_size,
     int max_blocks_per_seq, float softmax_scale, ks_dtype_t dtype,
     ks_stream_t stream);
+
+/* Split-K MLA decode. Workspace:
+ *   partial_out: [num_splits, num_seqs, num_heads, kv_lora_rank]
+ *   partial_lse: [num_splits, num_seqs, num_heads] fp32. */
+KS_API ks_status_t ks_mla_decode_split_k(
+    void* out, void* partial_out, float* partial_lse, const void* q_nope,
+    const void* q_pe, const void* kv_cache, const int32_t* block_tables,
+    const int32_t* seq_lens, int num_seqs, int num_heads, int kv_lora_rank,
+    int rope_dim, int block_size, int max_blocks_per_seq, int num_splits,
+    float softmax_scale, ks_dtype_t dtype, ks_stream_t stream);
 
 /* FlashAttention backward (training). Requires the forward `out` and
  * `softmax_lse`. grad_q/grad_k/grad_v match q/k/v shapes. */

@@ -23,8 +23,10 @@ __all__ = [
     "flash_attn",
     "flash_attn_varlen",
     "paged_attn_decode",
+    "paged_attn_decode_split_k",
     "reshape_and_cache",
     "mla_decode",
+    "mla_decode_split_k",
     "attention_state_merge",
     "dsa_topk_select",
     "flash_attn_backward",
@@ -180,6 +182,80 @@ def paged_attn_decode(
     return out
 
 
+def _torch_empty_like_shape(like: TensorLike, shape, *, dtype=None, name: str):
+    if not hasattr(like, "device") or not hasattr(like, "dtype"):
+        raise ValueError(f"{name} is required for raw-pointer inputs")
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - depends on optional torch
+        raise ValueError(f"{name} is required when torch is unavailable") from exc
+    return torch.empty(tuple(int(s) for s in shape), device=like.device,
+                       dtype=dtype or like.dtype)
+
+
+def paged_attn_decode_split_k(
+    out: TensorLike,
+    q: TensorLike,
+    k_cache: TensorLike,
+    v_cache: TensorLike,
+    block_tables: TensorLike,
+    seq_lens: TensorLike,
+    num_seqs: int,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    block_size: int,
+    max_blocks_per_seq: int,
+    num_splits: int,
+    partial_out: TensorLike = None,
+    partial_lse: TensorLike = None,
+    softmax_scale: float = 0.0,
+    dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Split-K paged KV-cache decode for long-context decode.
+
+    ``partial_out`` is ``[num_splits, num_seqs, num_heads, head_dim]`` in model
+    dtype and ``partial_lse`` is ``[num_splits, num_seqs, num_heads]`` fp32. For
+    torch tensors these workspaces are allocated automatically when omitted.
+    """
+    if int(num_splits) <= 1:
+        return paged_attn_decode(
+            out, q, k_cache, v_cache, block_tables, seq_lens, num_seqs,
+            num_heads, num_kv_heads, head_dim, block_size, max_blocks_per_seq,
+            softmax_scale=softmax_scale, dtype=dtype, stream=stream)
+    if partial_out is None:
+        partial_out = _torch_empty_like_shape(
+            q, (num_splits, num_seqs, num_heads, head_dim),
+            name="partial_out")
+    if partial_lse is None:
+        try:
+            import torch
+            partial_lse = _torch_empty_like_shape(
+                q, (num_splits, num_seqs, num_heads), dtype=torch.float32,
+                name="partial_lse")
+        except ValueError:
+            raise
+    dt = infer_dtype(q, dtype)
+    check(
+        lib.ks_paged_attn_decode_split_k(
+            ptr(out, name="out"),
+            ptr(partial_out, name="partial_out"),
+            _f32(partial_lse, name="partial_lse"),
+            ptr(q, name="q"),
+            ptr(k_cache, name="k_cache"),
+            ptr(v_cache, name="v_cache"),
+            _i32(block_tables, name="block_tables"),
+            _i32(seq_lens, name="seq_lens"),
+            int(num_seqs), int(num_heads), int(num_kv_heads), int(head_dim),
+            int(block_size), int(max_blocks_per_seq), int(num_splits),
+            float(softmax_scale), dt, default_stream(stream, q),
+        ),
+        "ks_paged_attn_decode_split_k",
+    )
+    return out
+
+
 def reshape_and_cache(
     k_cache: TensorLike,
     v_cache: TensorLike,
@@ -252,6 +328,69 @@ def mla_decode(
             float(softmax_scale), dt, default_stream(stream, q_nope),
         ),
         "ks_mla_decode",
+    )
+    return out
+
+
+def mla_decode_split_k(
+    out: TensorLike,
+    q_nope: TensorLike,
+    q_pe: TensorLike,
+    kv_cache: TensorLike,
+    block_tables: TensorLike,
+    seq_lens: TensorLike,
+    num_seqs: int,
+    num_heads: int,
+    kv_lora_rank: int,
+    rope_dim: int,
+    block_size: int,
+    max_blocks_per_seq: int,
+    num_splits: int,
+    partial_out: TensorLike = None,
+    partial_lse: TensorLike = None,
+    softmax_scale: float = 0.0,
+    dtype: Optional[int] = None,
+    stream: TensorLike = None,
+) -> TensorLike:
+    """Split-K DeepSeek MLA decode.
+
+    ``partial_out`` is ``[num_splits, num_seqs, num_heads, kv_lora_rank]`` in
+    model dtype and ``partial_lse`` is ``[num_splits, num_seqs, num_heads]`` fp32.
+    For torch tensors these workspaces are allocated automatically when omitted.
+    """
+    if int(num_splits) <= 1:
+        return mla_decode(
+            out, q_nope, q_pe, kv_cache, block_tables, seq_lens, num_seqs,
+            num_heads, kv_lora_rank, rope_dim, block_size, max_blocks_per_seq,
+            softmax_scale=softmax_scale, dtype=dtype, stream=stream)
+    if partial_out is None:
+        partial_out = _torch_empty_like_shape(
+            q_nope, (num_splits, num_seqs, num_heads, kv_lora_rank),
+            name="partial_out")
+    if partial_lse is None:
+        try:
+            import torch
+            partial_lse = _torch_empty_like_shape(
+                q_nope, (num_splits, num_seqs, num_heads), dtype=torch.float32,
+                name="partial_lse")
+        except ValueError:
+            raise
+    dt = infer_dtype(q_nope, dtype)
+    check(
+        lib.ks_mla_decode_split_k(
+            ptr(out, name="out"),
+            ptr(partial_out, name="partial_out"),
+            _f32(partial_lse, name="partial_lse"),
+            ptr(q_nope, name="q_nope"),
+            ptr(q_pe, name="q_pe"),
+            ptr(kv_cache, name="kv_cache"),
+            _i32(block_tables, name="block_tables"),
+            _i32(seq_lens, name="seq_lens"),
+            int(num_seqs), int(num_heads), int(kv_lora_rank), int(rope_dim),
+            int(block_size), int(max_blocks_per_seq), int(num_splits),
+            float(softmax_scale), dt, default_stream(stream, q_nope),
+        ),
+        "ks_mla_decode_split_k",
     )
     return out
 

@@ -435,6 +435,17 @@ _decl(
     ],
 )
 _decl(
+    "ks_paged_attn_decode_split_k",
+    [
+        _VP, _VP, POINTER(c_float),        # out, partial_out, partial_lse
+        _VP, _VP, _VP,                     # q, k_cache, v_cache
+        POINTER(c_int32), POINTER(c_int32),  # block_tables, seq_lens
+        c_int, c_int, c_int, c_int,        # num_seqs, num_heads, num_kv_heads, head_dim
+        c_int, c_int, c_int,               # block_size, max_blocks_per_seq, num_splits
+        c_float, _DTYPE, _STREAM,
+    ],
+)
+_decl(
     "ks_reshape_and_cache",
     [
         _VP, _VP, _VP, _VP,                # k_cache, v_cache, key, value
@@ -450,6 +461,17 @@ _decl(
         POINTER(c_int32), POINTER(c_int32),  # block_tables, seq_lens
         c_int, c_int, c_int, c_int,        # num_seqs, num_heads, kv_lora_rank, rope_dim
         c_int, c_int,                      # block_size, max_blocks_per_seq
+        c_float, _DTYPE, _STREAM,
+    ],
+)
+_decl(
+    "ks_mla_decode_split_k",
+    [
+        _VP, _VP, POINTER(c_float),        # out, partial_out, partial_lse
+        _VP, _VP, _VP,                     # q_nope, q_pe, kv_cache
+        POINTER(c_int32), POINTER(c_int32),  # block_tables, seq_lens
+        c_int, c_int, c_int, c_int,        # num_seqs, num_heads, kv_lora_rank, rope_dim
+        c_int, c_int, c_int,               # block_size, max_blocks_per_seq, num_splits
         c_float, _DTYPE, _STREAM,
     ],
 )

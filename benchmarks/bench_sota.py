@@ -143,6 +143,7 @@ class Provider:
 _PROVIDER_MIN_SM: Dict[str, int] = {
     # attention
     "kernel-set": 70,            # ks runs wherever it was built (matches bench.py)
+    "kernel-set-splitk": 70,     # ks split-K decode workspace path
     "flash-attn": 80,            # FA2 needs Ampere+
     "sdpa-flash": 80,            # torch SDPA flash backend sm80+
     "flashinfer": 75,            # FlashInfer Turing+
@@ -621,6 +622,34 @@ def _g_attn_decode(ctx: SotaCtx) -> List[Row]:
             row.note = "memory-bound (KV read)"
         rows.append(run_provider(op, label, "kernel-set", ctx, _ks))
 
+        # --- kernel-set split-K ---
+        def _ks_splitk(row: Row):
+            splits = max(1, min(16, (ctx_len + 255) // 256))
+            out = ctx.empty(num_seqs, qh, hd)
+            partial_out = ctx.empty(splits, num_seqs, qh, hd)
+            partial_lse = ctx.empty(splits, num_seqs, qh, dtype=torch.float32)
+            ks.attention.paged_attn_decode_split_k(
+                out, q, k_cache, v_cache, block_tables, seq_lens,
+                num_seqs, qh, kvh, hd, block, blocks_per_seq, splits,
+                partial_out=partial_out, partial_lse=partial_lse,
+                softmax_scale=scale)
+            torch.cuda.synchronize()
+            if not _gate(row, ref, out, ctx):
+                return
+
+            def call():
+                ks.attention.paged_attn_decode_split_k(
+                    out, q, k_cache, v_cache, block_tables, seq_lens,
+                    num_seqs, qh, kvh, hd, block, blocks_per_seq, splits,
+                    partial_out=partial_out, partial_lse=partial_lse,
+                    softmax_scale=scale)
+                return out
+
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, kv_bytes, ctx.gpu)
+            row.note = f"kernel-set split-K decode; splits={splits}"
+        rows.append(run_provider(op, label, "kernel-set-splitk", ctx, _ks_splitk))
+
         # --- flashinfer BatchDecodeWithPagedKVCacheWrapper (plan/run) ---
         def _fi(row: Row):
             fi = _import("flashinfer")
@@ -731,15 +760,7 @@ def _g_mla_decode(ctx: SotaCtx) -> List[Row]:
                               dtype=torch.int32)
         kv_bytes = num_seqs * ctx_len * (lora + rope_dim) * dtype_bytes(ctx.dt)
 
-        # --- kernel-set (no shared fp32 ref across the two different MLA
-        # layouts/conventions; report throughput, gate vs internal math ref) ---
-        def _ks(row: Row):
-            out = ctx.empty(num_seqs, heads, lora)
-            ks.attention.mla_decode(
-                out, q_nope, q_pe, kv_cache, block_tables, seq_lens,
-                num_seqs, heads, lora, rope_dim, block, blocks_per_seq,
-                softmax_scale=scale)
-            torch.cuda.synchronize()
+        def _mla_ref():
             # fp32 reference: absorbed MLA = attention with concatenated
             # [q_nope|q_pe] queries against kv_cache rows (lora+rope), output
             # the lora part.
@@ -749,7 +770,18 @@ def _g_mla_decode(ctx: SotaCtx) -> List[Row]:
             scores = torch.einsum("shd,scd->shc", qcat, kvc) * scale
             attn = torch.softmax(scores, dim=-1)
             vpart = kvc[..., :lora]                              # value = ckv
-            ref = torch.einsum("shc,scd->shd", attn, vpart)
+            return torch.einsum("shc,scd->shd", attn, vpart)
+
+        # --- kernel-set (no shared fp32 ref across the two different MLA
+        # layouts/conventions; report throughput, gate vs internal math ref) ---
+        def _ks(row: Row):
+            out = ctx.empty(num_seqs, heads, lora)
+            ks.attention.mla_decode(
+                out, q_nope, q_pe, kv_cache, block_tables, seq_lens,
+                num_seqs, heads, lora, rope_dim, block, blocks_per_seq,
+                softmax_scale=scale)
+            torch.cuda.synchronize()
+            ref = _mla_ref()
             if not _gate(row, ref, out, ctx):
                 return
             _fill_row_timing(row, _time(
@@ -760,6 +792,35 @@ def _g_mla_decode(ctx: SotaCtx) -> List[Row]:
             _set_bw(row, kv_bytes, ctx.gpu)
             row.note = "absorbed-MLA decode; ref=fp32 math"
         rows.append(run_provider(op, label, "kernel-set", ctx, _ks))
+
+        # --- kernel-set split-K ---
+        def _ks_splitk(row: Row):
+            splits = max(1, min(16, (ctx_len + 255) // 256))
+            out = ctx.empty(num_seqs, heads, lora)
+            partial_out = ctx.empty(splits, num_seqs, heads, lora)
+            partial_lse = ctx.empty(splits, num_seqs, heads, dtype=torch.float32)
+            ks.attention.mla_decode_split_k(
+                out, q_nope, q_pe, kv_cache, block_tables, seq_lens,
+                num_seqs, heads, lora, rope_dim, block, blocks_per_seq, splits,
+                partial_out=partial_out, partial_lse=partial_lse,
+                softmax_scale=scale)
+            torch.cuda.synchronize()
+            ref = _mla_ref()
+            if not _gate(row, ref, out, ctx):
+                return
+
+            def call():
+                ks.attention.mla_decode_split_k(
+                    out, q_nope, q_pe, kv_cache, block_tables, seq_lens,
+                    num_seqs, heads, lora, rope_dim, block, blocks_per_seq,
+                    splits, partial_out=partial_out, partial_lse=partial_lse,
+                    softmax_scale=scale)
+                return out
+
+            _fill_row_timing(row, _time(call))
+            _set_bw(row, kv_bytes, ctx.gpu)
+            row.note = f"kernel-set split-K absorbed MLA; splits={splits}"
+        rows.append(run_provider(op, label, "kernel-set-splitk", ctx, _ks_splitk))
 
         # --- FlashMLA (sm90; will SKIP on L4 via arch gate) ---
         def _fmla(row: Row):
@@ -1709,8 +1770,9 @@ ALL_OPS = [
 _OP_PROVIDERS: Dict[str, List[str]] = {
     "attention_prefill": ["kernel-set", "flash-attn", "sdpa-flash",
                           "flashinfer", "sgl-attn"],
-    "attention_decode": ["kernel-set", "flashinfer", "sdpa-flash", "sgl-attn"],
-    "mla_decode": ["kernel-set", "flash-mla", "sgl-mla"],
+    "attention_decode": ["kernel-set", "kernel-set-splitk", "flashinfer",
+                         "sdpa-flash", "sgl-attn"],
+    "mla_decode": ["kernel-set", "kernel-set-splitk", "flash-mla", "sgl-mla"],
     "gemm": ["kernel-set", "torch-cublas", "torch-compile"],
     "w4a16": ["kernel-set", "vllm-marlin"],
     "fp8_gemm": ["kernel-set", "torch-scaled-mm", "vllm-cutlass-fp8",

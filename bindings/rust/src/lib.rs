@@ -1403,6 +1403,52 @@ pub fn paged_attn_decode(
     })
 }
 
+/// Split-K paged KV-cache decode with caller-owned partial workspace.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_attn_decode_split_k(
+    out: impl AsDevicePtrMut,
+    partial_out: impl AsDevicePtrMut,
+    partial_lse: impl AsDevicePtrMut,
+    q: impl AsDevicePtr,
+    k_cache: impl AsDevicePtr,
+    v_cache: impl AsDevicePtr,
+    block_tables: impl AsDevicePtr,
+    seq_lens: impl AsDevicePtr,
+    num_seqs: i32,
+    num_heads: i32,
+    num_kv_heads: i32,
+    head_dim: i32,
+    block_size: i32,
+    max_blocks_per_seq: i32,
+    num_splits: i32,
+    softmax_scale: f32,
+    dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_paged_attn_decode_split_k(
+            out.as_device_ptr_mut(),
+            partial_out.as_device_ptr_mut(),
+            partial_lse.as_device_ptr_mut() as *mut f32,
+            q.as_device_ptr(),
+            k_cache.as_device_ptr(),
+            v_cache.as_device_ptr(),
+            block_tables.as_device_ptr() as *const i32,
+            seq_lens.as_device_ptr() as *const i32,
+            num_seqs,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            block_size,
+            max_blocks_per_seq,
+            num_splits,
+            softmax_scale,
+            dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
 /// Write new K/V into a paged cache at the given slots.
 #[allow(clippy::too_many_arguments)]
 pub fn reshape_and_cache(
@@ -1468,6 +1514,52 @@ pub fn mla_decode(
             rope_dim,
             block_size,
             max_blocks_per_seq,
+            softmax_scale,
+            dtype.into(),
+            stream.as_raw(),
+        )
+    })
+}
+
+/// Split-K DeepSeek MLA decode with caller-owned partial workspace.
+#[allow(clippy::too_many_arguments)]
+pub fn mla_decode_split_k(
+    out: impl AsDevicePtrMut,
+    partial_out: impl AsDevicePtrMut,
+    partial_lse: impl AsDevicePtrMut,
+    q_nope: impl AsDevicePtr,
+    q_pe: impl AsDevicePtr,
+    kv_cache: impl AsDevicePtr,
+    block_tables: impl AsDevicePtr,
+    seq_lens: impl AsDevicePtr,
+    num_seqs: i32,
+    num_heads: i32,
+    kv_lora_rank: i32,
+    rope_dim: i32,
+    block_size: i32,
+    max_blocks_per_seq: i32,
+    num_splits: i32,
+    softmax_scale: f32,
+    dtype: Dtype,
+    stream: Stream,
+) -> Result<()> {
+    check(unsafe {
+        sys::ks_mla_decode_split_k(
+            out.as_device_ptr_mut(),
+            partial_out.as_device_ptr_mut(),
+            partial_lse.as_device_ptr_mut() as *mut f32,
+            q_nope.as_device_ptr(),
+            q_pe.as_device_ptr(),
+            kv_cache.as_device_ptr(),
+            block_tables.as_device_ptr() as *const i32,
+            seq_lens.as_device_ptr() as *const i32,
+            num_seqs,
+            num_heads,
+            kv_lora_rank,
+            rope_dim,
+            block_size,
+            max_blocks_per_seq,
+            num_splits,
             softmax_scale,
             dtype.into(),
             stream.as_raw(),

@@ -400,6 +400,27 @@ extern "C" {
         stream: ks_stream_t,
     ) -> ks_status_t;
 
+    pub fn ks_paged_attn_decode_split_k(
+        out: *mut c_void,
+        partial_out: *mut c_void,
+        partial_lse: *mut f32,
+        q: *const c_void,
+        k_cache: *const c_void,
+        v_cache: *const c_void,
+        block_tables: *const i32,
+        seq_lens: *const i32,
+        num_seqs: c_int,
+        num_heads: c_int,
+        num_kv_heads: c_int,
+        head_dim: c_int,
+        block_size: c_int,
+        max_blocks_per_seq: c_int,
+        num_splits: c_int,
+        softmax_scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
     pub fn ks_reshape_and_cache(
         k_cache: *mut c_void,
         v_cache: *mut c_void,
@@ -427,6 +448,27 @@ extern "C" {
         rope_dim: c_int,
         block_size: c_int,
         max_blocks_per_seq: c_int,
+        softmax_scale: f32,
+        dtype: ks_dtype_t,
+        stream: ks_stream_t,
+    ) -> ks_status_t;
+
+    pub fn ks_mla_decode_split_k(
+        out: *mut c_void,
+        partial_out: *mut c_void,
+        partial_lse: *mut f32,
+        q_nope: *const c_void,
+        q_pe: *const c_void,
+        kv_cache: *const c_void,
+        block_tables: *const i32,
+        seq_lens: *const i32,
+        num_seqs: c_int,
+        num_heads: c_int,
+        kv_lora_rank: c_int,
+        rope_dim: c_int,
+        block_size: c_int,
+        max_blocks_per_seq: c_int,
+        num_splits: c_int,
         softmax_scale: f32,
         dtype: ks_dtype_t,
         stream: ks_stream_t,

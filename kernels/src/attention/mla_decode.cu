@@ -98,6 +98,117 @@ KS_GLOBAL void mla_decode_kernel(
   out_ptr[d] = from_float<scalar_t>(acc * inv_l);
 }
 
+template <typename scalar_t>
+KS_GLOBAL void mla_decode_split_k_partial_kernel(
+    scalar_t* __restrict__ partial_out, float* __restrict__ partial_lse,
+    const scalar_t* __restrict__ q_nope, const scalar_t* __restrict__ q_pe,
+    const scalar_t* __restrict__ kv_cache,
+    const int32_t* __restrict__ block_tables,
+    const int32_t* __restrict__ seq_lens, int num_seqs, int num_heads,
+    int kv_lora_rank, int rope_dim, int block_size, int max_blocks_per_seq,
+    int num_splits, float scale) {
+  const int d = threadIdx.x;
+  const int head = blockIdx.x;
+  const int seq = blockIdx.y;
+  const int split = blockIdx.z;
+
+  const int seq_len = seq_lens[seq];
+  const int chunk_begin =
+      static_cast<int>((static_cast<int64_t>(seq_len) * split) / num_splits);
+  const int chunk_end = static_cast<int>(
+      (static_cast<int64_t>(seq_len) * (split + 1)) / num_splits);
+  const int entry_dim = kv_lora_rank + rope_dim;
+
+  const scalar_t* qn_ptr =
+      q_nope + (static_cast<int64_t>(seq) * num_heads + head) * kv_lora_rank;
+  const scalar_t* qp_ptr =
+      q_pe + (static_cast<int64_t>(seq) * num_heads + head) * rope_dim;
+  const float qn_reg = to_float(qn_ptr[d]);
+  const float qp_reg = (d < rope_dim) ? to_float(qp_ptr[d]) : 0.f;
+
+  extern __shared__ float smem_raw[];
+  float* red = smem_raw;
+
+  float acc = 0.f;
+  float m = -3.4028235e38f;
+  float l = 0.f;
+
+  const int32_t* seq_block_table =
+      block_tables + static_cast<int64_t>(seq) * max_blocks_per_seq;
+
+  int pos = chunk_begin;
+  while (pos < chunk_end) {
+    const int b = pos / block_size;
+    const int off = pos - b * block_size;
+    const int tokens = min(block_size - off, chunk_end - pos);
+    const int32_t phys_block = seq_block_table[b];
+    const scalar_t* blk =
+        kv_cache + static_cast<int64_t>(phys_block) * block_size * entry_dim;
+
+    for (int i = 0; i < tokens; ++i) {
+      const int t = off + i;
+      const scalar_t* entry = blk + static_cast<int64_t>(t) * entry_dim;
+      const float latent_d = to_float(entry[d]);
+      float prod = qn_reg * latent_d;
+      if (d < rope_dim) prod += qp_reg * to_float(entry[kv_lora_rank + d]);
+      const float dot = block_reduce_sum(prod, red);
+      const float s = dot * scale;
+
+      const float m_new = fmaxf(m, s);
+      const float correction = rescale_factor(m, m_new);
+      const float p = __expf(s - m_new);
+      acc = acc * correction + p * latent_d;
+      l = l * correction + p;
+      m = m_new;
+      __syncthreads();
+    }
+    pos += tokens;
+  }
+
+  const int64_t row =
+      (static_cast<int64_t>(split) * num_seqs + seq) * num_heads + head;
+  scalar_t* pout = partial_out + row * kv_lora_rank;
+  if (l > 0.f) {
+    pout[d] = from_float<scalar_t>(acc / l);
+    if (d == 0) partial_lse[row] = m + __logf(l);
+  } else {
+    pout[d] = from_float<scalar_t>(0.f);
+    if (d == 0) partial_lse[row] = -INFINITY;
+  }
+}
+
+template <typename scalar_t>
+KS_GLOBAL void mla_decode_split_k_combine_kernel(
+    scalar_t* __restrict__ out, const scalar_t* __restrict__ partial_out,
+    const float* __restrict__ partial_lse, int num_seqs, int num_heads,
+    int kv_lora_rank, int num_splits) {
+  const int d = threadIdx.x;
+  const int head = blockIdx.x;
+  const int seq = blockIdx.y;
+
+  float m = -INFINITY;
+  for (int split = 0; split < num_splits; ++split) {
+    const int64_t row =
+        (static_cast<int64_t>(split) * num_seqs + seq) * num_heads + head;
+    m = fmaxf(m, partial_lse[row]);
+  }
+
+  float denom = 0.f;
+  float acc = 0.f;
+  for (int split = 0; split < num_splits; ++split) {
+    const int64_t row =
+        (static_cast<int64_t>(split) * num_seqs + seq) * num_heads + head;
+    const float lse = partial_lse[row];
+    const float w = isfinite(lse) ? __expf(lse - m) : 0.f;
+    denom += w;
+    acc += w * to_float(partial_out[row * kv_lora_rank + d]);
+  }
+
+  scalar_t* out_ptr =
+      out + (static_cast<int64_t>(seq) * num_heads + head) * kv_lora_rank;
+  out_ptr[d] = from_float<scalar_t>(denom > 0.f ? acc / denom : 0.f);
+}
+
 }  // namespace attention
 }  // namespace ks
 
@@ -150,6 +261,67 @@ ks_status_t ks_mla_decode(
         static_cast<const scalar_t*>(kv_cache), block_tables, seq_lens,
         num_heads, kv_lora_rank, rope_dim, block_size, max_blocks_per_seq,
         scale);
+  });
+  KS_CHECK_LAUNCH();
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_mla_decode_split_k(
+    void* out, void* partial_out, float* partial_lse, const void* q_nope,
+    const void* q_pe, const void* kv_cache, const int32_t* block_tables,
+    const int32_t* seq_lens, int num_seqs, int num_heads, int kv_lora_rank,
+    int rope_dim, int block_size, int max_blocks_per_seq, int num_splits,
+    float softmax_scale, ks_dtype_t dtype, ks_stream_t stream) {
+  KS_CHECK_PTR(out);
+  KS_CHECK_PTR(partial_out);
+  KS_CHECK_PTR(partial_lse);
+  KS_CHECK_PTR(q_nope);
+  KS_CHECK_PTR(q_pe);
+  KS_CHECK_PTR(kv_cache);
+  KS_CHECK_PTR(block_tables);
+  KS_CHECK_PTR(seq_lens);
+  if (num_seqs <= 0 || num_heads <= 0 || kv_lora_rank <= 0 || rope_dim <= 0 ||
+      block_size <= 0 || max_blocks_per_seq <= 0 || num_splits <= 0)
+    KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT,
+                    "ks_mla_decode_split_k: shape");
+  if (rope_dim > kv_lora_rank)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_mla_decode_split_k: rope_dim must be <= kv_lora_rank");
+  if (kv_lora_rank > 1024)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_mla_decode_split_k: kv_lora_rank exceeds max block threads");
+  if ((kv_lora_rank & 31) != 0)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_mla_decode_split_k: kv_lora_rank must be a multiple of 32");
+  if (num_splits > 65535)
+    KS_RETURN_ERROR(KS_ERROR_UNSUPPORTED_SHAPE,
+                    "ks_mla_decode_split_k: num_splits exceeds grid.z");
+
+  const float scale =
+      attention::resolve_scale(softmax_scale, kv_lora_rank + rope_dim);
+  auto s = to_stream(stream);
+  const dim3 grid(static_cast<unsigned>(num_heads),
+                  static_cast<unsigned>(num_seqs),
+                  static_cast<unsigned>(num_splits));
+  const dim3 combine_grid(static_cast<unsigned>(num_heads),
+                          static_cast<unsigned>(num_seqs));
+  const dim3 block(static_cast<unsigned>(kv_lora_rank));
+  const size_t smem = sizeof(float) * static_cast<size_t>(kv_lora_rank);
+
+  KS_DISPATCH_FLOATING_TYPES(dtype, "ks_mla_decode_split_k", {
+    attention::mla_decode_split_k_partial_kernel<scalar_t>
+        <<<grid, block, smem, s>>>(
+            static_cast<scalar_t*>(partial_out), partial_lse,
+            static_cast<const scalar_t*>(q_nope),
+            static_cast<const scalar_t*>(q_pe),
+            static_cast<const scalar_t*>(kv_cache), block_tables, seq_lens,
+            num_seqs, num_heads, kv_lora_rank, rope_dim, block_size,
+            max_blocks_per_seq, num_splits, scale);
+    attention::mla_decode_split_k_combine_kernel<scalar_t>
+        <<<combine_grid, block, 0, s>>>(
+            static_cast<scalar_t*>(out),
+            static_cast<const scalar_t*>(partial_out), partial_lse, num_seqs,
+            num_heads, kv_lora_rank, num_splits);
   });
   KS_CHECK_LAUNCH();
   return KS_SUCCESS;

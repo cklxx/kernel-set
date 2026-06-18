@@ -4,15 +4,17 @@ This directory keeps human-readable benchmark reports plus canonical
 JSON runs under `runs/`. Use the JSON files as the durable data
 source; Markdown files are display artifacts.
 
-- **Canonical runs:** 22
+- **Canonical runs:** 24
 - **GPU coverage:** NVIDIA A100-SXM4-40GB (sm80), NVIDIA H20 (sm90), NVIDIA L4 (sm89), NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120)
-- **Suites:** kernel_set=18, sota=4
+- **Suites:** kernel_set=18, sota=6
 - **Index:** [`index.json`](index.json)
 
 ## Latest Runs
 
 | run | GPU | suite | dtype | timing | rows | ok / skip / import-fail / error | data |
 |---|---|---|---|---|---:|---:|---|
+| `20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16-sota` | NVIDIA L4 (sm89) | sota | fp16 | events-l2-flush | 4 | 2 / 2 / 0 / 0 | [20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json](runs/20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json) |
+| `20260618-l4-splitk-attn-sota-attention-decode-nvidia-l4-fp16-sota` | NVIDIA L4 (sm89) | sota | fp16 | events-l2-flush | 10 | 4 / 2 / 2 / 2 | [20260618-l4-splitk-attn-sota-attention-decode-nvidia-l4-fp16.json](runs/20260618-l4-splitk-attn-sota-attention-decode-nvidia-l4-fp16.json) |
 | `20260618-l4-kernel-opt-final-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 14 | 14 / 0 / 0 / 0 | [20260618-l4-kernel-opt-final-nvidia-l4-fp16.json](runs/20260618-l4-kernel-opt-final-nvidia-l4-fp16.json) |
 | `20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 47 | 47 / 0 / 0 / 0 | [20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-swiglu-bwd-plus-4-nvidia-l4-fp16.json) |
 | `20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16-kernel_set` | NVIDIA L4 (sm89) | kernel_set | fp16 | events-l2-flush | 30 | 30 / 0 / 0 / 0 | [20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16.json](runs/20260616t133654z-colab-kernel-set-rmsnorm-plus-4-nvidia-l4-fp16.json) |
@@ -23,15 +25,13 @@ source; Markdown files are display artifacts.
 | `20260616-pro6000-full-kernel-set-swiglu-bwd-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 47 | 47 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-swiglu-bwd-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-swiglu-bwd-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 | `20260616-pro6000-full-kernel-set-rmsnorm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 30 | 30 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-rmsnorm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-rmsnorm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 | `20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 18 | 18 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-quant-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
-| `20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 22 | 22 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-gemm-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
-| `20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120) | kernel_set | bf16 | events-l2-flush | 14 | 14 / 0 / 0 / 0 | [20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json](runs/20260616-pro6000-full-kernel-set-fused-linear-ce-plus-4-nvidia-rtx-pro-6000-blackwell-server-edition-bf16.json) |
 
 ## Model-Part Coverage
 
 | model part | position | suite | ops | shapes | impls | GPUs | ok / total |
 |---|---|---|---:|---:|---:|---:|---:|
 | `attention` | `decode` | kernel_set | 2 | 3 | 1 | 4 | 19 / 19 |
-| `attention` | `decode` | sota | 2 | 3 | 6 | 2 | 15 / 28 |
+| `attention` | `decode` | sota | 2 | 3 | 7 | 2 | 21 / 42 |
 | `attention` | `prefill` | kernel_set | 2 | 3 | 2 | 4 | 31 / 31 |
 | `attention` | `prefill` | sota | 1 | 2 | 5 | 3 | 11 / 38 |
 | `attention` | `training` | kernel_set | 1 | 2 | 1 | 4 | 12 / 12 |
@@ -84,7 +84,7 @@ measurements when no comparable third-party provider was present in that run.
 | `attention` | `attention_decode` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 1780.7 us | [2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json](runs/2026-06-05t07-01-25-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-kernel_set.json) |
 | `attention` | `attention_decode` | NVIDIA A100-SXM4-40GB (sm80, bf16, kernel_set) | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | `kernel-set` | 4455.4 us | [2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json](runs/2026-06-05t03-39-51-nvidia-a100-sxm4-40gb-bf16-kernel_set.json) |
 | `attention` | `mla_decode` | NVIDIA H20 (sm90, bf16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `flash-mla` | 303.2 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
-| `attention` | `mla_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `kernel-set` | 79271.9 us | [2026-06-05t06-23-21-nvidia-l4-fp16-sota.json](runs/2026-06-05t06-23-21-nvidia-l4-fp16-sota.json) |
+| `attention` | `mla_decode` | NVIDIA L4 (sm89, fp16, sota) | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | `kernel-set` | 78373.4 us | [20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json](runs/20260618-l4-splitk-attn-sota-mla-decode-nvidia-l4-fp16.json) |
 | `linear` | `gemm` | NVIDIA H20 (sm90, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 1039.8 us | [2026-06-05t16-32-42-nvidia-h20-bf16-sota.json](runs/2026-06-05t16-32-42-nvidia-h20-bf16-sota.json) |
 | `linear` | `gemm` | NVIDIA RTX PRO 6000 Blackwell Server Edition (sm120, bf16, sota) | `M=4096,N=4096,K=4096` | `torch-cublas` | 369.6 us | [2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json](runs/2026-06-05t07-03-26-nvidia-rtx-pro-6000-blackwell-server-edition-bf16-sota.json) |
 

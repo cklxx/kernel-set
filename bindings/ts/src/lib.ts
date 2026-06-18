@@ -262,11 +262,17 @@ export const ks_flash_attn = L.func(
 export const ks_paged_attn_decode = L.func(
   'ks_status_t ks_paged_attn_decode(ks_devptr out, ks_devptr q, ks_devptr k_cache, ks_devptr v_cache, ks_devptr block_tables, ks_devptr seq_lens, int num_seqs, int num_heads, int num_kv_heads, int head_dim, int block_size, int max_blocks_per_seq, float softmax_scale, ks_dtype_t dtype, ks_stream_t stream)',
 );
+export const ks_paged_attn_decode_split_k = L.func(
+  'ks_status_t ks_paged_attn_decode_split_k(ks_devptr out, ks_devptr partial_out, ks_devptr partial_lse, ks_devptr q, ks_devptr k_cache, ks_devptr v_cache, ks_devptr block_tables, ks_devptr seq_lens, int num_seqs, int num_heads, int num_kv_heads, int head_dim, int block_size, int max_blocks_per_seq, int num_splits, float softmax_scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
 export const ks_reshape_and_cache = L.func(
   'ks_status_t ks_reshape_and_cache(ks_devptr k_cache, ks_devptr v_cache, ks_devptr key, ks_devptr value, ks_devptr slot_mapping, int num_tokens, int num_kv_heads, int head_dim, int block_size, ks_dtype_t dtype, ks_stream_t stream)',
 );
 export const ks_mla_decode = L.func(
   'ks_status_t ks_mla_decode(ks_devptr out, ks_devptr q_nope, ks_devptr q_pe, ks_devptr kv_cache, ks_devptr block_tables, ks_devptr seq_lens, int num_seqs, int num_heads, int kv_lora_rank, int rope_dim, int block_size, int max_blocks_per_seq, float softmax_scale, ks_dtype_t dtype, ks_stream_t stream)',
+);
+export const ks_mla_decode_split_k = L.func(
+  'ks_status_t ks_mla_decode_split_k(ks_devptr out, ks_devptr partial_out, ks_devptr partial_lse, ks_devptr q_nope, ks_devptr q_pe, ks_devptr kv_cache, ks_devptr block_tables, ks_devptr seq_lens, int num_seqs, int num_heads, int kv_lora_rank, int rope_dim, int block_size, int max_blocks_per_seq, int num_splits, float softmax_scale, ks_dtype_t dtype, ks_stream_t stream)',
 );
 export const ks_attention_state_merge = L.func(
   'ks_status_t ks_attention_state_merge(ks_devptr out, ks_devptr lse, ks_devptr out_a, ks_devptr lse_a, ks_devptr out_b, ks_devptr lse_b, int64 n_rows, int64 v_dim, ks_dtype_t dtype, ks_stream_t stream)',

@@ -47,6 +47,11 @@ def _display_engine_text(text: Any) -> str:
     return out
 
 
+def _is_kernel_set_impl(impl: Any) -> bool:
+    text = str(impl or "").strip().lower().replace("_", "-")
+    return text == "kernel-set" or text.startswith("kernel-set-")
+
+
 def _ordered_inference_engine_items(
     engines: Dict[str, Any],
     order: Sequence[str],
@@ -281,6 +286,12 @@ def _best_comparisons(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if prev is None or float(row["latency_us"]) < float(prev["latency_us"]):
                 impl_best[impl] = row
         if len(impl_best) < 2:
+            continue
+        # Do not publish a provider-comparison row when every ok implementation
+        # is a kernel-set variant (for example old vs split-K) and all external
+        # providers skipped or failed. Those rows stay in the raw run JSON/report
+        # as diagnostic A/B data, not as SOTA/provider evidence.
+        if not any(not _is_kernel_set_impl(impl) for impl in impl_best):
             continue
         ordered = sorted(impl_best.values(), key=lambda r: float(r["latency_us"]))
         winner = ordered[0]

@@ -69,6 +69,25 @@ func PagedAttnDecode(out, q, kCache, vCache unsafe.Pointer,
 	return statusError(st, "ks_paged_attn_decode")
 }
 
+// PagedAttnDecodeSplitK runs split-K paged decode with caller-owned workspace.
+//
+//	partialOut: [num_splits, num_seqs, num_heads, head_dim]
+//	partialLSE: [num_splits, num_seqs, num_heads] fp32
+//
+// Wraps ks_paged_attn_decode_split_k.
+func PagedAttnDecodeSplitK(out, partialOut unsafe.Pointer, partialLSE *float32,
+	q, kCache, vCache unsafe.Pointer, blockTables, seqLens unsafe.Pointer,
+	numSeqs, numHeads, numKVHeads, headDim, blockSize, maxBlocksPerSeq,
+	numSplits int, softmaxScale float32, dtype Dtype, stream Stream) error {
+	st := Status(C.ks_paged_attn_decode_split_k(out, partialOut,
+		(*C.float)(partialLSE), q, kCache, vCache,
+		(*C.int32_t)(blockTables), (*C.int32_t)(seqLens),
+		C.int(numSeqs), C.int(numHeads), C.int(numKVHeads), C.int(headDim),
+		C.int(blockSize), C.int(maxBlocksPerSeq), C.int(numSplits),
+		C.float(softmaxScale), C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_paged_attn_decode_split_k")
+}
+
 // ReshapeAndCache writes new K/V into a paged cache at the given slots (prefill
 // & decode append).
 //
@@ -103,6 +122,25 @@ func MLADecode(out, qNope, qPE, kvCache unsafe.Pointer,
 		C.int(blockSize), C.int(maxBlocksPerSeq), C.float(softmaxScale),
 		C.ks_dtype_t(dtype), stream.c()))
 	return statusError(st, "ks_mla_decode")
+}
+
+// MLADecodeSplitK runs split-K MLA decode with caller-owned workspace.
+//
+//	partialOut: [num_splits, num_seqs, num_heads, kv_lora_rank]
+//	partialLSE: [num_splits, num_seqs, num_heads] fp32
+//
+// Wraps ks_mla_decode_split_k.
+func MLADecodeSplitK(out, partialOut unsafe.Pointer, partialLSE *float32,
+	qNope, qPE, kvCache unsafe.Pointer, blockTables, seqLens unsafe.Pointer,
+	numSeqs, numHeads, kvLoraRank, ropeDim, blockSize, maxBlocksPerSeq,
+	numSplits int, softmaxScale float32, dtype Dtype, stream Stream) error {
+	st := Status(C.ks_mla_decode_split_k(out, partialOut,
+		(*C.float)(partialLSE), qNope, qPE, kvCache,
+		(*C.int32_t)(blockTables), (*C.int32_t)(seqLens),
+		C.int(numSeqs), C.int(numHeads), C.int(kvLoraRank), C.int(ropeDim),
+		C.int(blockSize), C.int(maxBlocksPerSeq), C.int(numSplits),
+		C.float(softmaxScale), C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_mla_decode_split_k")
 }
 
 // AttentionStateMerge merges two partial attention states by log-sum-exp

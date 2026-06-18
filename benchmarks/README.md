@@ -105,6 +105,7 @@ time for launch-bound shapes, and never present the two side by side as equal.
 | `_bench_common.py` | shared shape tables + RoPE reference imported by both `bench.py` and `bench_sota.py` |
 | `persist.py` | normalize raw benchmark JSON into canonical per-run comparison rows |
 | `render_results_readme.py` | generate `results/index.json`, `results/README.md`, and the root README benchmark block |
+| `report_perf_gaps.py` | rank persisted rows where kernel-set trails the fastest ok non-kernel-set backend for the same op/shape/device/dtype |
 | `colab_matrix.py` | Colab/remote runner: build once, shard all ops/suites, persist raw + canonical JSON, refresh summaries |
 | `colab_remote_runner.py` | tiny Colab CLI entrypoint that unpacks an uploaded source tarball, runs `colab_matrix.py`, and packages results |
 | `baselines.yaml` | the rank-1 upstream baseline per operator — **auto-generated** from `providers/registry.json` (see below) |
@@ -130,6 +131,18 @@ The generator is pure stdlib. Provider facts (`lib`, `python_call`,
 registry; the bucketing into the four sections and the per-entry
 `bench_category` / `gpu_arch_required` flags are derived (see the docstring in
 `scripts/gen_baselines.py`).
+
+### Prioritizing optimization gaps
+
+Use the persisted JSON, not raw shard logs, to rank where kernel-set trails a
+working external backend:
+
+```bash
+python3 benchmarks/report_perf_gaps.py --limit 20 --group-limit 12
+```
+
+Rows with `error`, `skip`, or `import-fail` are excluded from ratios; they remain
+visible as availability data in the run reports.
 
 ## Run locally
 

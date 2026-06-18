@@ -312,6 +312,33 @@ ks_status_t ks_paged_attn_decode(void* out, const void* q, const void* k_cache,
   return KS_SUCCESS;
 }
 
+ks_status_t ks_paged_attn_decode_split_k(
+    void* out, void* partial_out, float* partial_lse, const void* q,
+    const void* k_cache, const void* v_cache, const int32_t* block_tables,
+    const int32_t* seq_lens, int num_seqs, int num_heads, int num_kv_heads,
+    int head_dim, int block_size, int max_blocks_per_seq, int num_splits,
+    float softmax_scale, ks_dtype_t dtype, ks_stream_t stream) {
+  (void)out;
+  (void)partial_out;
+  (void)partial_lse;
+  (void)q;
+  (void)k_cache;
+  (void)v_cache;
+  (void)block_tables;
+  (void)seq_lens;
+  (void)num_seqs;
+  (void)num_heads;
+  (void)num_kv_heads;
+  (void)head_dim;
+  (void)block_size;
+  (void)max_blocks_per_seq;
+  (void)num_splits;
+  (void)softmax_scale;
+  (void)dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
 ks_status_t ks_reshape_and_cache(void* k_cache, void* v_cache, const void* key,
                                  const void* value,
                                  const int32_t* slot_mapping, int num_tokens,
@@ -349,6 +376,33 @@ ks_status_t ks_mla_decode(void* out, const void* q_nope, const void* q_pe,
   (void)rope_dim;
   (void)block_size;
   (void)max_blocks_per_seq;
+  (void)softmax_scale;
+  (void)dtype;
+  (void)stream;
+  return KS_SUCCESS;
+}
+
+ks_status_t ks_mla_decode_split_k(
+    void* out, void* partial_out, float* partial_lse, const void* q_nope,
+    const void* q_pe, const void* kv_cache, const int32_t* block_tables,
+    const int32_t* seq_lens, int num_seqs, int num_heads, int kv_lora_rank,
+    int rope_dim, int block_size, int max_blocks_per_seq, int num_splits,
+    float softmax_scale, ks_dtype_t dtype, ks_stream_t stream) {
+  (void)out;
+  (void)partial_out;
+  (void)partial_lse;
+  (void)q_nope;
+  (void)q_pe;
+  (void)kv_cache;
+  (void)block_tables;
+  (void)seq_lens;
+  (void)num_seqs;
+  (void)num_heads;
+  (void)kv_lora_rank;
+  (void)rope_dim;
+  (void)block_size;
+  (void)max_blocks_per_seq;
+  (void)num_splits;
   (void)softmax_scale;
   (void)dtype;
   (void)stream;

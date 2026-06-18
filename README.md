@@ -72,7 +72,7 @@ No GPU handy? `ks.dispatch.available()` still prints the routing table.
 <!-- BENCHMARK_SUMMARY:START -->
 ## Benchmarks
 
-Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **22 runs**, **1119/1270 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
+Canonical benchmark data is checked in under [`benchmarks/results/runs/`](benchmarks/results/runs/) and summarized in [`benchmarks/results/README.md`](benchmarks/results/README.md). Current coverage: **24 runs**, **1125/1284 ok rows**, GPUs: NVIDIA A100-SXM4-40GB sm80, NVIDIA H20 sm90, NVIDIA L4 sm89, NVIDIA RTX PRO 6000 Blackwell Server Edition sm120.
 
 Rows are scoped by their suite: `sota` rows compare installed production providers; `kernel_set` rows are diagnostic kernel-set/reference runs and are not promoted to default routing by themselves.
 
@@ -139,6 +139,21 @@ the pre-patch `HEAD`; the final checked-in run is
 the fp8 cast pass, avoiding one global reread for the common group-128 path.
 `reshape_and_cache` now performs direct same-dtype K/V copies; it is kept as a
 simple instruction cleanup, not a claimed performance improvement.
+
+Systematic attention triage added explicit split-K workspace decode APIs and
+bench rows. Colab L4 fp16 (`bench_sota.py --ops attention_decode,mla_decode
+--target-ms 80`) shows split-K is only a small paged-decode win at the current
+multi-sequence shapes and is a loss for the scalar MLA implementation:
+
+| kernel | shape | baseline | split-K | result |
+|---|---|---:|---:|---:|
+| `paged_attn_decode` | `seqs=64,ctx=2048,qh=32,kvh=8,hd=128` | 7501.3 us | 7240.2 us | 1.04x |
+| `paged_attn_decode` | `seqs=256,ctx=1024,qh=32,kvh=8,hd=128` | 14669.8 us | 14616.6 us | 1.00x |
+| `mla_decode` | `seqs=64,ctx=2048,h=128,lora=512,rope=64` | 78373.4 us | 103387.1 us | 0.76x |
+
+Conclusion: decode attention still needs GQA KV reuse / token-head tiling, and
+MLA needs a tensor-core/FlashMLA-class algorithm; split-K alone is diagnostic,
+not a production default.
 
 ## Try it on a real model
 
