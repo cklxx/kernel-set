@@ -221,12 +221,12 @@ def _load_reference_json(path_or_url: Optional[str]) -> Optional[Dict[str, Any]]
 
 def _run_kernel_set_full(model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int):
     import kernel_set as ks
-    from engines.qwen3_greedy_engine import KernelSetQwen3FullPath
+    from engines.causal_lm_greedy_engine import KernelSetCausalLMFullPath
 
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def generate():
-        engine = KernelSetQwen3FullPath(
+        engine = KernelSetCausalLMFullPath(
             model, ks, max_total_tokens=max_total_tokens, block_size=block_size
         )
         with engine.torch.inference_mode():
@@ -285,15 +285,15 @@ def _run_kernel_set_variant(
 ):
     import kernel_set as ks
     import torch
-    from engines.qwen3_greedy_engine import (
-        KernelSetQwen3ConfigurablePath,
+    from engines.causal_lm_greedy_engine import (
+        KernelSetCausalLMConfigurablePath,
         kernel_coverage_for_modes,
     )
 
     max_total_tokens = int(input_ids.shape[-1]) + new_tokens
 
     def make_engine():
-        return KernelSetQwen3ConfigurablePath(
+        return KernelSetCausalLMConfigurablePath(
             model,
             ks,
             max_total_tokens=max_total_tokens,
@@ -335,7 +335,7 @@ def _run_kernel_set_variant(
 def _run_kernel_set_best_practice(
     model, tokenizer, input_ids, new_tokens: int, repeat: int, block_size: int
 ):
-    from engines.qwen3_greedy_engine import BEST_PRACTICE_MODES
+    from engines.causal_lm_greedy_engine import BEST_PRACTICE_MODES
 
     return _run_kernel_set_variant(
         model,
@@ -380,7 +380,7 @@ def _run_composition_ablation(
     reference_tokens: Optional[List[int]],
     baseline_engine: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    from engines.qwen3_greedy_engine import ABLATION_VARIANTS, merge_modes
+    from engines.causal_lm_greedy_engine import ABLATION_VARIANTS, merge_modes
 
     variants: List[Dict[str, Any]] = []
     if baseline_engine is None:
@@ -437,7 +437,7 @@ def _run_kernel_microbench(model, input_ids, args) -> Dict[str, Any]:
     import kernel_set as ks
     import torch
     import torch.nn.functional as F
-    from engines.qwen3_greedy_engine import make_rope_cache, rms_eps
+    from engines.causal_lm_greedy_engine import make_rope_cache, rms_eps
 
     torch.manual_seed(1234)
     config = model.config

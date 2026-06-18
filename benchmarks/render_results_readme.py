@@ -509,9 +509,26 @@ def _render_grouped_winner_table(
 
 
 def _latest_inference_run(runs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not runs:
+    standard = [
+        run
+        for run in runs
+        if run.get("kind") != "quantized_engine_compare" and isinstance(run.get("engines"), dict)
+    ]
+    if not standard:
         return None
-    return runs[-1]
+    return standard[-1]
+
+
+def _latest_quantized_engine_run(runs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    quant = [
+        run
+        for run in runs
+        if run.get("kind") == "quantized_engine_compare"
+        and isinstance(run.get("variants"), dict)
+    ]
+    if not quant:
+        return None
+    return quant[-1]
 
 
 def _engine_exact(engine: Dict[str, Any]) -> str:
@@ -576,6 +593,49 @@ def _render_inference_table(
     if ablation:
         lines.append("")
         lines.extend(ablation)
+    return lines
+
+
+def _render_quantized_engine_table(
+    inference_runs: List[Dict[str, Any]],
+    base_dir: Optional[str] = None,
+) -> List[str]:
+    run = _latest_quantized_engine_run(inference_runs)
+    if not run:
+        return []
+    lines = [
+        "Quantized checkpoint engine smoke:",
+        "",
+        "| model / GPU | quant mode | Transformers tok/s | kernel-set tok/s | kernel-set / HF | token match | peak GB | source |",
+        "|---|---|---:|---:|---:|---|---:|---|",
+    ]
+    for mode, variant in (run.get("variants") or {}).items():
+        if not isinstance(variant, dict) or variant.get("status") != "ok":
+            continue
+        engines = variant.get("engines") or {}
+        hf = engines.get("transformers") or {}
+        ks = engines.get("kernel_set_best_practice") or {}
+        hf_tps = hf.get("tokens_per_s_new")
+        ks_tps = ks.get("tokens_per_s_new")
+        if hf_tps is None or ks_tps is None:
+            continue
+        ratio = float(ks_tps) / float(hf_tps) if float(hf_tps) else None
+        peak = ks.get("peak_memory_gb") or hf.get("peak_memory_gb")
+        lines.append(
+            f"| {run.get('model')} / {run.get('gpu_name')} "
+            f"(sm{run.get('gpu_sm')}, {run.get('dtype')}) | `{mode}` | "
+            f"{_fmt_num(hf_tps, 2)} | {_fmt_num(ks_tps, 2)} | "
+            f"{_fmt_num(ratio, 2)}x | {_engine_exact(ks)} | "
+            f"{_fmt_num(peak, 2)} | {_source_link(run.get('_path'), base_dir)} |"
+        )
+    if len(lines) == 3:
+        return []
+    lines.extend(
+        [
+            "",
+            "Rows are real checkpoint loads with greedy decode. `kernel_set_best_practice` keeps quantized/dense linears inside the model modules and uses kernel-set for the non-linear/cache/decode kernels that the generic causal-LM engine owns.",
+        ]
+    )
     return lines
 
 
@@ -825,6 +885,10 @@ def render_results_readme(
     lines.append("also routes linears through kernel-set's auditable reference GEMM path.")
     lines.append("")
     lines.extend(_render_inference_table(inference_runs or [], base_dir=base_dir))
+    quant_table = _render_quantized_engine_table(inference_runs or [], base_dir=base_dir)
+    if quant_table:
+        lines.append("")
+        lines.extend(quant_table)
     lines.append("")
     lines.append("## Regenerate")
     lines.append("")
@@ -892,7 +956,7 @@ def render_root_summary(
             )
     if inference_runs:
         lines.append("")
-        lines.append("Qwen3-8B engine smoke:")
+        lines.append("Engine smoke:")
         lines.append("")
         lines.append(
             "Kernel-coverage rows prove call-path coverage and token parity; "
@@ -900,6 +964,10 @@ def render_root_summary(
         )
         lines.append("")
         lines.extend(_render_inference_table(inference_runs))
+        quant_table = _render_quantized_engine_table(inference_runs)
+        if quant_table:
+            lines.append("")
+            lines.extend(quant_table)
     lines.append("")
     lines.append(END)
     return "\n".join(lines)
