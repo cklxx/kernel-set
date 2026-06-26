@@ -13,58 +13,54 @@ import (
 	ks "github.com/kernel-set/go"
 )
 
-// JanusPro holds the model weights and configuration for Janus-Pro-7B.
 type JanusPro struct {
 	stream  ks.Stream
 	weights map[string]*deviceTensor
 	config  janusConfig
 
-	// pre-allocated device buffers
 	kvCache []kvCacheLayer
 	cos, sin *deviceTensor
 }
 
 type janusConfig struct {
-	// ViT (SigLIP-L)
-	vitHidden     int // 1024
-	vitLayers     int // 24
-	vitHeads      int // 16
-	vitPatch      int // 16
-	vitImageSize  int // 384
-	vitIntermediate int // 4096
+	vitHidden       int
+	vitLayers       int
+	vitHeads        int
+	vitPatch        int
+	vitImageSize    int
+	vitIntermediate int
 
-	// LLM (DeepSeek-LLM-7b)
-	llmHidden     int // 4096
-	llmLayers     int // 30
-	llmHeads      int // 32
-	llmKVHeads    int // 32
-	llmIntermediate int // 11008
-	llmVocab      int // 102400
-	llmMaxPos     int // 4096
-	ropeTheta     float32 // 10000.0
+	llmHidden       int
+	llmLayers       int
+	llmHeads        int
+	llmKVHeads      int
+	llmIntermediate int
+	llmVocab        int
+	llmMaxPos       int
+	ropeTheta       float32
 
-	// VQ Decoder
-	vqCodebook    int // 16384
-	vqLatentDim   int // 8
-	vqDownsample  int // 16
+	vqCodebook  int
+	vqLatentDim int
+	vqDownsample int
 
-	dtype ks.Dtype // F16
+	dtype ks.Dtype
 }
 
 type kvCacheLayer struct {
 	k, v *deviceTensor
 }
 
-// deviceTensor is a GPU buffer with shape metadata.
 type deviceTensor struct {
 	ptr   unsafe.Pointer
 	shape []int
-	size  int // bytes
+	size  int
 }
 
 func (t *deviceTensor) free() error {
 	if t.ptr != nil {
-		return ks.FreeDevice(t.ptr)
+		ptr := t.ptr
+		t.ptr = nil
+		return ks.FreeDevice(ptr)
 	}
 	return nil
 }
@@ -81,17 +77,12 @@ func (t *deviceTensor) elemSize() int {
 	return t.size / t.numel()
 }
 
-// NewJanusPro loads the model from a directory of safetensors files.
-// NewJanusPro loads the model from a directory of safetensors files.
-// Expects pre-transposed 2D weight matrices: model_fp16_t.safetensors.
-// Embedding/codebook weights are loaded from the plain file to avoid transposition.
 func NewJanusPro(dir string) (*JanusPro, error) {
 	paths, err := findSafetensors(dir)
 	if err != nil {
 		return nil, fmt.Errorf("find safetensors: %w", err)
 	}
 
-	// Separate transposed and plain files.
 	var transposedPaths, plainPaths []string
 	for _, p := range paths {
 		if strings.HasSuffix(p, "_t.safetensors") {
@@ -101,9 +92,7 @@ func NewJanusPro(dir string) (*JanusPro, error) {
 		}
 	}
 
-	// Load transposed files first (for all weights).
 	if len(transposedPaths) == 0 {
-		// Fall back to plain files if no transposed files.
 		transposedPaths = plainPaths
 		plainPaths = nil
 	}
@@ -141,15 +130,12 @@ func NewJanusPro(dir string) (*JanusPro, error) {
 		},
 	}
 
-	// Load all safetensors files.
-	// 1. Load plain file first for embedding/codebook weights (not transposed).
 	for _, p := range plainPaths {
 		if err := jp.loadSafetensorsFiltered(p, nil); err != nil {
 			jp.Close()
 			return nil, fmt.Errorf("load %s: %w", p, err)
 		}
 	}
-	// 2. Load transposed file, overwriting non-embedding weights.
 	embedKeys := map[string]bool{"embed_tokens.weight": true, "gen_embed.weight": true, "gen_vision_model.codebook.weight": true}
 	for _, p := range transposedPaths {
 		if err := jp.loadSafetensorsFiltered(p, embedKeys); err != nil {
@@ -160,13 +146,11 @@ func NewJanusPro(dir string) (*JanusPro, error) {
 
 	fmt.Printf("Loaded %d weights from %d safetensors file(s)\n", len(jp.weights), len(transposedPaths)+len(plainPaths))
 
-	// Allocate KV cache.
 	if err := jp.allocKVCache(); err != nil {
 		jp.Close()
 		return nil, fmt.Errorf("alloc kv cache: %w", err)
 	}
 
-	// Precompute RoPE cache.
 	if err := jp.makeRopeCache(); err != nil {
 		jp.Close()
 		return nil, fmt.Errorf("rope cache: %w", err)
@@ -245,16 +229,10 @@ func (jp *JanusPro) makeRopeCache() error {
 	return nil
 }
 
-// ---- safetensors loading ----
-
 type safetensorsHeader map[string]struct {
 	Dtype   string  `json:"dtype"`
 	Shape   []int   `json:"shape"`
 	Offsets []int64 `json:"data_offsets"`
-}
-
-func (jp *JanusPro) loadSafetensors(path string) error {
-	return jp.loadSafetensorsFiltered(path, nil)
 }
 
 func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]bool) error {
@@ -264,13 +242,11 @@ func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]boo
 	}
 	defer f.Close()
 
-	// Read header length (8 bytes, little-endian u64).
 	var headerLen uint64
 	if err := binary.Read(f, binary.LittleEndian, &headerLen); err != nil {
 		return fmt.Errorf("read header len: %w", err)
 	}
 
-	// Read header JSON.
 	headerBytes := make([]byte, headerLen)
 	if _, err := io.ReadFull(f, headerBytes); err != nil {
 		return fmt.Errorf("read header: %w", err)
@@ -287,7 +263,6 @@ func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]boo
 		if len(info.Offsets) != 2 {
 			continue
 		}
-		// Skip keys already loaded from the plain file.
 		if skipKeys != nil && skipKeys[name] {
 			continue
 		}
@@ -295,20 +270,17 @@ func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]boo
 		end := headerOffset + info.Offsets[1]
 		dataLen := end - start
 
-		// Allocate device memory.
 		ptr, err := ks.MallocDevice(uintptr(dataLen))
 		if err != nil {
 			return fmt.Errorf("alloc %s: %w", name, err)
 		}
 
-		// Read data from file.
 		data := make([]byte, dataLen)
 		if _, err := f.ReadAt(data, start); err != nil {
 			ks.FreeDevice(ptr)
 			return fmt.Errorf("read %s: %w", name, err)
 		}
 
-		// Copy to device.
 		if err := ks.CopyToDevice(ptr, data, jp.stream); err != nil {
 			ks.FreeDevice(ptr)
 			return fmt.Errorf("copy %s: %w", name, err)
@@ -324,14 +296,12 @@ func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]boo
 	return jp.stream.Synchronize()
 }
 
-// ---- device memory helpers ----
-
 func (jp *JanusPro) allocTensor(shape ...int) (*deviceTensor, error) {
 	n := 1
 	for _, s := range shape {
 		n *= s
 	}
-	elemSize := 2 // fp16
+	elemSize := 2
 	if jp.config.dtype == ks.F32 {
 		elemSize = 4
 	}
@@ -384,10 +354,102 @@ func (jp *JanusPro) deviceToHost(t *deviceTensor) ([]byte, error) {
 	return out, nil
 }
 
+// tensorPool holds reusable per-layer tensors to avoid per-step alloc/free.
+type tensorPool struct {
+	lnOut    *deviceTensor
+	q        *deviceTensor
+	k        *deviceTensor
+	v        *deviceTensor
+	attnOut  *deviceTensor
+	projOut  *deviceTensor
+	ln2Out   *deviceTensor
+	gate     *deviceTensor
+	up       *deviceTensor
+	swiOut   *deviceTensor
+	downOut  *deviceTensor
+	cosSlice *deviceTensor
+	sinSlice *deviceTensor
+	allocMaxSeq int
+}
+
+func (jp *JanusPro) newPool(maxSeqLen int) (*tensorPool, error) {
+	cfg := jp.config
+	hidden := cfg.llmHidden
+	intermediate := cfg.llmIntermediate
+	headDim := hidden / cfg.llmHeads
+
+	p := &tensorPool{allocMaxSeq: maxSeqLen}
+	var err error
+
+	p.lnOut, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		return nil, err
+	}
+	p.q, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.k, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.v, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.attnOut, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.projOut, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.ln2Out, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.gate, err = jp.allocTensor(maxSeqLen, intermediate)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.up, err = jp.allocTensor(maxSeqLen, intermediate)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.swiOut, err = jp.allocTensor(maxSeqLen, intermediate)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.downOut, err = jp.allocTensor(maxSeqLen, hidden)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.cosSlice, err = jp.allocTensor(maxSeqLen, headDim/2)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	p.sinSlice, err = jp.allocTensor(maxSeqLen, headDim/2)
+	if err != nil {
+		p.free(); return nil, err
+	}
+	return p, nil
+}
+
+func (p *tensorPool) free() {
+	if p == nil {
+		return
+	}
+	for _, t := range []*deviceTensor{p.lnOut, p.q, p.k, p.v, p.attnOut, p.projOut, p.ln2Out, p.gate, p.up, p.swiOut, p.downOut, p.cosSlice, p.sinSlice} {
+		if t != nil {
+			t.free()
+		}
+	}
+}
+
 func (jp *JanusPro) getWeight(name string) (*deviceTensor, error) {
 	w, ok := jp.weights[name]
 	if !ok {
-		// Try alternate naming conventions.
 		for k, v := range jp.weights {
 			if k == name || endsWith(k, "."+name) {
 				return v, nil
@@ -401,8 +463,6 @@ func (jp *JanusPro) getWeight(name string) (*deviceTensor, error) {
 func endsWith(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
-
-// ---- math helpers ----
 
 func cos32(x float32) float32 { return float32(math.Cos(float64(x))) }
 func sin32(x float32) float32 { return float32(math.Sin(float64(x))) }
