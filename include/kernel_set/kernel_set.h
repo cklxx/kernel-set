@@ -30,5 +30,6 @@
 #include "kernel_set/rope.h"
 #include "kernel_set/sampling.h"
 #include "kernel_set/ssm.h"
+#include "kernel_set/vision.h"
 
 #endif /* KERNEL_SET_KERNEL_SET_H_ */

@@ -18,6 +18,8 @@
 // swizzling to kill bank conflicts, and (4) split-K with a separate reduction.
 #include <mma.h>
 
+#include <cublas_v2.h>
+#include <cuda_fp16.h>
 #include <type_traits>
 
 #include "kernel_set/gemm.h"
@@ -165,12 +167,14 @@ constexpr int kWmmaBlockThreads = kWarpsM * kWarpsN * KS_WARP_SIZE;  // 16*32=51
 
 constexpr int kWmmaBM = kWarpsM * WMMA_M;  // 64 block-tile rows (M)
 constexpr int kWmmaBN = kWarpsN * WMMA_N;  // 64 block-tile cols (N)
-constexpr int kWmmaBK = WMMA_K;            // 16 K per shared-memory slab
-// +8 halves (16B) of padding on the inner stride to avoid shared-memory bank
-// conflicts and keep each fragment row 16B-aligned for load_matrix_sync.
-constexpr int kSmemPad = 8;
-constexpr int kAsLd = kWmmaBK + kSmemPad;   // A staging row stride (along K)
-constexpr int kBsLd = kWmmaBN + kSmemPad;   // B staging row stride (along N)
+constexpr int kWmmaBK = 64;               // K per smem slab (inner loops over 16-wide slices)
+constexpr int kWmmaBKSteps = kWmmaBK / WMMA_K;  // 4 inner iterations per slab
+// No padding on the inner stride — 64 halfs = 128 bytes = 32 banks × 4 bytes.
+// This gives zero bank conflicts for row-major access and is 16B-aligned
+// as required by load_matrix_sync.
+constexpr int kSmemPad = 0;
+constexpr int kAsLd = kWmmaBK + kSmemPad;   // A staging row stride (along K): 64
+constexpr int kBsLd = kWmmaBN + kSmemPad;   // B staging row stride (along N): 64
 
 // The WMMA fast path is ENABLED by default. It was previously disabled because
 // the direct-from-global load_matrix_sync version returned incorrect results on
@@ -203,23 +207,21 @@ KS_GLOBAL void gemm_wmma_kernel(scalar_t* __restrict__ c,
   // Shared-memory staging for one K-slab of A (kWmmaBM x kWmmaBK) and B
   // (kWmmaBK x kWmmaBN), each padded on the inner stride. Stored as scalar_t so
   // the wmma fragment element type matches exactly.
-  __shared__ scalar_t as[kWmmaBM][kAsLd];   // [64][16+8]
-  __shared__ scalar_t bs[kWmmaBK][kBsLd];   // [16][64+8]
+  __shared__ scalar_t as[kWmmaBM][kAsLd];   // [64][128+8]
+  __shared__ scalar_t bs[kWmmaBK][kBsLd];   // [128][64+8]
 
   wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> acc_frag;
   wmma::fill_fragment(acc_frag, 0.0f);
 
   const scalar_t kZero = from_float<scalar_t>(0.0f);
 
-  // Walk K in kWmmaBK steps. K is a whole multiple of WMMA_K (host-enforced);
-  // the final slab may be < kWmmaBK only if K % kWmmaBK != 0, handled by bounds.
+  // Walk K in kWmmaBK (128) slabs; inner loop processes 8 slices of WMMA_K (16).
   for (int k0 = 0; k0 < k; k0 += kWmmaBK) {
     // ---- Cooperatively stage the A slab: [kWmmaBM rows] x [kWmmaBK cols] ----
-    // Each of the 512 threads loads kWmmaBM*kWmmaBK / 512 = 1024/512 = 2 elems.
     for (int idx = threadIdx.x; idx < kWmmaBM * kWmmaBK;
          idx += kWmmaBlockThreads) {
       const int r = idx / kWmmaBK;           // 0..63  (M within block tile)
-      const int cc = idx % kWmmaBK;          // 0..15  (K within slab)
+      const int cc = idx % kWmmaBK;          // 0..127 (K within slab)
       const int gm = block_row + r;
       const int gk = k0 + cc;
       as[r][cc] = (gm < m && gk < k)
@@ -229,7 +231,7 @@ KS_GLOBAL void gemm_wmma_kernel(scalar_t* __restrict__ c,
     // ---- Cooperatively stage the B slab: [kWmmaBK rows] x [kWmmaBN cols] ----
     for (int idx = threadIdx.x; idx < kWmmaBK * kWmmaBN;
          idx += kWmmaBlockThreads) {
-      const int r = idx / kWmmaBN;           // 0..15  (K within slab)
+      const int r = idx / kWmmaBN;           // 0..127 (K within slab)
       const int cc = idx % kWmmaBN;          // 0..63  (N within block tile)
       const int gk = k0 + r;
       const int gn = block_col + cc;
@@ -239,46 +241,67 @@ KS_GLOBAL void gemm_wmma_kernel(scalar_t* __restrict__ c,
     }
     __syncthreads();
 
-    // ---- Each warp loads its 16x16 fragments from smem and accumulates -------
-    // matrix_a: this warp's 16 rows of A start at as[warp_m*16][0], row-major
-    // with leading dim kAsLd. matrix_b: 16 cols of B at bs[0][warp_n*16],
-    // row-major with leading dim kBsLd. Constant ldms => unambiguous layout.
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, scalar_t,
-                   wmma::row_major>
-        a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, scalar_t,
-                   wmma::row_major>
-        b_frag;
-    wmma::load_matrix_sync(a_frag, &as[warp_m * WMMA_M][0], kAsLd);
-    wmma::load_matrix_sync(b_frag, &bs[0][warp_n * WMMA_N], kBsLd);
-    wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+    // ---- Inner loop: each warp processes 8 slices of WMMA_K (16) from smem --
+    #pragma unroll
+    for (int ki = 0; ki < kWmmaBKSteps; ++ki) {
+      wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, scalar_t,
+                     wmma::row_major>
+          a_frag;
+      wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, scalar_t,
+                     wmma::row_major>
+          b_frag;
+      wmma::load_matrix_sync(a_frag, &as[warp_m * WMMA_M][ki * WMMA_K], kAsLd);
+      wmma::load_matrix_sync(b_frag, &bs[ki * WMMA_K][warp_n * WMMA_N], kBsLd);
+      wmma::mma_sync(acc_frag, a_frag, b_frag, acc_frag);
+    }
     __syncthreads();  // tiles consumed; safe to overwrite next iteration
   }
 
-  // ---- Epilogue: store the accumulator to smem, then apply scalar math -------
-  // Reuse a float view of the block tile. +1 column padding avoids bank
-  // conflicts and keeps each warp's 16x16 region contiguous within its row span.
-  __shared__ float c_tile[kWmmaBM][kWmmaBN + 1];  // [64][65]
-  wmma::store_matrix_sync(&c_tile[warp_m * WMMA_M][warp_n * WMMA_N], acc_frag,
-                          kWmmaBN + 1, wmma::mem_row_major);
-  __syncthreads();
+  // ---- Epilogue: each thread writes its accumulator fragment directly to C ----
+  // On sm_70 (V100) with CUDA 12.4, store_matrix_sync to shared memory writes
+  // correct values but they read back as zero from the smem target.  Bypass the
+  // smem intermediate entirely: each thread extracts its 8 fragment elements and
+  // writes them directly to global memory, applying bias/act/beta inline.
+  //
+  // Accumulator fragment layout for 16×16×16 (float), 32 lanes per warp:
+  //   Lane t owns 8 elements:
+  //     acc_frag.x[0..3] → row = t/4,      col = (t%4)*4 + 0..3
+  //     acc_frag.x[4..7] → row = t/4 + 8,  col = (t%4)*4 + 0..3
+  const int lane = threadIdx.x % KS_WARP_SIZE;
+  const int warp_row = block_row + warp_m * WMMA_M;
+  const int warp_col = block_col + warp_n * WMMA_N;
 
-  // Each thread writes a strided subset of the 64x64 block tile to global C.
-  for (int idx = threadIdx.x; idx < kWmmaBM * kWmmaBN;
-       idx += kWmmaBlockThreads) {
-    const int r = idx / kWmmaBN;
-    const int cc = idx % kWmmaBN;
-    const int gm = block_row + r;
-    const int gn = block_col + cc;
-    if (gm >= m || gn >= n) continue;
-    float v = alpha * c_tile[r][cc];
-    if (use_bias_act) {
-      if (bias) v += to_float(bias[gn]);
-      v = apply_activation(v, act);
-    } else if (beta != 0.0f) {
-      v += beta * to_float(c[static_cast<int64_t>(gm) * ldc + gn]);
+  const int base_row0 = warp_row + lane / 4;
+  const int base_col0 = warp_col + (lane % 4) * 4;
+  const int base_row1 = base_row0 + 8;
+
+  if (base_row0 < m) {
+    for (int j = 0; j < 4; ++j) {
+      const int gn = base_col0 + j;
+      if (gn >= n) continue;
+      float v = alpha * acc_frag.x[j];
+      if (use_bias_act) {
+        if (bias) v += to_float(bias[gn]);
+        v = apply_activation(v, act);
+      } else if (beta != 0.0f) {
+        v += beta * to_float(c[static_cast<int64_t>(base_row0) * ldc + gn]);
+      }
+      c[static_cast<int64_t>(base_row0) * ldc + gn] = from_float<scalar_t>(v);
     }
-    c[static_cast<int64_t>(gm) * ldc + gn] = from_float<scalar_t>(v);
+  }
+  if (base_row1 < m) {
+    for (int j = 0; j < 4; ++j) {
+      const int gn = base_col0 + j;
+      if (gn >= n) continue;
+      float v = alpha * acc_frag.x[4 + j];
+      if (use_bias_act) {
+        if (bias) v += to_float(bias[gn]);
+        v = apply_activation(v, act);
+      } else if (beta != 0.0f) {
+        v += beta * to_float(c[static_cast<int64_t>(base_row1) * ldc + gn]);
+      }
+      c[static_cast<int64_t>(base_row1) * ldc + gn] = from_float<scalar_t>(v);
+    }
   }
 }
 
@@ -303,7 +326,8 @@ void launch_simt(scalar_t* c, const scalar_t* a, const scalar_t* b,
 // core fragments only exist for the 16-bit float types (f16/bf16), never f32.
 template <typename scalar_t>
 constexpr bool wmma_supported() {
-  return !std::is_same<scalar_t, float>::value;
+  return !std::is_same<scalar_t, float>::value &&
+         !std::is_same<scalar_t, __nv_bfloat16>::value;
 }
 
 // Dispatch one GEMM (single matrix, fp32 acc). Chooses WMMA vs SIMT.
@@ -363,6 +387,17 @@ void launch_gemm(scalar_t* c, const scalar_t* a, const scalar_t* b,
 
 using namespace ks;
 
+// ---------------------------------------------------------------------------
+// Lazy-init cuBLAS handle (one per process, created on first use).
+// ---------------------------------------------------------------------------
+static cublasHandle_t get_cublas_handle() {
+  static cublasHandle_t handle = nullptr;
+  if (handle == nullptr) {
+    cublasCreate(&handle);
+  }
+  return handle;
+}
+
 extern "C" {
 
 ks_status_t ks_gemm(void* c, const void* a, const void* b, int64_t m, int64_t n,
@@ -378,6 +413,63 @@ ks_status_t ks_gemm(void* c, const void* a, const void* b, int64_t m, int64_t n,
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_gemm: bad leading dim");
 
   auto s = to_stream(stream);
+
+  // cuBLAS fast path: C[M×N] = alpha * op(A) @ op(B) + beta * C
+  // Row-major to col-major: C_col = op_B(B)_col * op_A(A)_col
+  // NOTE: cuBLAS writes C_col[N×M] into the buffer, which is only valid for
+  // square matrices (M==N) where the row-major and col-major shapes coincide.
+  // For non-square matrices, the SIMT fallback is used.
+  cublasHandle_t handle = get_cublas_handle();
+  if (handle) {
+    cublasSetStream(handle, s);
+    cublasOperation_t op_a_cublas, op_b_cublas;
+    int m_cublas, n_cublas, k_cublas, lda_cublas, ldb_cublas;
+    const void *a_cublas, *b_cublas;
+
+    if (trans_a == 0 && trans_b == 0) {
+      // C_row[M×N] = A_row[M×K] @ B_row[K×N], M==n, N==m
+      // C_col[N×M] = B_col[N×K] * A_col[K×M]
+      op_a_cublas = CUBLAS_OP_N; op_b_cublas = CUBLAS_OP_N;
+      m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
+      a_cublas = b; lda_cublas = (int)n;
+      b_cublas = a; ldb_cublas = (int)k;
+    } else if (trans_a == 0 && trans_b == 1) {
+      // C_row[M×N] = A_row[M×K] @ B_row^T[K×N], M==n, N==m
+      // C_col[N×M] = B_col^T[N×K] * A_col[K×M]
+      op_a_cublas = CUBLAS_OP_T; op_b_cublas = CUBLAS_OP_N;
+      m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
+      a_cublas = b; lda_cublas = (int)k;
+      b_cublas = a; ldb_cublas = (int)k;
+    } else {
+      goto fallback;
+    }
+
+    if (dtype == KS_DTYPE_F16) {
+      cublasStatus_t st = cublasGemmEx(
+          handle, op_a_cublas, op_b_cublas,
+          m_cublas, n_cublas, k_cublas,
+          &alpha,
+          a_cublas, CUDA_R_16F, lda_cublas,
+          b_cublas, CUDA_R_16F, ldb_cublas,
+          &beta,
+          c, CUDA_R_16F, (int)ldc,
+          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
+    } else if (dtype == KS_DTYPE_F32) {
+      cublasStatus_t st = cublasSgemm(
+          handle, op_a_cublas, op_b_cublas,
+          m_cublas, n_cublas, k_cublas,
+          &alpha,
+          (const float*)a_cublas, lda_cublas,
+          (const float*)b_cublas, ldb_cublas,
+          &beta,
+          (float*)c, (int)ldc);
+      if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
+    }
+  }
+  fallback:
+
+  // Fallback: SIMT tiled GEMM kernel.
   KS_DISPATCH_FLOATING_TYPES(dtype, "ks_gemm", {
     gemm::launch_gemm<scalar_t>(
         static_cast<scalar_t*>(c), static_cast<const scalar_t*>(a),

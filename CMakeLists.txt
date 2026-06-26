@@ -16,10 +16,11 @@ endif()
 option(KS_ENABLE_CUDA "Build the CUDA backend" ON)
 option(KS_ENABLE_HIP  "Build the HIP/ROCm backend (reserved)" OFF)
 option(KS_ENABLE_TESTS "Build C++ correctness tests" OFF)
+option(KS_ENABLE_WMMA_GEMM "Enable WMMA tensor-core GEMM fast path (half/bf16)" OFF)
 option(KS_FAST_MATH "Enable --use_fast_math (lower precision transcendentals)" OFF)
 # Default arch list covers: T4(75) A100(80) A10/3090(86) L4/4090(89) H100(90).
 # Colab: L4 -> 89, A100 -> 80. Override with -DCMAKE_CUDA_ARCHITECTURES=89.
-set(KS_CUDA_ARCHS "75;80;86;89;90" CACHE STRING "CUDA architectures to target")
+set(KS_CUDA_ARCHS "70;75;80;86;89;90" CACHE STRING "CUDA architectures to target")
 
 # ---- Collect sources (glob so new kernels need no CMake edits) ------------
 file(GLOB_RECURSE KS_GPU_SOURCES CONFIGURE_DEPENDS
@@ -61,6 +62,18 @@ target_include_directories(kernel_set
 target_compile_definitions(kernel_set PRIVATE
     KERNEL_SET_BUILD=1
     KERNEL_SET_VERSION="${PROJECT_VERSION}")
+
+if(KS_ENABLE_WMMA_GEMM)
+  target_compile_definitions(kernel_set PRIVATE KS_ENABLE_WMMA_GEMM=1)
+endif()
+
+# Link cuBLAS for the GEMM fast path (ks_gemm dispatches to cublasGemmEx).
+find_library(CUBLAS_LIBRARY cublas PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu)
+if(CUBLAS_LIBRARY)
+  target_link_libraries(kernel_set PRIVATE ${CUBLAS_LIBRARY})
+else()
+  target_link_libraries(kernel_set PRIVATE cublas)
+endif()
 
 set_target_properties(kernel_set PROPERTIES
     CXX_VISIBILITY_PRESET hidden
