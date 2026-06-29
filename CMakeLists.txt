@@ -57,7 +57,9 @@ endif()
 target_include_directories(kernel_set
     PUBLIC  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
             $<INSTALL_INTERFACE:include>
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernels/src)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/kernels/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/attention/flashinfer/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/attention/flashinfer/csrc)
 
 target_compile_definitions(kernel_set PRIVATE
     KERNEL_SET_BUILD=1

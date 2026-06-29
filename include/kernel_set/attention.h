@@ -115,6 +115,16 @@ KS_API ks_status_t ks_mla_decode_split_k(
     int rope_dim, int block_size, int max_blocks_per_seq, int num_splits,
     float softmax_scale, ks_dtype_t dtype, ks_stream_t stream);
 
+/* FlashInfer prefill — dispatches to FlashInfer's tensor-core kernels on sm_75+,
+ * falls back to ks_flash_attn on sm_70 (V100). Same C ABI as ks_flash_attn. */
+KS_API ks_status_t ks_flashinfer_attn(void* out, void* softmax_lse,
+                                      const void* q, const void* k,
+                                      const void* v, int batch, int seqlen_q,
+                                      int seqlen_k, int num_heads,
+                                      int num_kv_heads, int head_dim,
+                                      float softmax_scale, int causal,
+                                      ks_dtype_t dtype, ks_stream_t stream);
+
 /* FlashAttention backward (training). Requires the forward `out` and
  * `softmax_lse`. grad_q/grad_k/grad_v match q/k/v shapes. */
 KS_API ks_status_t ks_flash_attn_backward(

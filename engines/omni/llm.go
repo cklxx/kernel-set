@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"unsafe"
 
 	ks "github.com/kernel-set/go"
@@ -109,9 +110,9 @@ func (lm *LLMEngine) transformerLayer(x *deviceTensor, layerIdx, seqLen, startPo
 	// Attention: use full context from cache directly
 	totalLen := startPos + seqLen
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
-	ks.FlashAttn(p.attnOut.ptr, nil, p.q.ptr, kvCache.k.ptr, kvCache.v.ptr,
+	ks.FlashInferAttn(p.attnOut.ptr, nil, p.q.ptr, kvCache.k.ptr, kvCache.v.ptr,
 		1, seqLen, totalLen, heads, kvHeads, headDim,
-		scale, isPrefill, cfg.dtype, lm.jp.stream)
+		scale, true, cfg.dtype, lm.jp.stream)
 
 	// Output projection
 	outW, _ := lm.jp.getWeight(prefix + ".self_attn.o_proj.weight")
@@ -194,4 +195,12 @@ func (lm *LLMEngine) ArgmaxToken(logits *deviceTensor) (int32, error) {
 		return 0, err
 	}
 	return token[0], nil
+}
+
+func (lm *LLMEngine) DumpLogits(logits *deviceTensor, path string) error {
+	host, err := lm.jp.deviceToHost(logits)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, host, 0644)
 }

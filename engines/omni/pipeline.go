@@ -6,7 +6,9 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -15,7 +17,8 @@ import (
 )
 
 // Understand runs the understanding pipeline: image -> ViT -> adaptor -> LLM -> text.
-func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int) (string, error) {
+// If debugDumpPath is non-empty, the first-token logits are written to that file as fp16.
+func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int, debugDumpPath string) (string, error) {
 	cfg := jp.config
 
 	// 1. Preprocess image: resize to 384x384, normalize
@@ -27,16 +30,27 @@ func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int)
 	if err != nil {
 		return "", fmt.Errorf("vit: %w", err)
 	}
-	// vitOut shape: [1, NP, vitHidden] where NP = (384/16)^2 = 576
+	// vitOut shape: [1, 1, vitHidden] (single token from ViT + attn_pool)
 
-	// 3. Adaptor: 2-layer MLP [NP, vitHidden] -> [NP, llmHidden]
-	NP := vitOut.shape[1]
+	// Debug: dump ViT output
+	if debugDumpPath != "" {
+		vitData, err := jp.deviceToHost(vitOut)
+		if err == nil {
+			os.WriteFile(debugDumpPath+".vit", vitData, 0644)
+		}
+	}
+
+	// 3. Adaptor: 2-layer MLP [vitHidden] -> [llmHidden] (per-token)
+	// vitOut is [1, vitHidden] from attn_pool (1 token).
+	NP := 1
 	adaptorW1, err := jp.getWeight("aligner.layers.0.weight")
 	if err != nil {
 		vitOut.free()
 		return "", fmt.Errorf("adaptor weight: %w", err)
 	}
+	adaptorB1, _ := jp.getWeight("aligner.layers.0.bias")
 	adaptorW2, _ := jp.getWeight("aligner.layers.2.weight")
+	adaptorB2, _ := jp.getWeight("aligner.layers.2.bias")
 
 	// Layer 1: GEMM + GELU
 	adaptorHid, err := jp.allocTensor(NP, cfg.llmHidden)
@@ -44,11 +58,10 @@ func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int)
 		vitOut.free()
 		return "", err
 	}
-	ks.GEMM(adaptorHid.ptr, vitOut.ptr, adaptorW1.ptr,
+	ks.GEMMBiasAct(adaptorHid.ptr, vitOut.ptr, adaptorW1.ptr, unsafePtr(adaptorB1),
 		int64(NP), int64(cfg.llmHidden), int64(cfg.vitHidden),
-		false, false, int64(cfg.vitHidden), int64(cfg.vitHidden), int64(cfg.llmHidden),
-		1.0, 0.0, cfg.dtype, jp.stream)
-	ks.GELU(adaptorHid.ptr, adaptorHid.ptr, int64(NP*cfg.llmHidden), false, cfg.dtype, jp.stream)
+		1.0, ks.ActNone, cfg.dtype, jp.stream)
+	ks.GELU(adaptorHid.ptr, adaptorHid.ptr, int64(NP*cfg.llmHidden), true, cfg.dtype, jp.stream)
 
 	// Layer 2: GEMM
 	adaptorOut, err := jp.allocTensor(NP, cfg.llmHidden)
@@ -57,47 +70,82 @@ func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int)
 		vitOut.free()
 		return "", err
 	}
-	ks.GEMM(adaptorOut.ptr, adaptorHid.ptr, adaptorW2.ptr,
+	ks.GEMMBiasAct(adaptorOut.ptr, adaptorHid.ptr, adaptorW2.ptr, unsafePtr(adaptorB2),
 		int64(NP), int64(cfg.llmHidden), int64(cfg.llmHidden),
-		false, false, int64(cfg.llmHidden), int64(cfg.llmHidden), int64(cfg.llmHidden),
-		1.0, 0.0, cfg.dtype, jp.stream)
+		1.0, ks.ActNone, cfg.dtype, jp.stream)
 	adaptorHid.free()
 	vitOut.free()
 
-	// 4. Tokenize prompt
-	promptTokens := tokenize(prompt)
+	// Debug: dump adaptor output (vision embedding)
+	if debugDumpPath != "" {
+		adaptorData, err := jp.deviceToHost(adaptorOut)
+		if err == nil {
+			os.WriteFile(debugDumpPath+".adaptor", adaptorData, 0644)
+		}
+	}
 
-	// 5. Embed token ids
+	// 4. Tokenize the prompt with <image_placeholder> (single token 100594).
+	// Janus-Pro format: <image_placeholder> + text tokens.
+	// The tokenizer adds BOS (100000) at position 0, then image_placeholder at 1.
+	// The vision embedding replaces the image placeholder token.
+	fullPrompt := "<image_placeholder>" + prompt
+	promptTokens := tokenize(fullPrompt)
+	// promptTokens = [BOS, image_placeholder, text_tokens...]
+	// BOS is idx 0, image_placeholder is idx 1, text starts at idx 2
+	bosToken := promptTokens[0:1]   // [BOS]
+	textTokens := promptTokens[2:]  // text tokens after image_placeholder
+
+	// 5. Embed BOS token
 	embedW, err := jp.getWeight("model.embed_tokens.weight")
 	if err != nil {
 		adaptorOut.free()
 		return "", fmt.Errorf("embed weight: %w", err)
 	}
-	textEmb, err := jp.allocTensor(len(promptTokens), cfg.llmHidden)
+	bosEmb, err := jp.allocTensor(1, cfg.llmHidden)
 	if err != nil {
 		adaptorOut.free()
 		return "", err
 	}
-	tokPtr := hostToDevice32(jp, promptTokens)
+	bosTokPtr := hostToDevice32(jp, bosToken)
+	defer ks.FreeDevice(bosTokPtr)
+	ks.EmbeddingLookup(bosEmb.ptr, embedW.ptr, bosTokPtr, false,
+		1, int64(cfg.llmHidden), cfg.dtype, jp.stream)
+
+	// 6. Embed text tokens
+	textEmb, err := jp.allocTensor(len(textTokens), cfg.llmHidden)
+	if err != nil {
+		adaptorOut.free()
+		bosEmb.free()
+		return "", err
+	}
+	tokPtr := hostToDevice32(jp, textTokens)
 	defer ks.FreeDevice(tokPtr)
 	ks.EmbeddingLookup(textEmb.ptr, embedW.ptr, tokPtr, false,
-		int64(len(promptTokens)), int64(cfg.llmHidden), cfg.dtype, jp.stream)
+		int64(len(textTokens)), int64(cfg.llmHidden), cfg.dtype, jp.stream)
 
-	// 6. Concatenate: [vision_embeds, text_embeds]
-	totalLen := NP + len(promptTokens)
+	// 7. Concatenate: [BOS, vision_embed, text_embeds]
+	// adaptorOut shape is [1, 1, llmHidden] (single token from attn_pool)
+	totalLen := 1 + 1 + len(textTokens)
 	combined, err := jp.allocTensor(totalLen, cfg.llmHidden)
 	if err != nil {
 		adaptorOut.free()
+		bosEmb.free()
 		textEmb.free()
 		return "", err
 	}
-	// Copy vision embeds
-	ks.Memcpy(combined.ptr, adaptorOut.ptr, uintptr(NP*cfg.llmHidden*2), ks.MemcpyDeviceToDevice, jp.stream)
+	// Copy BOS embed
+	ks.Memcpy(combined.ptr, bosEmb.ptr, uintptr(cfg.llmHidden*2), ks.MemcpyDeviceToDevice, jp.stream)
+	bosEmb.free()
+	// Copy vision embed (single token)
+	ks.Memcpy(
+		unsafePtrOffset(combined.ptr, cfg.llmHidden*2),
+		adaptorOut.ptr, uintptr(cfg.llmHidden*2),
+		ks.MemcpyDeviceToDevice, jp.stream)
 	adaptorOut.free()
 	// Copy text embeds
 	ks.Memcpy(
-		unsafePtrOffset(combined.ptr, NP*cfg.llmHidden*2),
-		textEmb.ptr, uintptr(len(promptTokens)*cfg.llmHidden*2),
+		unsafePtrOffset(combined.ptr, 2*cfg.llmHidden*2),
+		textEmb.ptr, uintptr(len(textTokens)*cfg.llmHidden*2),
 		ks.MemcpyDeviceToDevice, jp.stream)
 	textEmb.free()
 
@@ -118,6 +166,82 @@ func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int)
 			hidden.free()
 			return "", fmt.Errorf("logits: %w", err)
 		}
+		// Dump first-token logits for debugging if requested.
+		if i == 0 && debugDumpPath != "" {
+			llm.DumpLogits(logits, debugDumpPath)
+		}
+		token, err := llm.ArgmaxToken(logits)
+		logits.free()
+		if err != nil {
+			hidden.free()
+			return "", fmt.Errorf("argmax: %w", err)
+		}
+		generated = append(generated, token)
+		if i < 5 {
+			fmt.Fprintf(os.Stderr, "[token %d] id=%d\n", i, token)
+		}
+
+		// Embed next token
+		nextEmb, err := jp.allocTensor(1, cfg.llmHidden)
+		if err != nil {
+			hidden.free()
+			return "", err
+		}
+		nextTokPtr := hostToDevice32(jp, []int32{token})
+		ks.EmbeddingLookup(nextEmb.ptr, embedW.ptr, nextTokPtr, false,
+			1, int64(cfg.llmHidden), cfg.dtype, jp.stream)
+		ks.FreeDevice(nextTokPtr)
+
+		hidden.free()
+		hidden, err = llm.DecodeOne(nextEmb, currentPos)
+		nextEmb.free()
+		currentPos++
+		if err != nil {
+			return "", fmt.Errorf("decode step %d: %w", i, err)
+		}
+	}
+
+	hidden.free()
+	return detokenize(generated), nil
+}
+
+// TextOnly runs the LLM on a text-only prompt (no image/ViT), returning generated text.
+func (jp *JanusPro) TextOnly(prompt string, maxNewTokens int, debugDumpPath string) (string, error) {
+	cfg := jp.config
+
+	promptTokens := tokenize(prompt)
+
+	embedW, err := jp.getWeight("model.embed_tokens.weight")
+	if err != nil {
+		return "", fmt.Errorf("embed weight: %w", err)
+	}
+	emb, err := jp.allocTensor(len(promptTokens), cfg.llmHidden)
+	if err != nil {
+		return "", err
+	}
+	tokPtr := hostToDevice32(jp, promptTokens)
+	defer ks.FreeDevice(tokPtr)
+	ks.EmbeddingLookup(emb.ptr, embedW.ptr, tokPtr, false,
+		int64(len(promptTokens)), int64(cfg.llmHidden), cfg.dtype, jp.stream)
+
+	llm := &LLMEngine{jp: jp}
+	hidden, err := llm.Prefill(emb, 0)
+	emb.free()
+	if err != nil {
+		return "", fmt.Errorf("llm prefill: %w", err)
+	}
+
+	generated := make([]int32, 0, maxNewTokens)
+	currentPos := len(promptTokens)
+	for i := 0; i < maxNewTokens; i++ {
+		logits, err := llm.Logits(hidden)
+		if err != nil {
+			hidden.free()
+			return "", fmt.Errorf("logits: %w", err)
+		}
+		if i == 0 && debugDumpPath != "" {
+			llm.DumpLogits(logits, debugDumpPath)
+		}
 		token, err := llm.ArgmaxToken(logits)
 		logits.free()
 		if err != nil {
@@ -126,7 +250,6 @@ func (jp *JanusPro) Understand(img *image.RGBA, prompt string, maxNewTokens int)
 		}
 		generated = append(generated, token)
 
-		// Embed next token
 		nextEmb, err := jp.allocTensor(1, cfg.llmHidden)
 		if err != nil {
 			hidden.free()
@@ -320,8 +443,15 @@ var tokenizerStdin io.WriteCloser
 var tokenizerStdout *bufio.Scanner
 
 func initTokenizer() error {
-	tokenizerCmd = exec.Command("python3", "tokenizer.py")
-	tokenizerCmd.Dir = "." // run from same directory as binary
+	// Try to find tokenizer.py next to the binary, then fall back to CWD.
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+	tokenizerPath := filepath.Join(exeDir, "tokenizer.py")
+	if _, err := os.Stat(tokenizerPath); err != nil {
+		tokenizerPath = "tokenizer.py"
+	}
+	tokenizerCmd = exec.Command("python3", tokenizerPath)
+	tokenizerCmd.Dir = filepath.Dir(tokenizerPath)
 	var err error
 	tokenizerStdin, err = tokenizerCmd.StdinPipe()
 	if err != nil {

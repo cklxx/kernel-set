@@ -136,9 +136,11 @@ func NewJanusPro(dir string) (*JanusPro, error) {
 			return nil, fmt.Errorf("load %s: %w", p, err)
 		}
 	}
-	embedKeys := map[string]bool{"embed_tokens.weight": true, "gen_embed.weight": true, "gen_vision_model.codebook.weight": true}
+	embedSkip := func(name string, shape []int) bool {
+		return strings.HasSuffix(name, "embed_tokens.weight") || strings.HasSuffix(name, "gen_embed.weight") || strings.HasSuffix(name, "gen_vision_model.codebook.weight")
+	}
 	for _, p := range transposedPaths {
-		if err := jp.loadSafetensorsFiltered(p, embedKeys); err != nil {
+		if err := jp.loadSafetensorsFiltered(p, embedSkip); err != nil {
 			jp.Close()
 			return nil, fmt.Errorf("load %s: %w", p, err)
 		}
@@ -235,7 +237,7 @@ type safetensorsHeader map[string]struct {
 	Offsets []int64 `json:"data_offsets"`
 }
 
-func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]bool) error {
+func (jp *JanusPro) loadSafetensorsFiltered(path string, skipFn func(name string, shape []int) bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -263,7 +265,7 @@ func (jp *JanusPro) loadSafetensorsFiltered(path string, skipKeys map[string]boo
 		if len(info.Offsets) != 2 {
 			continue
 		}
-		if skipKeys != nil && skipKeys[name] {
+		if skipFn != nil && skipFn(name, info.Shape) {
 			continue
 		}
 		start := headerOffset + info.Offsets[0]

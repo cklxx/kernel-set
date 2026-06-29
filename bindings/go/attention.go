@@ -48,6 +48,20 @@ func FlashAttn(out, softmaxLSE, q, k, v unsafe.Pointer,
 	return statusError(st, "ks_flash_attn")
 }
 
+// FlashInferAttn runs FlashInfer tensor-core prefill on sm_75+ (T4, A100, L4,
+// H100), falling back to ks_flash_attn on sm_70 (V100). Same ABI as FlashAttn.
+// Use this for the best available attention kernel on any GPU.
+func FlashInferAttn(out, softmaxLSE, q, k, v unsafe.Pointer,
+	batch, seqlenQ, seqlenK, numHeads, numKVHeads, headDim int,
+	softmaxScale float32, causal bool, dtype Dtype, stream Stream) error {
+	st := Status(C.ks_flashinfer_attn(out, softmaxLSE, q, k, v,
+		C.int(batch), C.int(seqlenQ), C.int(seqlenK),
+		C.int(numHeads), C.int(numKVHeads), C.int(headDim),
+		C.float(softmaxScale), boolToCInt(causal),
+		C.ks_dtype_t(dtype), stream.c()))
+	return statusError(st, "ks_flashinfer_attn")
+}
+
 // PagedAttnDecode runs paged KV-cache decode (one query position per sequence;
 // FlashDecoding).
 //

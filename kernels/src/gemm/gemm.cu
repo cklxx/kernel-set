@@ -383,6 +383,25 @@ void launch_gemm(scalar_t* c, const scalar_t* a, const scalar_t* b,
 }
 
 }  // namespace gemm
+
+// Bias + activation element-wise kernel for cuBLAS post-processing.
+// Input d is [M, N] row-major (already contains GEMM result).
+// bias is [N] (broadcast across M rows), may be NULL.
+// act is ks_activation_t (0=none, 1=relu, 2=gelu_erf, 3=gelu_tanh, 4=silu).
+template <typename scalar_t>
+KS_GLOBAL void gemm_bias_act_kernel(scalar_t* __restrict__ d,
+                                   const scalar_t* __restrict__ bias,
+                                   int64_t m, int64_t n, int act) {
+  const int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int64_t total = m * n;
+  if (idx >= total) return;
+  const int64_t col = idx % n;
+  float v = to_float(d[idx]);
+  if (bias) v += to_float(bias[col]);
+  v = gemm::apply_activation(v, act);
+  d[idx] = from_float<scalar_t>(v);
+}
+
 }  // namespace ks
 
 using namespace ks;
@@ -414,57 +433,55 @@ ks_status_t ks_gemm(void* c, const void* a, const void* b, int64_t m, int64_t n,
 
   auto s = to_stream(stream);
 
-  // cuBLAS fast path: C[M×N] = alpha * op(A) @ op(B) + beta * C
-  // Row-major to col-major: C_col = op_B(B)_col * op_A(A)_col
-  // NOTE: cuBLAS writes C_col[N×M] into the buffer, which is only valid for
-  // square matrices (M==N) where the row-major and col-major shapes coincide.
-  // For non-square matrices, the SIMT fallback is used.
-  cublasHandle_t handle = get_cublas_handle();
-  if (handle) {
-    cublasSetStream(handle, s);
-    cublasOperation_t op_a_cublas, op_b_cublas;
-    int m_cublas, n_cublas, k_cublas, lda_cublas, ldb_cublas;
-    const void *a_cublas, *b_cublas;
+  // cuBLAS fast path: C[M×N] = alpha * op(A) @ op(B) + beta * C.
+  // Row-major to col-major: C_col[N×M] = B_col[N×K] @ A_col[K×M].
+  // Column-major C_col[N×M] at (i,j) = c[i+j*N] coincides with
+  // row-major C_row[M×N] at (j,i) = c[j*N+i] — same memory.
+  // This is correct for all M,N shapes.
+  {
+    cublasHandle_t handle = get_cublas_handle();
+    if (handle) {
+      cublasSetStream(handle, s);
+      cublasOperation_t op_a_cublas, op_b_cublas;
+      int m_cublas, n_cublas, k_cublas, lda_cublas, ldb_cublas;
+      const void *a_cublas, *b_cublas;
 
-    if (trans_a == 0 && trans_b == 0) {
-      // C_row[M×N] = A_row[M×K] @ B_row[K×N], M==n, N==m
-      // C_col[N×M] = B_col[N×K] * A_col[K×M]
-      op_a_cublas = CUBLAS_OP_N; op_b_cublas = CUBLAS_OP_N;
-      m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
-      a_cublas = b; lda_cublas = (int)n;
-      b_cublas = a; ldb_cublas = (int)k;
-    } else if (trans_a == 0 && trans_b == 1) {
-      // C_row[M×N] = A_row[M×K] @ B_row^T[K×N], M==n, N==m
-      // C_col[N×M] = B_col^T[N×K] * A_col[K×M]
-      op_a_cublas = CUBLAS_OP_T; op_b_cublas = CUBLAS_OP_N;
-      m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
-      a_cublas = b; lda_cublas = (int)k;
-      b_cublas = a; ldb_cublas = (int)k;
-    } else {
-      goto fallback;
-    }
+      if (trans_a == 0 && trans_b == 0) {
+        op_a_cublas = CUBLAS_OP_N; op_b_cublas = CUBLAS_OP_N;
+        m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
+        a_cublas = b; lda_cublas = (int)n;
+        b_cublas = a; ldb_cublas = (int)k;
+      } else if (trans_a == 0 && trans_b == 1) {
+        op_a_cublas = CUBLAS_OP_T; op_b_cublas = CUBLAS_OP_N;
+        m_cublas = (int)n; n_cublas = (int)m; k_cublas = (int)k;
+        a_cublas = b; lda_cublas = (int)k;
+        b_cublas = a; ldb_cublas = (int)k;
+      } else {
+        goto fallback;
+      }
 
-    if (dtype == KS_DTYPE_F16) {
-      cublasStatus_t st = cublasGemmEx(
-          handle, op_a_cublas, op_b_cublas,
-          m_cublas, n_cublas, k_cublas,
-          &alpha,
-          a_cublas, CUDA_R_16F, lda_cublas,
-          b_cublas, CUDA_R_16F, ldb_cublas,
-          &beta,
-          c, CUDA_R_16F, (int)ldc,
-          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-      if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
-    } else if (dtype == KS_DTYPE_F32) {
-      cublasStatus_t st = cublasSgemm(
-          handle, op_a_cublas, op_b_cublas,
-          m_cublas, n_cublas, k_cublas,
-          &alpha,
-          (const float*)a_cublas, lda_cublas,
-          (const float*)b_cublas, ldb_cublas,
-          &beta,
-          (float*)c, (int)ldc);
-      if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
+      if (dtype == KS_DTYPE_F16) {
+        cublasStatus_t st = cublasGemmEx(
+            handle, op_a_cublas, op_b_cublas,
+            m_cublas, n_cublas, k_cublas,
+            &alpha,
+            a_cublas, CUDA_R_16F, lda_cublas,
+            b_cublas, CUDA_R_16F, ldb_cublas,
+            &beta,
+            c, CUDA_R_16F, (int)ldc,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
+      } else if (dtype == KS_DTYPE_F32) {
+        cublasStatus_t st = cublasSgemm(
+            handle, op_a_cublas, op_b_cublas,
+            m_cublas, n_cublas, k_cublas,
+            &alpha,
+            (const float*)a_cublas, lda_cublas,
+            (const float*)b_cublas, ldb_cublas,
+            &beta,
+            (float*)c, (int)ldc);
+        if (st == CUBLAS_STATUS_SUCCESS) return KS_SUCCESS;
+      }
     }
   }
   fallback:
@@ -490,8 +507,54 @@ ks_status_t ks_gemm_bias_act(void* d, const void* a, const void* b,
   if (m <= 0 || n <= 0 || k <= 0)
     KS_RETURN_ERROR(KS_ERROR_INVALID_ARGUMENT, "ks_gemm_bias_act: bad shape");
 
-  // D = act(alpha * A @ B + bias). Row-major, no transpose; lda=k, ldb=n, ldc=n.
   auto s = to_stream(stream);
+
+  // cuBLAS fast path: GEMM via swap trick, then bias+act element-wise.
+  {
+    cublasHandle_t handle = get_cublas_handle();
+    if (handle) {
+      cublasSetStream(handle, s);
+      const float beta = 0.0f;
+      cublasStatus_t st = CUBLAS_STATUS_NOT_SUPPORTED;
+      if (dtype == KS_DTYPE_F16) {
+        st = cublasGemmEx(
+            handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            (int)n, (int)m, (int)k,
+            &alpha,
+            b, CUDA_R_16F, (int)n,
+            a, CUDA_R_16F, (int)k,
+            &beta,
+            d, CUDA_R_16F, (int)n,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+      } else if (dtype == KS_DTYPE_F32) {
+        st = cublasSgemm(
+            handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            (int)n, (int)m, (int)k,
+            &alpha,
+            (const float*)b, (int)n,
+            (const float*)a, (int)k,
+            &beta,
+            (float*)d, (int)n);
+      }
+      if (st == CUBLAS_STATUS_SUCCESS) {
+        if (bias || act != 0) {
+          const int64_t total = m * n;
+          const int block = 256;
+          const int grid = (int)((total + block - 1) / block);
+          KS_DISPATCH_FLOATING_TYPES(dtype, "ks_gemm_bias_act", {
+            gemm_bias_act_kernel<scalar_t><<<grid, block, 0, s>>>(
+                static_cast<scalar_t*>(d),
+                static_cast<const scalar_t*>(bias), m, n,
+                static_cast<int>(act));
+          });
+          KS_CHECK_LAUNCH();
+        }
+        return KS_SUCCESS;
+      }
+    }
+  }
+
+  // Fallback: SIMT tiled GEMM with fused bias+act.
   KS_DISPATCH_FLOATING_TYPES(dtype, "ks_gemm_bias_act", {
     gemm::launch_gemm<scalar_t>(
         static_cast<scalar_t*>(d), static_cast<const scalar_t*>(a),
